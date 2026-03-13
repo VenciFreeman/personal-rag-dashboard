@@ -1,0 +1,169 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Library Tracker</title>
+  <link rel="apple-touch-icon" sizes="180x180" href="/static/favicon_logosc/apple-touch-icon.png" />
+  <link rel="icon" type="image/png" sizes="32x32" href="/static/favicon_logosc/favicon-32x32.png" />
+  <link rel="icon" type="image/png" sizes="16x16" href="/static/favicon_logosc/favicon-16x16.png" />
+  <link rel="shortcut icon" href="/static/favicon_logosc/favicon.ico" />
+  <link rel="manifest" href="/static/favicon_logosc/site.webmanifest" />
+  <link rel="stylesheet" href="/static/app.css" />
+</head>
+<body>
+  <header class="top">
+    <h1>Library Tracker</h1>
+  </header>
+
+  <main class="shell">
+    <nav class="tabs" role="tablist" aria-label="Library tabs">
+      <button class="tab active" id="tab-query" data-tab="query" role="tab" aria-selected="true">查询</button>
+      <button class="tab" id="tab-stats" data-tab="stats" role="tab" aria-selected="false">统计</button>
+    </nav>
+
+    <section id="panel-query" class="panel tab-panel active" role="tabpanel" aria-labelledby="tab-query">
+      <div class="query-layout" id="query-workspace">
+        <aside class="sidebar" id="filter-sidebar">
+          <div class="sidebar-head">
+            <strong>筛选标签</strong>
+          </div>
+          <button id="btn-add" class="full">新增</button>
+          <div class="filter-group">
+            <label>Media Type</label>
+            <div id="filter-media_type" class="chips"></div>
+          </div>
+          <div class="filter-group">
+            <label>Nationality</label>
+            <div id="filter-nationality" class="chips"></div>
+          </div>
+          <div class="filter-group">
+            <label>Category</label>
+            <div id="filter-category" class="chips"></div>
+          </div>
+          <div class="filter-group">
+            <label>Channel</label>
+            <div id="filter-channel" class="chips"></div>
+          </div>
+        </aside>
+
+        <div class="main-panel">
+          <h2>查询输入</h2>
+          <div class="search-row">
+            <input id="query-input" placeholder="输入关键词，或用于向量语义搜索" autocomplete="off" spellcheck="false" />
+            <button id="btn-keyword">关键词</button>
+            <button id="btn-vector">向量</button>
+            <button id="btn-refresh-embedding" class="ghost" title="仅刷新 embedding_status=0 的条目">刷新</button>
+          </div>
+          <div id="result-meta" class="hint"></div>
+          <div id="result-list" class="result-list"></div>
+        </div>
+      </div>
+    </section>
+
+    <section id="panel-stats" class="panel tab-panel" role="tabpanel" aria-labelledby="tab-stats">
+      <div class="stats-layout">
+        <div class="stats-toolbar">
+          <label>维度
+            <select id="stats-field"></select>
+          </label>
+          <label>年份筛选
+            <select id="stats-year"></select>
+          </label>
+          <button id="stats-refresh" class="ghost">刷新统计</button>
+        </div>
+
+        <div class="stats-table-wrap">
+          <table class="stats-table" id="stats-overview-table"></table>
+        </div>
+
+        <div class="stats-charts-grid">
+          <div class="chart-card">
+            <h3>Book</h3>
+            <div class="chart-canvas-wrap"><canvas id="stats-chart-book"></canvas></div>
+            <div class="chart-legend" id="stats-legend-book"></div>
+          </div>
+          <div class="chart-card">
+            <h3>Video</h3>
+            <div class="chart-canvas-wrap"><canvas id="stats-chart-video"></canvas></div>
+            <div class="chart-legend" id="stats-legend-video"></div>
+          </div>
+          <div class="chart-card">
+            <h3>Music</h3>
+            <div class="chart-canvas-wrap"><canvas id="stats-chart-music"></canvas></div>
+            <div class="chart-legend" id="stats-legend-music"></div>
+          </div>
+          <div class="chart-card">
+            <h3>Game</h3>
+            <div class="chart-canvas-wrap"><canvas id="stats-chart-game"></canvas></div>
+            <div class="chart-legend" id="stats-legend-game"></div>
+          </div>
+        </div>
+      </div>
+    </section>
+  </main>
+
+  <div id="preview-modal" class="preview-modal hidden" aria-hidden="true">
+    <div class="preview-modal-backdrop" data-role="backdrop"></div>
+    <div class="preview-modal-panel" role="dialog" aria-modal="true" aria-label="条目预览">
+      <button id="preview-close-btn" class="preview-close-btn ghost" title="关闭">✕</button>
+      <div id="preview-card" class="doc preview-card">
+        <div class="preview-empty">请选择一条结果进行预览...</div>
+      </div>
+    </div>
+  </div>
+
+  <dialog id="item-dialog">
+    <form method="dialog" id="item-form">
+      <div class="dialog-head">
+        <h3 id="dialog-title">新增条目</h3>
+        <div class="row end">
+          <button id="btn-save" type="submit" value="save">保存</button>
+          <button id="btn-cancel" class="ghost" type="button" value="cancel">取消</button>
+        </div>
+      </div>
+      <div class="form-grid">
+        <label>Title * <input name="title" required /></label>
+        <label class="mobile-half">Date
+          <input name="date" type="date" />
+        </label>
+        <label class="mobile-half">Media Type *
+          <select name="media_type" required>
+            <option value="book">Book</option>
+            <option value="video">Video</option>
+            <option value="music">Music</option>
+            <option value="game">Game</option>
+          </select>
+        </label>
+        <label class="mobile-half">Author <input name="author" /></label>
+        <label class="mobile-half">Nationality <input name="nationality" /></label>
+        <label class="mobile-half">Category <input name="category" /></label>
+        <label class="mobile-half">Channel <input name="channel" /></label>
+        <label class="mobile-half">Publisher <input name="publisher" /></label>
+        <label class="mobile-half">封面图片
+          <div class="cover-upload-zone" id="cover-upload-zone" tabindex="0">
+            <input name="cover_file" type="file" accept="image/*" id="cover-file-input" class="cover-file-input" />
+            <div class="cover-upload-actions">
+              <button type="button" class="ghost cover-upload-btn" id="cover-select-btn">选择图片</button>
+              <div class="cover-upload-hint">拖拽图片 / Ctrl+V 粘贴</div>
+            </div>
+          </div>
+        </label>
+        <label class="rating-field">Rating
+          <input name="rating" id="rating-input" type="hidden" />
+          <div id="rating-stars" class="rating-stars" role="slider" aria-label="评分" aria-valuemin="0" aria-valuemax="10" aria-valuenow="0" tabindex="0">
+            <span class="stars-base">★★★★★</span>
+            <span class="stars-fill" id="rating-stars-fill">★★★★★</span>
+          </div>
+          <div id="rating-text" class="rating-text">未评分</div>
+        </label>
+        <label class="span2">URL <input name="url" /></label>
+        <label class="span2">Review <textarea name="review"></textarea></label>
+      </div>
+    </form>
+  </dialog>
+
+  <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.3/dist/chart.umd.min.js"></script>
+  <script src="/static/app.js"></script>
+</body>
+</html>

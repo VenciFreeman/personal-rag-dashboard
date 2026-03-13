@@ -1,0 +1,41 @@
+# Python virtual environments
+.venv/
+venv/
+env/
+**/.venv/
+**/venv/
+
+# Local model assets
+local_models/
+**/local_models/
+
+# Python cache/build artifacts
+__pycache__/
+**/__pycache__/
+*.py[cod]
+*$py.class
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+.coverage.*
+htmlcov/
+*.egg-info/
+.eggs/
+build/
+dist/
+
+# Jupyter/runtime
+.ipynb_checkpoints/
+
+# Logs/temp
+*.log
+*.tmp
+*.temp
+
+# Editor/OS
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
+Desktop.ini

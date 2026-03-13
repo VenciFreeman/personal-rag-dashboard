@@ -1,0 +1,117 @@
+# Private data branch gitignore template
+#
+# Usage (on your private data branch only):
+# 1) cp .gitignore.private-data-branch.example .gitignore
+# 2) git add .gitignore && git commit -m "Use private-data gitignore"
+#
+# Goal:
+# - Keep code + selected knowledge-base data versioned in private repo branch.
+# - Continue ignoring heavy caches, build outputs, and local env noise.
+
+# -----------------------------
+# Python cache / bytecode
+# -----------------------------
+__pycache__/
+*.py[cod]
+*.pyo
+
+# -----------------------------
+# Virtual environments
+# -----------------------------
+.venv/
+venv/
+env/
+ENV/
+
+# -----------------------------
+# IDE / OS noise
+# -----------------------------
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
+
+# -----------------------------
+# Runtime data policy (private-data branch)
+# -----------------------------
+# Keep raw ingestion private/local only
+# (usually contains source dumps and highly sensitive material)
+data/raw_dir/**
+!data/raw_dir/.gitkeep
+
+# Optional: keep extracted/summarize ignored by default.
+# Uncomment the two "!" lines if you also want to version them.
+data/extracted_dir/**
+!data/extracted_dir/.gitkeep
+# !data/extracted_dir/**
+
+data/summarize_dir/**
+!data/summarize_dir/.gitkeep
+# !data/summarize_dir/**
+
+# Keep local model caches ignored (too large / reproducible)
+data/hf_cache/**
+!data/hf_cache/.gitkeep
+
+data/local_models/**
+!data/local_models/.gitkeep
+
+# Track vector index in private data branch
+!data/vector_db/**
+
+# Keep RAG session history ignored by default (often contains private prompts/answers).
+# Uncomment the next line if your private branch needs to version session history.
+data/rag_sessions/**
+!data/rag_sessions/.gitkeep
+# !data/rag_sessions/**
+
+# Track full documents knowledge base in private data branch
+!documents/**
+
+# -----------------------------
+# Logs / temporary files
+# -----------------------------
+scripts/summarize_failed.log
+*.log
+*.tmp
+*_tmp_*.json
+
+# -----------------------------
+# Packaging / build outputs
+# -----------------------------
+build/
+dist/
+release/build/
+release/dist/
+scripts/build/
+scripts/dist/
+scripts/release/
+scripts/.pyi_build/
+release/.pyi_build/
+
+# PyInstaller artifacts
+*.spec.bak
+*.toc
+*.pyz
+*.pkg
+release/AI-Summary-GUI.spec
+
+# Windows binaries (keep .bat scripts)
+*.exe
+!*.bat
+
+# Release app runtime data still ignored
+release/app/data/raw_dir/**
+!release/app/data/raw_dir/.gitkeep
+release/app/data/extracted_dir/**
+!release/app/data/extracted_dir/.gitkeep
+release/app/data/summarize_dir/**
+!release/app/data/summarize_dir/.gitkeep
+release/app/data/vector_db/**
+!release/app/data/vector_db/.gitkeep
+release/app/data/rag_sessions/**
+!release/app/data/rag_sessions/.gitkeep
+release/app/documents/**
+!release/app/documents/.gitkeep
+!release/app/documents/examples/
+!release/app/documents/examples/**

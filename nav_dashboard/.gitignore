@@ -1,0 +1,19 @@
+# Python cache
+/web/__pycache__/
+__pycache__/
+*.py[cod]
+
+# Virtual envs
+.venv/
+venv/
+
+# Runtime state
+/data/agent_quota.json
+/data/agent_sessions/**
+
+# Editor / OS
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
+data/agent_metrics.json

@@ -1,0 +1,188 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, viewport-fit=cover" />
+  <title>AI Conversations Summary</title>
+  <link rel="apple-touch-icon" sizes="180x180" href="/static/favicon_logosc/apple-touch-icon.png" />
+  <link rel="icon" type="image/png" sizes="32x32" href="/static/favicon_logosc/favicon-32x32.png" />
+  <link rel="icon" type="image/png" sizes="16x16" href="/static/favicon_logosc/favicon-16x16.png" />
+  <link rel="shortcut icon" href="/static/favicon_logosc/favicon.ico" />
+  <link rel="manifest" href="/static/favicon_logosc/site.webmanifest" />
+  <link rel="stylesheet" href="/static/app.css" />
+</head>
+<body>
+  <header class="top">
+    <h1>AI Conversations Summary</h1>
+  </header>
+
+  <main class="shell">
+    <nav class="tabs" role="tablist" aria-label="主标签">
+      <button class="tab active" data-tab="rag" id="tab-rag" role="tab" aria-selected="true">RAG Q&A</button>
+      <button class="tab" data-tab="preview" id="tab-preview" role="tab" aria-selected="false">预览</button>
+      <button class="tab" data-tab="workflow" id="tab-workflow" role="tab" aria-selected="false">批处理</button>
+    </nav>
+
+    <section id="panel-rag" class="panel tab-panel active" role="tabpanel" aria-labelledby="tab-rag">
+      <div class="workspace" id="rag-workspace">
+        <aside id="rag-sidebar" class="sidebar">
+          <div class="sidebar-head">
+            <strong>历史会话</strong>
+            <button id="rag-toggle-sidebar" class="ghost sidebar-toggle" title="收起/展开">☰</button>
+          </div>
+          <div class="sidebar-actions">
+            <button id="rag-new-session">新建</button>
+            <button id="rag-delete-session" class="ghost">删除</button>
+          </div>
+          <ul id="rag-session-list" class="list"></ul>
+        </aside>
+
+        <div class="main-panel chat-layout">
+          <div class="rag-head">
+            <h2>RAG Q&A</h2>
+            <p id="rag-model">当前模型：(加载中)</p>
+          </div>
+
+          <div class="mode-row">
+            <span>模式</span>
+            <button class="mode-btn active" data-mode="local" id="mode-local">本地模型</button>
+            <button class="mode-btn" data-mode="deepseek" id="mode-deepseek">DeepSeek</button>
+            <button class="mode-btn" data-mode="reasoner" id="mode-reasoner">深度思考</button>
+          </div>
+
+          <div id="chat" class="doc chat-box markdown-body"></div>
+
+          <div class="input-wrap">
+            <textarea id="question" placeholder="输入问题，Enter发送，Shift+Enter换行" autocomplete="off" spellcheck="false"></textarea>
+            <div class="row input-actions">
+              <label class="debug-switch" for="rag-debug-toggle">
+                <input id="rag-debug-toggle" type="checkbox" />
+                <span>Debug</span>
+              </label>
+              <div class="actions-right">
+                <button id="ask-local" class="ghost">本地回答</button>
+                <button id="ask" class="ghost">联网搜索</button>
+                <button id="abort" class="ghost" disabled>中止</button>
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <section id="panel-preview" class="panel tab-panel" role="tabpanel" aria-labelledby="tab-preview">
+      <div class="workspace" id="preview-workspace">
+        <aside id="preview-sidebar" class="sidebar">
+          <div class="sidebar-head">
+            <strong>目录与搜索</strong>
+            <button id="preview-toggle-sidebar" class="ghost sidebar-toggle" title="收起/展开">☰</button>
+          </div>
+          <div class="search-wrap">
+            <div class="search-row">
+              <input id="kw" placeholder="关键词/向量检索" autocomplete="off" spellcheck="false" />
+              <button id="btn-kw">关键词</button>
+              <button id="btn-vs">向量</button>
+              <button id="btn-refresh" class="ghost">刷新</button>
+            </div>
+          </div>
+          <h3 id="preview-list-title">目录</h3>
+          <ul id="preview-list" class="tree"></ul>
+        </aside>
+
+        <div class="main-panel preview-layout">
+          <h2>预览</h2>
+          <div id="doc" class="doc markdown-body"></div>
+        </div>
+      </div>
+    </section>
+
+    <section id="panel-workflow" class="panel tab-panel" role="tabpanel" aria-labelledby="tab-workflow">
+      <div class="workflow-layout">
+        <div class="workflow-toolbar">
+          <div class="workflow-actions">
+            <button id="wf-upload" class="ghost">上传源文件</button>
+            <input id="wf-upload-input" type="file" multiple hidden />
+            <button id="wf-batch" class="ghost">格式批处理</button>
+            <button id="wf-create-file" class="ghost">创建文件</button>
+            <button id="wf-summary" class="ghost">AI 总结</button>
+            <button id="wf-split" class="ghost">拆分主题</button>
+            <button id="wf-classify" class="ghost">分类归档</button>
+            <button id="wf-sync" class="ghost">补齐向量</button>
+            <button id="wf-refresh-count" class="ghost">刷新计数</button>
+            <button id="wf-estimate" class="ghost">估算Token</button>
+          </div>
+          <div class="workflow-stats">
+            <div class="workflow-date-row">
+              <span class="workflow-date-label">开始</span>
+              <input id="wf-start" class="workflow-date-input" type="date" />
+              <span class="workflow-date-label">结束</span>
+              <input id="wf-end" class="workflow-date-input" type="date" />
+            </div>
+            <div class="workflow-count-row">
+              <span id="wf-count">提取文件: 0 / 总计 0</span>
+            </div>
+          </div>
+        </div>
+
+        <div class="workflow-config">
+          <label class="wf-source-field">数据来源
+            <select id="wf-source">
+              <option value="deepseek">DeepSeek</option>
+              <option value="chatgpt">ChatGPT</option>
+            </select>
+          </label>
+          <label class="wf-base-url-field">API_BASE_URL
+            <input id="wf-base-url" type="text" autocomplete="off" spellcheck="false" />
+          </label>
+          <label class="wf-model-field">MODEL
+            <input id="wf-model" type="text" autocomplete="off" spellcheck="false" />
+          </label>
+          <label class="wf-api-key-field">API_KEY
+            <input id="wf-api-key" type="password" autocomplete="off" spellcheck="false" />
+          </label>
+          <div class="workflow-config-actions">
+            <button id="wf-toggle-key" class="ghost">显示</button>
+            <button id="wf-save-config" class="ghost">保存配置</button>
+          </div>
+        </div>
+
+        <div class="workflow-log-wrap">
+          <div class="workflow-log-head">
+            <h2>运行日志</h2>
+            <span id="wf-job-status" class="wf-status">空闲</span>
+          </div>
+          <pre id="wf-log" class="workflow-log"></pre>
+        </div>
+      </div>
+    </section>
+  </main>
+
+  <div id="loading-overlay" class="loading-overlay hidden" aria-live="polite" aria-busy="true">
+    <div class="loading-card">
+      <div id="loading-text" class="loading-text">正在处理...</div>
+      <div id="loading-timer" class="loading-timer">00:00</div>
+    </div>
+  </div>
+
+  <div id="wf-create-modal" class="wf-modal hidden" aria-hidden="true">
+    <div class="wf-modal-backdrop" data-role="wf-backdrop"></div>
+    <div class="wf-modal-panel" role="dialog" aria-modal="true" aria-label="创建 Markdown 文件">
+      <div class="wf-modal-head">
+        <h3>创建文件</h3>
+      </div>
+      <label>文件名（可留空）
+        <input id="wf-create-name" type="text" autocomplete="off" spellcheck="false" placeholder="例如：2026-03-10_随手笔记" />
+      </label>
+      <label>正文
+        <textarea id="wf-create-content" rows="10" placeholder="输入 markdown 正文" spellcheck="false"></textarea>
+      </label>
+      <div class="wf-modal-actions">
+        <button id="wf-create-save">保存</button>
+        <button id="wf-create-cancel" class="ghost">取消</button>
+      </div>
+    </div>
+  </div>
+
+  <script src="/static/app.js"></script>
+</body>
+</html>

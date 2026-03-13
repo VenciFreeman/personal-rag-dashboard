@@ -1,0 +1,42 @@
+[
+  {
+    "title": "Moepedia",
+    "url": "https://zh.moegirl.org.cn/Mainpage#/mobile/index",
+    "image": "/static/custom_cards/20260312_004002_20241017175552_f0df1656.png"
+  },
+  {
+    "title": "Deepseek API",
+    "url": "https://platform.deepseek.com/usage",
+    "image": "/static/custom_cards/20260312_003835_140708714_p0__2_eca5b05d.jpg"
+  },
+  {
+    "title": "Yuki Wiki",
+    "url": "https://yuc.wiki/",
+    "image": "/static/custom_cards/20260312_003232_115192435_p0_0e52b2dd.jpg"
+  },
+  {
+    "title": "Site Hub",
+    "url": "https://lkssite.vip/",
+    "image": "/static/custom_cards/20260312_003342_128561303_p0_master1200_b950f029.jpg"
+  },
+  {
+    "title": "Magiconch",
+    "url": "https://lab.magiconch.com/",
+    "image": "/static/custom_cards/20260312_003312_139919012_p0_2ce2e550.png"
+  },
+  {
+    "title": "arxiv",
+    "url": "https://arxiv.org/",
+    "image": "/static/custom_cards/20260312_001649_135026370_p0_f19ef3af.png"
+  },
+  {
+    "title": "Windy",
+    "url": "https://www.windy.com/?31.053,121.421,5",
+    "image": "/static/custom_cards/20260312_003332_20241017175135_d299db9e.png"
+  },
+  {
+    "title": "Sunset Bot",
+    "url": "https://sunsetbot.top/",
+    "image": "/static/custom_cards/20260312_211338_67438350_p0_7e75f4a4.jpg"
+  }
+]

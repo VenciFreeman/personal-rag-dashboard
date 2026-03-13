@@ -1,0 +1,296 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, viewport-fit=cover" />
+  <title>Navigation Dashboard</title>
+  <link rel="apple-touch-icon" sizes="180x180" href="/static/favicon_logosc/apple-touch-icon.png" />
+  <link rel="icon" type="image/png" sizes="32x32" href="/static/favicon_logosc/favicon-32x32.png" />
+  <link rel="icon" type="image/png" sizes="16x16" href="/static/favicon_logosc/favicon-16x16.png" />
+  <link rel="shortcut icon" href="/static/favicon_logosc/favicon.ico" />
+  <link rel="manifest" href="/static/favicon_logosc/site.webmanifest" />
+  <link rel="stylesheet" href="/static/app.css" />
+</head>
+<body data-local-model="{{ local_model }}" data-deepseek-model="{{ deepseek_model }}" data-ai-summary-url="{{ ai_summary_url }}" data-library-url="{{ library_tracker_url }}">
+  <header class="top">
+    <h1>Navigation Dashboard</h1>
+  </header>
+
+  <main class="shell">
+    <nav class="tabs" role="tablist" aria-label="主标签">
+      <button class="tab active" data-tab="home" id="tab-home" role="tab" aria-selected="true">Navigator</button>
+      <button class="tab" data-tab="agent" id="tab-agent" role="tab" aria-selected="false">LLM Agent</button>
+      <button class="tab" data-tab="dashboard" id="tab-dashboard" role="tab" aria-selected="false">Dashboard</button>
+      <button class="tab" data-tab="benchmark" id="tab-benchmark" role="tab" aria-selected="false">Benchmark</button>
+    </nav>
+
+    <section id="panel-home" class="tab-panel active" role="tabpanel" aria-labelledby="tab-home">
+      <section class="panel hero">
+        <h2 class="panel-heading">个人应用导航</h2>
+
+        <div class="cards">
+          <a class="card" href="{{ ai_summary_url }}" target="_blank" rel="noopener noreferrer">
+            <div class="card-title">RAG System</div>
+            <div class="card-sub">集成本地模型 + 文档预览</div>
+          </a>
+
+          <a class="card" href="{{ library_tracker_url }}" target="_blank" rel="noopener noreferrer">
+            <div class="card-title">Library Tracker</div>
+            <div class="card-sub">书影音游戏统计</div>
+          </a>
+        </div>
+      </section>
+
+      <section class="panel quick-links">
+        <h3>快捷卡片</h3>
+        <div id="custom-card-grid" class="custom-card-grid"></div>
+      </section>
+
+      <section class="panel notes">
+        <h3>Information</h3>
+        <ul>
+          <li>导航页默认端口为 <code>8092</code>。</li>
+          <li>卡片链接默认跟随当前访问主机 IP 的对应端口，可通过环境变量覆盖。</li>
+          <li>当前 Agent 工具集：文档 RAG 检索、媒体记录检索、知识图谱扩展、联网搜索（可选）。</li>
+        </ul>
+      </section>
+    </section>
+
+    <section id="panel-agent" class="panel tab-panel" role="tabpanel" aria-labelledby="tab-agent">
+      <div class="workspace" id="agent-workspace">
+        <aside id="agent-sidebar" class="sidebar">
+          <div class="sidebar-head">
+            <strong>历史会话</strong>
+            <button id="agent-toggle-sidebar" class="ghost sidebar-toggle" title="收起/展开">☰</button>
+          </div>
+          <div class="sidebar-actions">
+            <button id="agent-new-session">新建</button>
+            <button id="agent-delete-session" class="ghost">删除</button>
+          </div>
+          <ul id="agent-session-list" class="list"></ul>
+        </aside>
+
+        <div class="main-panel chat-layout">
+          <div class="rag-head">
+            <h2 class="panel-heading">个人数据助理</h2>
+            <p id="qa-model">当前模型：(加载中)</p>
+          </div>
+
+          <div id="qa-messages" class="doc chat-box markdown-body"></div>
+
+          <div class="input-wrap">
+            <textarea id="qa-input" placeholder="输入问题，Enter发送，Shift+Enter换行" autocomplete="off" spellcheck="false"></textarea>
+            <div class="row input-actions">
+              <label class="debug-switch" for="qa-debug-toggle">
+                <input id="qa-debug-toggle" type="checkbox" />
+                <span>Debug</span>
+              </label>
+              <div class="actions-right">
+                <button id="qa-ask-local" class="ghost">本地回答</button>
+                <button id="qa-ask" class="ghost">联网搜索</button>
+                <button id="qa-abort" class="ghost" disabled>中止</button>
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <section id="panel-dashboard" class="panel tab-panel" role="tabpanel" aria-labelledby="tab-dashboard">
+      <div class="stats-layout">
+        <div class="stats-toolbar dashboard-toolbar">
+          <div>
+            <strong class="panel-heading">系统状态总览</strong>
+            <div class="dashboard-meta-group">
+              <div id="dashboard-generated-at" class="dashboard-meta">等待加载...</div>
+              <div id="dashboard-deploy-time" class="dashboard-meta dashboard-deploy-meta"></div>
+            </div>
+          </div>
+          <button id="dashboard-refresh" class="ghost">刷新统计</button>
+        </div>
+
+        <div id="dashboard-grid" class="dashboard-grid"></div>
+
+        <div class="stats-table-wrap dashboard-table-wrap">
+          <table class="stats-table" id="dashboard-latency-table">
+            <tbody>
+              <tr>
+                <td>检索阶段时延</td>
+                <td>等待加载...</td>
+              </tr>
+            </tbody>
+          </table>
+        </div>
+
+        <section class="dashboard-log-panel">
+          <div class="dashboard-log-head">启动一致性检查日志（最近20条）</div>
+          <pre id="dashboard-startup-logs" class="dashboard-log-window">等待加载...</pre>
+        </section>
+      </div>
+    </section>
+
+    <section id="panel-benchmark" class="panel tab-panel" role="tabpanel" aria-labelledby="tab-benchmark">
+      <div class="stats-layout">
+        <div class="stats-toolbar dashboard-toolbar">
+          <div>
+            <strong class="panel-heading">性能基准测试</strong>
+            <div class="dashboard-meta"><span id="benchmark-last-run">从未运行</span>&nbsp;&nbsp;<span id="bm-timer" class="bm-timer"></span></div>
+          </div>
+        </div>
+
+        <div class="benchmark-controls-wrap">
+          <div class="benchmark-section-label">测试项目</div>
+          <div class="benchmark-modules">
+            <label class="benchmark-checkbox-label">
+              <input type="checkbox" id="bm-rag" checked />
+               RAG Q&amp;A
+            </label>
+            <label class="benchmark-checkbox-label">
+              <input type="checkbox" id="bm-agent" />
+              LLM Agent
+            </label>
+          </div>
+          <div class="benchmark-section-label" style="margin-top:8px">每类Query条数（短/中/长）</div>
+          <div class="benchmark-count-row">
+            <label><input type="radio" name="bm-count" value="3" checked /> 3</label>
+            <label><input type="radio" name="bm-count" value="5" /> 5</label>
+            <label><input type="radio" name="bm-count" value="10" /> 10</label>
+            <label><input type="radio" name="bm-count" value="20" /> 20</label>
+          </div>
+          <div class="benchmark-run-row">
+            <button id="bm-run-btn">▶ 开始测试</button>
+            <button id="bm-abort-btn" class="ghost" disabled>⏸ 中止测试</button>
+          </div>
+        </div>
+
+        <div id="bm-progress-wrap" class="bm-progress-wrap hidden">
+          <div class="bm-progress-track"><div id="bm-progress-fill" class="bm-progress-fill"></div></div>
+          <div id="bm-progress-text" class="bm-progress-text">准备中...</div>
+        </div>
+
+        <div id="bm-log-box" class="bm-log-box hidden"></div>
+
+        <div class="bm-testset-selector-wrap">
+          <label for="bm-testset-select" class="benchmark-section-label" style="margin-bottom:4px;display:block">查看测试集</label>
+          <select id="bm-testset-select" class="bm-testset-select">
+            <option value="rag/short">RAG / 短查询</option>
+            <option value="rag/medium">RAG / 中查询</option>
+            <option value="rag/long">RAG / 长查询</option>
+            <option value="agent/short">Agent / 短查询</option>
+            <option value="agent/medium">Agent / 中查询</option>
+            <option value="agent/long">Agent / 长查询</option>
+          </select>
+        </div>
+
+        <div class="stats-table-wrap">
+          <table class="stats-table" id="bm-history-table">
+            <tbody>
+              <tr><td colspan="6" style="text-align:center;color:#7a7f6f">运行测试后查看历史对比数据</td></tr>
+            </tbody>
+          </table>
+        </div>
+      </div>
+    </section>
+  </main>
+
+  <div id="warnings-modal" class="card-modal hidden" aria-hidden="true">
+    <div class="card-modal-backdrop" data-role="warnings-backdrop"></div>
+    <div class="card-modal-panel" role="dialog" aria-modal="true" aria-label="系统告警">
+      <div class="card-modal-head">
+        <h3>系统告警</h3>
+        <div class="dashboard-meta" id="warnings-modal-timestamp"></div>
+      </div>
+      <ul id="warnings-modal-list" class="warnings-list"></ul>
+      <div class="card-modal-actions">
+        <button id="warnings-clear-btn">清除告警</button>
+        <button id="warnings-close-btn" class="ghost">关闭</button>
+      </div>
+    </div>
+  </div>
+
+  <div id="missing-queries-modal" class="card-modal hidden" aria-hidden="true">
+    <div class="card-modal-backdrop" data-role="missing-queries-backdrop"></div>
+    <div class="card-modal-panel" role="dialog" aria-modal="true" aria-label="Missing Queries 最近30天">
+      <div class="card-modal-head">
+        <h3>Missing Queries 最近30天</h3>
+        <div class="dashboard-meta" id="missing-queries-modal-meta"></div>
+      </div>
+      <label>来源筛选
+        <select id="missing-queries-source">
+          <option value="all">全部</option>
+          <option value="agent">agent</option>
+          <option value="rag_qa">rag_qa</option>
+          <option value="rag_qa_stream">rag_qa_stream</option>
+        </select>
+      </label>
+      <ul id="missing-queries-modal-list" class="warnings-list"></ul>
+      <div class="card-modal-actions">
+        <button id="missing-queries-export-btn" class="ghost">导出 CSV</button>
+        <button id="missing-queries-clear-btn">清除列表</button>
+        <button id="missing-queries-close-btn" class="ghost">关闭</button>
+      </div>
+    </div>
+  </div>
+
+  <div id="custom-card-modal" class="card-modal hidden" aria-hidden="true">
+    <div class="card-modal-backdrop" data-role="custom-card-backdrop"></div>
+    <div class="card-modal-panel" role="dialog" aria-modal="true" aria-label="配置快捷卡片">
+      <div class="card-modal-head">
+        <h3 id="custom-card-modal-title">配置快捷卡片</h3>
+      </div>
+      <label>名称
+        <input id="custom-card-name" type="text" autocomplete="off" spellcheck="false" placeholder="例如：我的工具" />
+      </label>
+      <label>链接 URL
+        <input id="custom-card-url" type="text" autocomplete="off" spellcheck="false" placeholder="例如：https://example.com" />
+      </label>
+      <label>图片（可选）
+        <div class="card-image-row">
+          <input id="custom-card-image" type="text" autocomplete="off" spellcheck="false" placeholder="/static/custom_cards/xxx.png" />
+          <button id="custom-card-upload" type="button" class="ghost">上传图片</button>
+          <input id="custom-card-upload-input" type="file" accept="image/*" hidden />
+        </div>
+      </label>
+      <div id="crop-wrap" class="crop-wrap hidden">
+        <canvas id="crop-canvas" class="crop-canvas" width="200" height="200"></canvas>
+        <div class="crop-controls">
+          <button id="crop-zoom-out" type="button" class="ghost crop-btn">－</button>
+          <span class="crop-hint">拖动图片调整位置，滚轮缩放</span>
+          <button id="crop-zoom-in" type="button" class="ghost crop-btn">＋</button>
+          <button id="crop-apply-btn" type="button" class="crop-btn">应用裁剪</button>
+        </div>
+      </div>
+      <div id="custom-card-preview" class="card-image-preview">无预览</div>
+      <div class="card-modal-actions">
+        <button id="custom-card-save" type="button">保存</button>
+        <button id="custom-card-cancel" type="button" class="ghost">取消</button>
+      </div>
+    </div>
+  </div>
+
+  <script id="custom-cards-data" type="application/json">{{ custom_cards_json | safe }}</script>
+  <script id="dashboard-prefill-data" type="application/json">{{ dashboard_prefill_json | safe }}</script>
+
+  <div id="usage-edit-modal" class="card-modal hidden" aria-hidden="true">
+    <div class="card-modal-backdrop" data-role="usage-edit-backdrop"></div>
+    <div class="card-modal-panel" role="dialog" aria-modal="true" aria-label="调整本月用量">
+      <div class="card-modal-head">
+        <h3>调整本月用量</h3>
+      </div>
+      <label>本月 Web Search 调用数
+        <input id="usage-web-input" type="number" min="0" step="1" placeholder="请输入数值" />
+      </label>
+      <label>本月 DeepSeek 调用数
+        <input id="usage-deepseek-input" type="number" min="0" step="1" placeholder="请输入数值" />
+      </label>
+      <p class="usage-modal-hint">直接设置本月已使用量（绝对值，不是增量）</p>
+      <div class="card-modal-actions">
+        <button id="usage-save-btn" type="button">保存</button>
+        <button id="usage-cancel-btn" type="button" class="ghost">取消</button>
+      </div>
+    </div>
+  </div>
+
+  <script src="/static/app.js"></script>
+</body>
+</html>
