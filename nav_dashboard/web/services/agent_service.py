@@ -63,6 +63,7 @@ from __future__ import annotations
 
 import json
 import importlib.util
+import math
 import os
 import re
 import sys
@@ -104,8 +105,15 @@ except Exception as exc:  # noqa: BLE001
 
 try:
     sys.path.insert(0, str(_WORKSPACE_ROOT / "library_tracker"))
-    from web.services.library_graph import expand_library_query
-    _media_graph_expand = expand_library_query
+    library_graph_path = _WORKSPACE_ROOT / "library_tracker" / "web" / "services" / "library_graph.py"
+    media_spec = importlib.util.spec_from_file_location("_library_tracker_graph", library_graph_path)
+    if media_spec is None or media_spec.loader is None:
+        raise RuntimeError(f"failed to load spec for {library_graph_path}")
+    media_module = importlib.util.module_from_spec(media_spec)
+    media_spec.loader.exec_module(media_module)
+    _media_graph_expand = getattr(media_module, "expand_library_query", None)
+    if _media_graph_expand is None:
+        raise AttributeError("expand_library_query not found in library_graph.py")
 except Exception as exc:  # noqa: BLE001
     _GRAPH_IMPORT_ERROR = exc
 
@@ -130,7 +138,7 @@ DEBUG_DIR = SESSIONS_DIR / "debug_data"
 MEMORY_MAX_TURNS = 3
 AGENT_METRICS_FILE = DATA_DIR / "agent_metrics.json"
 AGENT_METRICS_MAX = 20
-_LOCK = threading.Lock()
+_LOCK = threading.RLock()
 
 TOOL_QUERY_DOC_RAG = "query_document_rag"
 TOOL_QUERY_MEDIA = "query_media_record"
@@ -138,11 +146,29 @@ TOOL_SEARCH_WEB = "search_web"
 TOOL_EXPAND_DOC_QUERY = "expand_document_query"
 TOOL_EXPAND_MEDIA_QUERY = "expand_media_query"
 
+QUERY_TYPE_TECH = "TECH_QUERY"
+QUERY_TYPE_MEDIA = "MEDIA_QUERY"
+QUERY_TYPE_MIXED = "MIXED_QUERY"
+QUERY_TYPE_GENERAL = "GENERAL_QUERY"
+CLASSIFIER_LABEL_MEDIA = "MEDIA"
+CLASSIFIER_LABEL_TECH = "TECH"
+CLASSIFIER_LABEL_OTHER = "OTHER"
+TECH_SPACE_PREFIXES = (
+    "ai-governance/",
+    "career-learning/",
+    "cognition-method/",
+    "examples/",
+    "industry-tech/",
+    "science/",
+)
+
 TOOL_NAMES = [TOOL_QUERY_DOC_RAG, TOOL_QUERY_MEDIA, TOOL_SEARCH_WEB, TOOL_EXPAND_DOC_QUERY, TOOL_EXPAND_MEDIA_QUERY]
 DOC_SCORE_THRESHOLD = 0.45
 WEB_SCORE_THRESHOLD = 0.5
 MEDIA_KEYWORD_SCORE_THRESHOLD = float(os.getenv("NAV_DASHBOARD_MEDIA_KEYWORD_SCORE_THRESHOLD", "0.2"))
 MEDIA_VECTOR_SCORE_THRESHOLD = float(os.getenv("NAV_DASHBOARD_MEDIA_VECTOR_SCORE_THRESHOLD", "0.35"))
+TECH_QUERY_DOC_SIM_THRESHOLD = float(os.getenv("NAV_DASHBOARD_TECH_QUERY_DOC_SIM_THRESHOLD", "0.38"))
+MEDIA_KEYWORD_BONUS_WEIGHT = float(os.getenv("NAV_DASHBOARD_MEDIA_KEYWORD_BONUS_WEIGHT", "0.05"))
 LOCAL_TOP_K_DOC = 3
 LOCAL_TOP_K_MEDIA = 3
 HYBRID_TOP_K_DOC = 3
@@ -164,6 +190,40 @@ SHORT_QUERY_DOC_VECTOR_TOP_N_DELTA = int(os.getenv("NAV_DASHBOARD_SHORT_DOC_VECT
 LONG_QUERY_DOC_VECTOR_TOP_N_DELTA = int(os.getenv("NAV_DASHBOARD_LONG_DOC_VECTOR_TOP_N_DELTA", "-4") or "-4")
 SHORT_QUERY_LIMIT_DELTA = int(os.getenv("NAV_DASHBOARD_SHORT_TOOL_LIMIT_DELTA", "1") or "1")
 LONG_QUERY_LIMIT_DELTA = int(os.getenv("NAV_DASHBOARD_LONG_TOOL_LIMIT_DELTA", "-1") or "-1")
+_MEDIA_GRAPH_CACHE: dict[str, Any] = {"mtime": None, "degrees": {}}
+
+
+def _is_doc_graph_available() -> bool:
+    return _doc_graph_expand is not None
+
+
+def _is_media_graph_available() -> bool:
+    return _media_graph_expand is not None
+
+
+def _allowed_tool_names(search_mode: str) -> list[str]:
+    normalized_mode = _normalize_search_mode(search_mode)
+    allowed = [TOOL_QUERY_DOC_RAG, TOOL_QUERY_MEDIA]
+    if normalized_mode == "hybrid":
+        allowed.append(TOOL_SEARCH_WEB)
+    if _is_doc_graph_available():
+        allowed.append(TOOL_EXPAND_DOC_QUERY)
+    if _is_media_graph_available():
+        allowed.append(TOOL_EXPAND_MEDIA_QUERY)
+    return allowed
+
+
+def _build_tool_prompt_lines(search_mode: str) -> str:
+    lines = [
+        f"- {TOOL_QUERY_DOC_RAG}: 查询RAG文档知识库",
+        f"- {TOOL_QUERY_MEDIA}: 查询书影音游记录",
+    ]
+    normalized_mode = _normalize_search_mode(search_mode)
+    if normalized_mode == "hybrid":
+        lines.append(f"- {TOOL_SEARCH_WEB}: 联网搜索最新信息")
+    if _is_doc_graph_available():
+        lines.append(f"- {TOOL_EXPAND_DOC_QUERY}: 使用知识图谱扩展文档查询（可获取相关概念）")
+    return "\n".join(lines)
 
 
 def _approx_tokens(text: str) -> int:
@@ -223,6 +283,10 @@ def _write_debug_record(session_id: str, record: dict[str, Any]) -> None:
         return
 
 
+def _new_ephemeral_session_id() -> str:
+    return f"benchmark_{uuid4()}"
+
+
 # ─── Agent round metrics ──────────────────────────────────────────────────────
 
 def _load_agent_metrics() -> list[dict[str, Any]]:
@@ -251,7 +315,9 @@ def _save_agent_metrics(rows: list[dict[str, Any]]) -> None:
 def record_agent_metrics(
     *,
     query_profile: str,
-    web_cache_hit: int,
+    rag_used: int,
+    media_used: int,
+    web_used: int,
     no_context: int,
     doc_top1_score: float | None,
     doc_top1_score_before_rerank: float | None,
@@ -264,7 +330,9 @@ def record_agent_metrics(
     row: dict[str, Any] = {
         "ts": datetime.now().isoformat(timespec="seconds"),
         "query_profile": str(query_profile or "medium"),
-        "web_cache_hit": int(web_cache_hit or 0),
+        "rag_used": int(rag_used or 0),
+        "media_used": int(media_used or 0),
+        "web_used": int(web_used or 0),
         "no_context": int(no_context or 0),
         "doc_top1_score": round(float(doc_top1_score), 4) if doc_top1_score is not None else None,
         "doc_top1_score_before_rerank": round(float(doc_top1_score_before_rerank), 4) if doc_top1_score_before_rerank is not None else None,
@@ -451,35 +519,57 @@ def _save_quota_history(history: dict[str, Any]) -> None:
     QUOTA_HISTORY_FILE.write_text(json.dumps(history, ensure_ascii=False, indent=2), encoding="utf-8")
 
 
+def _set_monthly_quota_usage(*, web_search: int | None = None, deepseek: int | None = None) -> dict[str, int]:
+    with _LOCK:
+        history = _load_quota_history()
+        months = history.get("months") if isinstance(history.get("months"), dict) else {}
+        month_key = _current_month()
+        current = months.get(month_key) if isinstance(months.get(month_key), dict) else {}
+        next_row = {
+            "web_search": int(current.get("web_search", 0) or 0),
+            "deepseek": int(current.get("deepseek", 0) or 0),
+        }
+        if web_search is not None:
+            next_row["web_search"] = max(0, int(web_search))
+        if deepseek is not None:
+            next_row["deepseek"] = max(0, int(deepseek))
+        months[month_key] = next_row
+        history["months"] = months
+        _save_quota_history(history)
+        return next_row
+
+
 def _record_quota_usage(*, web_search_delta: int = 0, deepseek_delta: int = 0) -> None:
     web_inc = int(web_search_delta or 0)
     deepseek_inc = int(deepseek_delta or 0)
     if web_inc <= 0 and deepseek_inc <= 0:
         return
-    history = _load_quota_history()
-    months = history.get("months") if isinstance(history.get("months"), dict) else {}
-    month_key = _current_month()
-    current = months.get(month_key) if isinstance(months.get(month_key), dict) else {}
-    current_web = int(current.get("web_search", 0) or 0)
-    current_deepseek = int(current.get("deepseek", 0) or 0)
-    months[month_key] = {
-        "web_search": current_web + max(0, web_inc),
-        "deepseek": current_deepseek + max(0, deepseek_inc),
-    }
-    history["months"] = months
-    _save_quota_history(history)
+    with _LOCK:
+        history = _load_quota_history()
+        months = history.get("months") if isinstance(history.get("months"), dict) else {}
+        month_key = _current_month()
+        current = months.get(month_key) if isinstance(months.get(month_key), dict) else {}
+        current_web = int(current.get("web_search", 0) or 0)
+        current_deepseek = int(current.get("deepseek", 0) or 0)
+        months[month_key] = {
+            "web_search": current_web + max(0, web_inc),
+            "deepseek": current_deepseek + max(0, deepseek_inc),
+        }
+        history["months"] = months
+        _save_quota_history(history)
 
 
 def _increment_quota_state(state: dict[str, Any], *, web_search_delta: int = 0, deepseek_delta: int = 0) -> None:
     web_inc = int(web_search_delta or 0)
     deepseek_inc = int(deepseek_delta or 0)
-    if web_inc > 0:
-        state["web_search"] = int(state.get("web_search", 0) or 0) + web_inc
-    if deepseek_inc > 0:
-        state["deepseek"] = int(state.get("deepseek", 0) or 0) + deepseek_inc
-    if web_inc > 0 or deepseek_inc > 0:
-        _save_quota_state(state)
-        _record_quota_usage(web_search_delta=web_inc, deepseek_delta=deepseek_inc)
+    with _LOCK:
+        if web_inc > 0:
+            state["web_search"] = int(state.get("web_search", 0) or 0) + web_inc
+        if deepseek_inc > 0:
+            state["deepseek"] = int(state.get("deepseek", 0) or 0) + deepseek_inc
+        if web_inc > 0 or deepseek_inc > 0:
+            _save_quota_state(state)
+            _record_quota_usage(web_search_delta=web_inc, deepseek_delta=deepseek_inc)
 
 
 def _now_iso() -> str:
@@ -773,6 +863,186 @@ def _normalize_search_mode(search_mode: str) -> str:
     return "local_only"
 
 
+def _normalize_query_type(value: str) -> str:
+    raw = str(value or "").strip().upper()
+    if raw in {QUERY_TYPE_TECH, QUERY_TYPE_MEDIA, QUERY_TYPE_MIXED, QUERY_TYPE_GENERAL}:
+        return raw
+    return QUERY_TYPE_GENERAL
+
+
+def _parse_classifier_label(value: str) -> str:
+    text = str(value or "").strip().upper()
+    if text.startswith(CLASSIFIER_LABEL_MEDIA):
+        return CLASSIFIER_LABEL_MEDIA
+    if text.startswith(CLASSIFIER_LABEL_TECH):
+        return CLASSIFIER_LABEL_TECH
+    if text.startswith(CLASSIFIER_LABEL_OTHER):
+        return CLASSIFIER_LABEL_OTHER
+    if text in {"ANIME", "MOVIE", "FILM", "BOOK", "GAME", "MANGA", "NOVEL"}:
+        return CLASSIFIER_LABEL_MEDIA
+    if CLASSIFIER_LABEL_MEDIA in text:
+        return CLASSIFIER_LABEL_MEDIA
+    if CLASSIFIER_LABEL_TECH in text:
+        return CLASSIFIER_LABEL_TECH
+    return CLASSIFIER_LABEL_OTHER
+
+
+def _classifier_token_count(query: str) -> int:
+    text = str(query or "").strip().lower()
+    if not text:
+        return 0
+    return len(re.findall(r"[a-z0-9_]+|[\u4e00-\u9fff]{2,}", text))
+
+
+def _media_graph_degrees() -> dict[str, int]:
+    graph_path = _WORKSPACE_ROOT / "library_tracker" / "data" / "vector_db" / "library_knowledge_graph.json"
+    if not graph_path.exists():
+        return {}
+    try:
+        mtime = graph_path.stat().st_mtime
+    except Exception:
+        return {}
+
+    cached_mtime = _MEDIA_GRAPH_CACHE.get("mtime")
+    cached_degrees = _MEDIA_GRAPH_CACHE.get("degrees") if isinstance(_MEDIA_GRAPH_CACHE.get("degrees"), dict) else {}
+    if cached_mtime == mtime and cached_degrees:
+        return cached_degrees
+
+    try:
+        payload = json.loads(graph_path.read_text(encoding="utf-8"))
+    except Exception:
+        return {}
+
+    edges = payload.get("edges", []) if isinstance(payload, dict) and isinstance(payload.get("edges"), list) else []
+    degrees: dict[str, int] = {}
+    for edge in edges:
+        if not isinstance(edge, dict):
+            continue
+        src = str(edge.get("src") or "").strip()
+        dst = str(edge.get("dst") or "").strip()
+        if src.startswith("item:"):
+            item_id = src.split(":", 1)[1]
+            degrees[item_id] = degrees.get(item_id, 0) + 1
+        if dst.startswith("item:"):
+            item_id = dst.split(":", 1)[1]
+            degrees[item_id] = degrees.get(item_id, 0) + 1
+
+    _MEDIA_GRAPH_CACHE["mtime"] = mtime
+    _MEDIA_GRAPH_CACHE["degrees"] = degrees
+    return degrees
+
+
+def _classify_media_query_with_llm(query: str, quota_state: dict[str, Any]) -> dict[str, Any]:
+    prompt = (
+        "You are a classifier.\n\n"
+        "Decide if the query asks about a specific media item "
+        "(movie, anime, book, game), a technical/software topic, or something else.\n\n"
+        "Reply with ONLY one token:\n\n"
+        "MEDIA\n"
+        "TECH\n"
+        "OTHER\n\n"
+        f"Query:\n{query}"
+    )
+    try:
+        raw = _llm_chat(
+            messages=[{"role": "user", "content": prompt}],
+            backend="local",
+            quota_state=quota_state,
+            count_quota=False,
+        )
+        parsed = _parse_classifier_label(raw)
+        return {
+            "available": True,
+            "answer": str(raw or "").strip(),
+            "label": parsed,
+            "is_media": parsed == CLASSIFIER_LABEL_MEDIA,
+            "parsed": parsed,
+        }
+    except Exception as exc:  # noqa: BLE001
+        return {"available": False, "answer": str(exc), "label": CLASSIFIER_LABEL_OTHER, "is_media": False, "parsed": None}
+
+
+def _estimate_doc_similarity(query: str, query_profile: dict[str, Any]) -> dict[str, Any]:
+    top_k = max(3, min(6, int(query_profile.get("doc_vector_top_n", DOC_VECTOR_TOP_N) or DOC_VECTOR_TOP_N)))
+    try:
+        payload = _http_json(
+            "GET",
+            f"{AI_SUMMARY_BASE}/api/preview/search/vector?" + urlparse.urlencode({"q": query, "top_k": top_k}),
+            timeout=20.0,
+        )
+        rows = payload.get("results", []) if isinstance(payload, dict) else []
+        valid_rows = [row for row in rows if isinstance(row, dict)]
+        tech_rows = [
+            row for row in valid_rows
+            if str(row.get("path", "")).strip().startswith(TECH_SPACE_PREFIXES)
+        ]
+        best_row = max(tech_rows, key=lambda row: _safe_score(row.get("score")), default={})
+        top_score = _safe_score(best_row.get("score"))
+        return {
+            "score": round(top_score, 6),
+            "top_path": str(best_row.get("path", "")).strip(),
+            "count": len(tech_rows),
+            "status": "ok",
+        }
+    except Exception as exc:  # noqa: BLE001
+        return {"score": 0.0, "top_path": "", "count": 0, "status": f"error:{exc}"}
+
+
+def _classify_query_type(query: str, quota_state: dict[str, Any], query_profile: dict[str, Any]) -> dict[str, Any]:
+    extracted_entity = _extract_media_entity(query)
+    llm_media = _classify_media_query_with_llm(query, quota_state)
+    doc_similarity = _estimate_doc_similarity(query, query_profile)
+    tech_score = float(doc_similarity.get("score", 0.0) or 0.0)
+    classifier_label = str(llm_media.get("label") or CLASSIFIER_LABEL_OTHER)
+    media_specific = bool(extracted_entity)
+    query_tokens = _classifier_token_count(query)
+    disable_media_search = (
+        query_tokens > 12
+        and not media_specific
+        and classifier_label != CLASSIFIER_LABEL_MEDIA
+    )
+
+    if media_specific:
+        query_type = QUERY_TYPE_MEDIA
+    elif tech_score >= TECH_QUERY_DOC_SIM_THRESHOLD:
+        query_type = QUERY_TYPE_TECH
+    elif classifier_label == CLASSIFIER_LABEL_TECH:
+        query_type = QUERY_TYPE_TECH
+    elif classifier_label == CLASSIFIER_LABEL_MEDIA and not disable_media_search:
+        query_type = QUERY_TYPE_MEDIA
+    else:
+        query_type = QUERY_TYPE_GENERAL
+
+    return {
+        "query_type": query_type,
+        "media_entity": extracted_entity,
+        "media_specific": media_specific,
+        "llm_media": llm_media,
+        "doc_similarity": doc_similarity,
+        "tech_score": round(tech_score, 6),
+        "tech_threshold": TECH_QUERY_DOC_SIM_THRESHOLD,
+        "query_tokens": query_tokens,
+        "disable_media_search": disable_media_search,
+    }
+
+
+def _build_tool_plan_from_query_type(question: str, query_type: str, search_mode: str) -> list[PlannedToolCall]:
+    normalized_type = _normalize_query_type(query_type)
+    normalized_mode = _normalize_search_mode(search_mode)
+    if normalized_type == QUERY_TYPE_MEDIA:
+        return [PlannedToolCall(name=TOOL_QUERY_MEDIA, query=question)]
+    if normalized_type == QUERY_TYPE_MIXED:
+        return [
+            PlannedToolCall(name=TOOL_QUERY_DOC_RAG, query=question),
+            PlannedToolCall(name=TOOL_QUERY_MEDIA, query=question),
+        ]
+    if normalized_type == QUERY_TYPE_TECH:
+        return [PlannedToolCall(name=TOOL_QUERY_DOC_RAG, query=question)]
+    if normalized_mode == "hybrid":
+        return [PlannedToolCall(name=TOOL_SEARCH_WEB, query=question)]
+    return [PlannedToolCall(name=TOOL_QUERY_DOC_RAG, query=question)]
+
+
 def _score_value(row: dict[str, Any]) -> float | None:
     value = row.get("score", None)
     if isinstance(value, (int, float)):
@@ -810,6 +1080,41 @@ def _media_threshold_selector(row: dict[str, Any], keyword_threshold: float, vec
     if mode == "vector":
         return float(vector_threshold)
     return float(keyword_threshold)
+
+
+def _select_media_vector_query(
+    original_query: str,
+    expanded_query: str,
+    extracted_entity: str,
+    rewritten_query: str,
+) -> str:
+    expanded = str(expanded_query or "").strip()
+    original = str(original_query or "").strip()
+    if expanded and expanded != original:
+        return expanded
+    if extracted_entity:
+        return extracted_entity
+    if rewritten_query:
+        return rewritten_query
+    return expanded or original
+
+
+def _log_agent_media_miss(query: str, query_profile: dict[str, Any]) -> None:
+    if _log_no_context_query is None:
+        return
+    try:
+        media_threshold = float(
+            query_profile.get("media_vector_score_threshold", MEDIA_VECTOR_SCORE_THRESHOLD)
+            or MEDIA_VECTOR_SCORE_THRESHOLD
+        )
+        _log_no_context_query(
+            query,
+            source="agent_media",
+            top1_score=None,
+            threshold=media_threshold,
+        )
+    except Exception:
+        pass
 
 
 def _apply_reference_limits(tool_results: list[ToolExecution], search_mode: str, query_profile: dict[str, Any]) -> list[ToolExecution]:
@@ -882,10 +1187,12 @@ def _apply_reference_limits(tool_results: list[ToolExecution], search_mode: str,
     return shaped
 
 
-def _parse_planned_tools(text: str, question: str) -> list[PlannedToolCall]:
+def _parse_planned_tools(text: str, question: str, allowed_tool_names: list[str] | None = None) -> list[PlannedToolCall]:
     raw = (text or "").strip()
     if not raw:
         raw = "{}"
+
+    allowed_names = set(allowed_tool_names or TOOL_NAMES)
 
     blob = raw
     fenced = re.search(r"```(?:json)?\s*(\{[\s\S]*?\})\s*```", raw)
@@ -908,7 +1215,7 @@ def _parse_planned_tools(text: str, question: str) -> list[PlannedToolCall]:
             if not isinstance(item, dict):
                 continue
             name = str(item.get("name", "")).strip()
-            if name not in TOOL_NAMES:
+            if name not in allowed_names:
                 continue
             args = item.get("args", {})
             query = ""
@@ -1216,11 +1523,6 @@ def _extract_media_entity(query: str) -> str:
         if title:
             return title
 
-    # If no explicit pattern, keep a short prefix as candidate entity for long Chinese query.
-    compact = re.sub(r"\s+", "", normalized)
-    if len(compact) >= 4:
-        return compact[:12]
-
     return ""
 
 
@@ -1259,83 +1561,107 @@ def _tool_query_media_record(query: str, query_profile: dict[str, Any]) -> ToolE
     rewritten_query = _rewrite_media_query(query)
     extracted_entity = _extract_media_entity(query)
 
-    results: list[dict[str, Any]] = []
-    used_mode = "keyword"
-    used_query = rewritten_query
+    graph_tool = _tool_expand_media_query(query) if _is_media_graph_available() else ToolExecution(
+        tool=TOOL_EXPAND_MEDIA_QUERY,
+        status="skipped",
+        summary="媒体图谱扩展未启用",
+        data={"original": query, "expanded": rewritten_query or query, "constraints": {}},
+    )
+    graph_data = graph_tool.data if isinstance(graph_tool.data, dict) else {}
+    vector_query = _select_media_vector_query(
+        query,
+        str(graph_data.get("expanded") or ""),
+        extracted_entity,
+        rewritten_query,
+    )
+    filters = {
+        str(key): [str(value).strip() for value in values if str(value).strip()]
+        for key, values in (graph_data.get("constraints") or {}).items()
+        if isinstance(values, list)
+    }
 
-    # Keyword stage prefers extracted entity to avoid generic terms (e.g. "评价") skewing ranking.
     keyword_queries: list[str] = []
     if extracted_entity:
         keyword_queries.append(extracted_entity)
     if rewritten_query and rewritten_query not in keyword_queries:
         keyword_queries.append(rewritten_query)
-    if query and query not in keyword_queries:
-        keyword_queries.append(query)
 
+    keyword_rows: list[dict[str, Any]] = []
     for q_item in keyword_queries:
         payload = _http_json(
             "POST",
             f"{LIBRARY_TRACKER_BASE}/api/library/search",
-            payload={"query": q_item, "mode": "keyword", "limit": 8, "filters": {}},
+            payload={"query": q_item, "mode": "keyword", "limit": 8, "filters": filters},
         )
         current = payload.get("results", []) if isinstance(payload, dict) else []
         if current:
-            results = current
-            used_query = q_item
+            keyword_rows = [row for row in current if isinstance(row, dict)]
             break
 
-    # Run vector retrieval when keyword is empty or sparse to improve recall on long Chinese questions.
-    vector_query = extracted_entity or rewritten_query or query
-    need_vector = len(results) < 3
-    if need_vector:
-        vec_payload = _http_json(
-            "POST",
-            f"{LIBRARY_TRACKER_BASE}/api/library/search",
-            payload={"query": vector_query, "mode": "vector", "limit": 8, "filters": {}},
-        )
-        vector_rows = vec_payload.get("results", []) if isinstance(vec_payload, dict) else []
+    vec_payload = _http_json(
+        "POST",
+        f"{LIBRARY_TRACKER_BASE}/api/library/search",
+        payload={"query": vector_query, "mode": "vector", "limit": 8, "filters": filters},
+    )
+    vector_rows = [row for row in (vec_payload.get("results", []) if isinstance(vec_payload, dict) else []) if isinstance(row, dict)]
+    graph_degrees = _media_graph_degrees()
 
-        if results:
-            # Merge keyword + vector by item id, keep stronger score and retrieval mode marker.
-            merged: dict[str, dict[str, Any]] = {}
-            for item in results:
-                if not isinstance(item, dict):
-                    continue
-                key = str(item.get("id") or item.get("title") or "").strip()
-                if key:
-                    merged[key] = dict(item)
-                    merged[key]["retrieval_mode"] = "keyword"
-            for item in vector_rows:
-                if not isinstance(item, dict):
-                    continue
-                key = str(item.get("id") or item.get("title") or "").strip()
-                if not key:
-                    continue
-                current = merged.get(key)
-                if current is None:
-                    merged[key] = dict(item)
-                    merged[key]["retrieval_mode"] = "vector"
-                    continue
-                current_score = _safe_score(current.get("score"))
-                incoming_score = _safe_score(item.get("score"))
-                if incoming_score > current_score:
-                    merged[key] = dict(item)
-                    merged[key]["retrieval_mode"] = "hybrid"
-            results = list(merged.values())[:8]
-            used_mode = "hybrid"
-            used_query = f"keyword:{used_query} | vector:{vector_query}"
-        else:
-            results = vector_rows
-            used_mode = "vector"
-            used_query = vector_query
+    merged: dict[str, dict[str, Any]] = {}
+    for item in vector_rows:
+        key = str(item.get("id") or item.get("title") or "").strip()
+        if not key:
+            continue
+        merged[key] = {
+            **dict(item),
+            "semantic_score": _safe_score(item.get("score")),
+            "keyword_score": 0.0,
+            "retrieval_mode": "vector",
+        }
+
+    for item in keyword_rows:
+        key = str(item.get("id") or item.get("title") or "").strip()
+        if not key:
+            continue
+        keyword_score = _safe_score(item.get("score"))
+        current = merged.get(key)
+        if current is None:
+            if vector_rows and not extracted_entity:
+                continue
+            merged[key] = {
+                **dict(item),
+                "semantic_score": 0.0,
+                "keyword_score": keyword_score,
+                "retrieval_mode": "keyword",
+            }
+            continue
+        if keyword_score > _safe_score(current.get("keyword_score")):
+            current.update(dict(item))
+            current["keyword_score"] = keyword_score
+        if _safe_score(current.get("semantic_score")) > 0:
+            current["retrieval_mode"] = "hybrid"
+
+    used_mode = "vector"
+    if vector_rows and keyword_rows:
+        used_mode = "hybrid"
+    elif keyword_rows and not vector_rows:
+        used_mode = "keyword"
+
+    max_keyword_score = max((_safe_score(item.get("keyword_score")) for item in merged.values()), default=0.0)
+    max_graph_prior = max((math.log(graph_degrees.get(str(item.get("id") or "").strip(), 0) + 1.0) for item in merged.values()), default=0.0)
 
     compact: list[dict[str, Any]] = []
-    for item in results:
+    for item in merged.values():
         if not isinstance(item, dict):
             continue
         title = str(item.get("title") or "")
-        base_score = _safe_score(item.get("score"))
-        score = base_score + _media_title_match_boost(title, extracted_entity or rewritten_query or query)
+        semantic_score = _safe_score(item.get("semantic_score"))
+        keyword_score = _safe_score(item.get("keyword_score"))
+        item_id = str(item.get("id") or "").strip()
+        graph_prior_raw = math.log(graph_degrees.get(item_id, 0) + 1.0)
+        keyword_norm = (keyword_score / max_keyword_score) if max_keyword_score > 0 else 0.0
+        graph_prior = (graph_prior_raw / max_graph_prior) if max_graph_prior > 0 else 0.0
+        title_boost = _media_title_match_boost(title, extracted_entity or rewritten_query or query)
+        score = (0.85 * semantic_score) + (0.10 * keyword_norm) + (0.05 * graph_prior) + title_boost
         compact.append(
             {
                 "id": item.get("id"),
@@ -1345,18 +1671,38 @@ def _tool_query_media_record(query: str, query_profile: dict[str, Any]) -> ToolE
                 "rating": item.get("rating"),
                 "date": item.get("date"),
                 "score": round(score, 6),
+                "semantic_score": round(semantic_score, 6),
+                "keyword_score": round(keyword_score, 6),
+                "keyword_norm": round(keyword_norm, 6),
+                "graph_prior": round(graph_prior, 6),
+                "graph_prior_raw": round(graph_prior_raw, 6),
+                "title_boost": round(title_boost, 6),
                 "url": item.get("url"),
-                "retrieval_mode": used_mode,
-                "retrieval_query": used_query,
+                "retrieval_mode": str(item.get("retrieval_mode") or used_mode),
+                "retrieval_query": vector_query,
                 "review": (str(item.get("review", ""))[:140] + "...") if str(item.get("review", "")) else "",
             }
         )
     compact.sort(key=lambda x: _safe_score(x.get("score")), reverse=True)
+    used_query = f"vector:{vector_query}"
+    if keyword_queries:
+        used_query += f" | keyword:{' || '.join(keyword_queries)}"
+    if filters:
+        used_query += f" | filters:{json.dumps(filters, ensure_ascii=False)}"
     return ToolExecution(
         tool=TOOL_QUERY_MEDIA,
         status="ok",
         summary=f"命中 {len(compact)} 条媒体记录（mode={used_mode}, query={used_query}）",
-        data={"results": compact, "query_profile": query_profile},
+        data={
+            "results": compact,
+            "query_profile": query_profile,
+            "graph_expansion": {
+                "status": graph_tool.status,
+                "summary": graph_tool.summary,
+                "expanded_query": vector_query,
+                "constraints": filters,
+            },
+        },
     )
 
 
@@ -1535,56 +1881,11 @@ def _plan_tool_calls(
     backend: str,
     quota_state: dict[str, Any],
     search_mode: str,
-) -> list[PlannedToolCall]:
-    prompt = (
-        "你是一个智能个人助理的工具规划器。"
-        "你可以调用以下工具：\n"
-        "- query_document_rag: 查询RAG文档知识库\n"
-        "- query_media_record: 查询书影音游记录\n"
-        "- search_web: 联网搜索最新信息\n"
-        "- expand_document_query: 使用知识图谱扩展文档查询（可获取相关概念）\n"
-        "- expand_media_query: 使用知识图谱扩展媒体查询（可获取相关概念）\n"
-        "要求：只做单轮规划，一次输出全部需要调用的工具列表。"
-        "仅返回JSON，不要输出解释。JSON格式："
-        "{\"tools\":[{\"name\":\"query_document_rag\",\"args\":{\"query\":\"...\"}}]}"
-    )
-    hist_lines = []
-    for msg in (history or [])[-8:]:
-        role = str(msg.get("role", "")).strip()
-        content = str(msg.get("content", "")).strip()
-        if not content:
-            continue
-        hist_lines.append(f"{role}: {content}")
-    user_block = "\n".join(hist_lines + [f"user: {question}"])
-
-    try:
-        plan_text = _llm_chat(
-            messages=[
-                {"role": "system", "content": prompt},
-                {"role": "user", "content": user_block},
-            ],
-            backend=backend,
-            quota_state=quota_state,
-        )
-    except Exception:
-        plan_text = ""
-
-    planned = _parse_planned_tools(plan_text, question)
-    normalized_mode = _normalize_search_mode(search_mode)
-    if planned:
-        if normalized_mode == "local_only":
-            planned = [x for x in planned if x.name != TOOL_SEARCH_WEB]
-        return planned
-
-    # Always keep a deterministic fallback plan when LLM planner is unavailable.
-    lowered = (question or "").lower()
-    default_tools = [
-        PlannedToolCall(name=TOOL_QUERY_DOC_RAG, query=question),
-        PlannedToolCall(name=TOOL_QUERY_MEDIA, query=question),
-    ]
-    if normalized_mode == "hybrid":
-        default_tools.append(PlannedToolCall(name=TOOL_SEARCH_WEB, query=question))
-    return default_tools
+) -> tuple[list[PlannedToolCall], dict[str, Any]]:
+    query_profile = _resolve_query_profile(question)
+    query_classification = _classify_query_type(question, quota_state, query_profile)
+    planned = _build_tool_plan_from_query_type(question, query_classification.get("query_type", QUERY_TYPE_GENERAL), search_mode)
+    return planned, query_classification
 
 
 def _quota_exceeded(plan: list[PlannedToolCall], backend: str, quota_state: dict[str, Any]) -> list[dict[str, Any]]:
@@ -1816,31 +2117,36 @@ def run_agent_round(
     if not q:
         raise ValueError("question is required")
 
-    sid = (session_id or "").strip()
-    if not sid:
-        sid = str(create_session().get("id", "")).strip()
-    if not sid:
-        raise RuntimeError("failed to create session")
-
-    session = get_session(sid)
-    if session and str(session.get("title", "")).strip() in {"", "新会话"}:
-        session["title"] = _derive_session_title(q)
-        session["updated_at"] = _now_iso()
-        _save_session(session)
     hist = history or []
-    if session and isinstance(session.get("messages"), list):
-        hist = [{"role": str(m.get("role", "")), "content": str(m.get("text", ""))} for m in session.get("messages", [])]
+    session = None
+    sid = (session_id or "").strip()
+    if benchmark_mode:
+        sid = sid or _new_ephemeral_session_id()
+    else:
+        if not sid:
+            sid = str(create_session().get("id", "")).strip()
+        if not sid:
+            raise RuntimeError("failed to create session")
+
+        session = get_session(sid)
+        if session and str(session.get("title", "")).strip() in {"", "新会话"}:
+            session["title"] = _derive_session_title(q)
+            session["updated_at"] = _now_iso()
+            _save_session(session)
+        if session and isinstance(session.get("messages"), list):
+            hist = [{"role": str(m.get("role", "")), "content": str(m.get("text", ""))} for m in session.get("messages", [])]
 
     normalized_search_mode = _normalize_search_mode(search_mode)
     query_profile = _resolve_query_profile(q)
     quota_state = _load_quota_state()
-    planned = _plan_tool_calls(q, hist, backend, quota_state, normalized_search_mode)
+    planned, query_classification = _plan_tool_calls(q, hist, backend, quota_state, normalized_search_mode)
     debug_trace: dict[str, Any] = {
         "timestamp": _now_iso(),
         "session_id": sid,
         "question": q,
         "search_mode": normalized_search_mode,
         "query_profile": query_profile,
+        "query_classification": query_classification,
         "backend": backend,
         "history": hist,
         "planned_tools": [{"name": c.name, "query": c.query} for c in planned],
@@ -1869,7 +2175,8 @@ def run_agent_round(
     else:
         allowed_plan = list(planned)
 
-    append_message(sid, "user", q)
+    if not benchmark_mode:
+        append_message(sid, "user", q)
 
     tool_results: list[ToolExecution] = []
     with ThreadPoolExecutor(max_workers=max(1, len(allowed_plan))) as pool:
@@ -1912,6 +2219,11 @@ def run_agent_round(
         except Exception:
             pass
 
+    media_tool_result = next((r for r in tool_results if r.tool == TOOL_QUERY_MEDIA), None)
+    media_rows = media_tool_result.data.get("results", []) if (media_tool_result and isinstance(media_tool_result.data, dict)) else []
+    if any(call.name == TOOL_QUERY_MEDIA for call in allowed_plan) and not media_rows:
+        _log_agent_media_miss(q, query_profile)
+
     # Quota accounting: only count actual API calls (not cache hits).
     web_calls = sum(
         1 for r in tool_results
@@ -1929,6 +2241,9 @@ def run_agent_round(
         and r.data.get("cache_hit")
         for r in tool_results
     ))
+    _rag_used = int(any(call.name == TOOL_QUERY_DOC_RAG for call in allowed_plan))
+    _media_used = int(any(call.name == TOOL_QUERY_MEDIA for call in allowed_plan))
+    _web_used = int(any(call.name == TOOL_SEARCH_WEB for call in allowed_plan))
 
     if skipped_due_quota:
         for tool_name in skipped_due_quota:
@@ -1938,7 +2253,7 @@ def run_agent_round(
 
     degraded_to_retrieval = False
     degrade_reason = ""
-    memory_context = build_memory_context(sid)
+    memory_context = "" if benchmark_mode else build_memory_context(sid)
     debug_trace["memory_context"] = memory_context
     debug_trace["memory_tokens_est"] = _approx_tokens(memory_context)
     try:
@@ -1965,8 +2280,9 @@ def run_agent_round(
     if references_md:
         final_answer = f"{answer}{references_md}"
 
-    append_message(sid, "assistant", final_answer)
-    _update_memory_for_session(sid)
+    if not benchmark_mode:
+        append_message(sid, "assistant", final_answer)
+        _update_memory_for_session(sid)
     if debug:
         debug_trace["final_answer_tokens_est"] = _approx_tokens(final_answer)
         _write_debug_record(sid, debug_trace)
@@ -1976,7 +2292,9 @@ def run_agent_round(
         try:
             record_agent_metrics(
                 query_profile=str(query_profile.get("profile", "medium") or "medium"),
-                web_cache_hit=_web_cache_hit,
+                rag_used=_rag_used,
+                media_used=_media_used,
+                web_used=_web_used,
                 no_context=_doc_no_context,
                 doc_top1_score=float(_doc_top1_score) if _doc_top1_score is not None else None,
                 doc_top1_score_before_rerank=float(_doc_top1_score_before_rerank) if _doc_top1_score_before_rerank is not None else None,
@@ -1996,6 +2314,7 @@ def run_agent_round(
         "backend": backend,
         "search_mode": normalized_search_mode,
         "query_profile": query_profile,
+        "query_classification": query_classification,
         "degraded_to_retrieval": degraded_to_retrieval,
         "degrade_reason": degrade_reason,
         "planned_tools": [{"name": c.name, "query": c.query} for c in planned],
@@ -2051,21 +2370,25 @@ def run_agent_round_stream(
             yield {"type": "error", "message": "question is required"}
             return
 
-        sid = (session_id or "").strip()
-        if not sid:
-            sid = str(create_session().get("id", "")).strip()
-        if not sid:
-            yield {"type": "error", "message": "failed to create session"}
-            return
-
-        session = get_session(sid)
-        if session and str(session.get("title", "")).strip() in {"", "新会话"}:
-            session["title"] = _derive_session_title(q)
-            session["updated_at"] = _now_iso()
-            _save_session(session)
         hist = history or []
-        if session and isinstance(session.get("messages"), list):
-            hist = [{"role": str(m.get("role", "")), "content": str(m.get("text", ""))} for m in session.get("messages", [])]
+        session = None
+        sid = (session_id or "").strip()
+        if benchmark_mode:
+            sid = sid or _new_ephemeral_session_id()
+        else:
+            if not sid:
+                sid = str(create_session().get("id", "")).strip()
+            if not sid:
+                yield {"type": "error", "message": "failed to create session"}
+                return
+
+            session = get_session(sid)
+            if session and str(session.get("title", "")).strip() in {"", "新会话"}:
+                session["title"] = _derive_session_title(q)
+                session["updated_at"] = _now_iso()
+                _save_session(session)
+            if session and isinstance(session.get("messages"), list):
+                hist = [{"role": str(m.get("role", "")), "content": str(m.get("text", ""))} for m in session.get("messages", [])]
 
         normalized_search_mode = _normalize_search_mode(search_mode)
         query_profile = _resolve_query_profile(q)
@@ -2073,7 +2396,7 @@ def run_agent_round_stream(
 
         yield {"type": "progress", "message": "正在规划工具调用..."}
 
-        planned = _plan_tool_calls(q, hist, backend, quota_state, normalized_search_mode)
+        planned, query_classification = _plan_tool_calls(q, hist, backend, quota_state, normalized_search_mode)
 
         debug_trace: dict[str, Any] = {
             "timestamp": _now_iso(),
@@ -2081,11 +2404,14 @@ def run_agent_round_stream(
             "question": q,
             "search_mode": normalized_search_mode,
             "query_profile": query_profile,
+            "query_classification": query_classification,
             "backend": backend,
             "history": hist,
             "planned_tools": [{"name": c.name, "query": c.query} for c in planned],
             "reranker": {"status": "not_applicable"},
         }
+
+        yield {"type": "progress", "message": f"查询分类：{query_classification.get('query_type', QUERY_TYPE_GENERAL)}"}
 
         exceeded = _quota_exceeded(planned, backend, quota_state)
         if exceeded and not confirm_over_quota and not deny_over_quota:
@@ -2113,7 +2439,8 @@ def run_agent_round_stream(
         tool_names_str = "、".join(c.name for c in allowed_plan) if allowed_plan else "无"
         yield {"type": "progress", "message": f"计划调用工具：{tool_names_str}"}
 
-        append_message(sid, "user", q)
+        if not benchmark_mode:
+            append_message(sid, "user", q)
 
         yield {"type": "progress", "message": f"正在并行执行 {len(allowed_plan)} 个工具..."}
 
@@ -2163,6 +2490,11 @@ def run_agent_round_stream(
             except Exception:
                 pass
 
+        media_tool_result = next((r for r in tool_results if r.tool == TOOL_QUERY_MEDIA), None)
+        media_rows = media_tool_result.data.get("results", []) if (media_tool_result and isinstance(media_tool_result.data, dict)) else []
+        if any(call.name == TOOL_QUERY_MEDIA for call in allowed_plan) and not media_rows:
+            _log_agent_media_miss(q, query_profile)
+
         web_calls = sum(
             1 for r in tool_results
             if r.tool == TOOL_SEARCH_WEB
@@ -2178,6 +2510,9 @@ def run_agent_round_stream(
             and r.data.get("cache_hit")
             for r in tool_results
         ))
+        _rag_used = int(any(call.name == TOOL_QUERY_DOC_RAG for call in allowed_plan))
+        _media_used = int(any(call.name == TOOL_QUERY_MEDIA for call in allowed_plan))
+        _web_used = int(any(call.name == TOOL_SEARCH_WEB for call in allowed_plan))
 
         if skipped_due_quota:
             for tool_name in skipped_due_quota:
@@ -2189,7 +2524,7 @@ def run_agent_round_stream(
 
         degraded_to_retrieval = False
         degrade_reason = ""
-        memory_context = build_memory_context(sid)
+        memory_context = "" if benchmark_mode else build_memory_context(sid)
         debug_trace["memory_context"] = memory_context
         debug_trace["memory_tokens_est"] = _approx_tokens(memory_context)
         try:
@@ -2215,8 +2550,9 @@ def run_agent_round_stream(
         if references_md:
             final_answer = f"{answer}{references_md}"
 
-        append_message(sid, "assistant", final_answer)
-        _update_memory_for_session(sid)
+        if not benchmark_mode:
+            append_message(sid, "assistant", final_answer)
+            _update_memory_for_session(sid)
         if debug:
             debug_trace["final_answer_tokens_est"] = _approx_tokens(final_answer)
             _write_debug_record(sid, debug_trace)
@@ -2225,7 +2561,9 @@ def run_agent_round_stream(
             try:
                 record_agent_metrics(
                     query_profile=str(query_profile.get("profile", "medium") or "medium"),
-                    web_cache_hit=_web_cache_hit,
+                    rag_used=_rag_used,
+                    media_used=_media_used,
+                    web_used=_web_used,
                     no_context=_doc_no_context,
                     doc_top1_score=float(_doc_top1_score) if _doc_top1_score is not None else None,
                     doc_top1_score_before_rerank=float(_doc_top1_score_before_rerank) if _doc_top1_score_before_rerank is not None else None,
@@ -2247,6 +2585,7 @@ def run_agent_round_stream(
                 "backend": backend,
                 "search_mode": normalized_search_mode,
                 "query_profile": query_profile,
+                "query_classification": query_classification,
                 "degraded_to_retrieval": degraded_to_retrieval,
                 "degrade_reason": degrade_reason,
                 "planned_tools": [{"name": c.name, "query": c.query} for c in planned],

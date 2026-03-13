@@ -5,12 +5,14 @@ and writes markdown summaries into `data/summarize_dir`.
 """
 
 import argparse
+import json
 import os
 import re
 import sys
 import time
 from datetime import datetime
 from pathlib import Path
+from urllib import error as urllib_error, request as urllib_request
 
 
 WORKSPACE_ROOT = Path(__file__).resolve().parent.parent.parent
@@ -194,6 +196,42 @@ def request_chat_completion(
 	)
 
 
+def _is_deepseek_url(url: str) -> bool:
+	value = str(url or "").strip().lower()
+	return "api.deepseek.com" in value
+
+
+def _notify_nav_dashboard_monthly_usage(*, deepseek_delta: int) -> None:
+	deepseek_inc = max(0, int(deepseek_delta or 0))
+	if deepseek_inc <= 0:
+		return
+
+	base = (os.getenv("NAV_DASHBOARD_QUOTA_RECORD_URL", "") or "").strip().rstrip("/")
+	if not base:
+		base = "http://127.0.0.1:8092"
+	url = f"{base}/api/dashboard/usage/record"
+	payload = json.dumps(
+		{
+			"web_search_delta": 0,
+			"deepseek_delta": deepseek_inc,
+			"count_daily": False,
+		},
+		ensure_ascii=False,
+	).encode("utf-8")
+	req = urllib_request.Request(
+		url,
+		data=payload,
+		headers={"Content-Type": "application/json"},
+		method="POST",
+	)
+	try:
+		opener = urllib_request.build_opener(urllib_request.ProxyHandler({}))
+		with opener.open(req, timeout=3):
+			pass
+	except Exception:
+		pass
+
+
 def normalize_markdown(md_text: str) -> str:
 	# Some providers wrap markdown in fenced blocks; strip them for clean file output.
 	text = md_text.strip()
@@ -344,6 +382,7 @@ def main() -> None:
 	output_dir.mkdir(parents=True, exist_ok=True)
 
 	success_count = 0
+	api_call_count = 0
 	failed_items: list[tuple[str, str]] = []
 	failure_log_path = Path(__file__).resolve().parent / "summarize_failed.log"
 	for file_path in files:
@@ -355,6 +394,7 @@ def main() -> None:
 		date_prefix = extract_date_prefix_from_source(file_path, source_text)
 
 		print(f"Summarizing: {file_path.name}")
+		api_call_count += 1
 		try:
 			result_markdown = request_chat_completion(
 				base_url=args.api_url,
@@ -379,6 +419,8 @@ def main() -> None:
 		print(f"Written: {output_path.name}")
 
 	write_failure_log(failure_log_path, failed_items)
+	if _is_deepseek_url(args.api_url):
+		_notify_nav_dashboard_monthly_usage(deepseek_delta=api_call_count)
 	if failed_items:
 		print(f"Failed items log: {failure_log_path}")
 		print(f"Completed. Written summaries: {success_count}, Failed: {len(failed_items)}")

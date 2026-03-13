@@ -19,6 +19,29 @@ from web.settings import COVERS_DIR, DATA_DIR, MEDIA_FILES, VECTOR_DB_DIR
 from . import library_graph
 
 TEXT_FIELDS = ["title", "author", "nationality", "category", "channel", "review", "publisher", "url"]
+GENERIC_QUERY_TOKENS = {
+    "的话",
+    "哪些",
+    "哪个",
+    "什么",
+    "怎么",
+    "如何",
+    "可以",
+    "常见",
+    "比如",
+    "例如",
+    "之类",
+    "之类的",
+    "有关",
+    "相关",
+    "介绍",
+    "一下",
+    "一下子",
+    "我想知道",
+    "想问下",
+    "请问",
+    "帮我",
+}
 FILTER_FIELDS = ["media_type", "nationality", "category", "channel"]
 FORM_SUGGESTION_FIELDS = ["author", "nationality", "category", "channel", "publisher"]
 MULTI_TAG_FIELDS = {"author", "nationality", "category", "publisher"}
@@ -52,6 +75,7 @@ LOCAL_LLM_MODEL = os.getenv("LIBRARY_TRACKER_LOCAL_LLM_MODEL", "qwen2.5-7b-instr
 LOCAL_LLM_API_KEY = os.getenv("LIBRARY_TRACKER_LOCAL_LLM_API_KEY", "local").strip() or "local"
 LOCAL_LLM_TIMEOUT = int(os.getenv("LIBRARY_TRACKER_LOCAL_LLM_TIMEOUT", "120"))
 EMBEDDING_DB_PATH = VECTOR_DB_DIR / "library_embeddings.sqlite3"
+_KEYWORD_CORPUS_CACHE: dict[str, Any] = {"signature": None, "texts": []}
 
 
 def _embedding_status_value(raw: Any) -> int:
@@ -294,6 +318,43 @@ def _iter_all_items() -> list[dict[str, Any]]:
     return all_items
 
 
+def _keyword_corpus_signature() -> tuple[tuple[str, int, int], ...]:
+    signature: list[tuple[str, int, int]] = []
+    for media_type in MEDIA_FILES:
+        path = _json_path(media_type)
+        try:
+            stat = path.stat()
+            signature.append((media_type, int(stat.st_mtime_ns), int(stat.st_size)))
+        except Exception:
+            signature.append((media_type, 0, 0))
+    return tuple(signature)
+
+
+def _keyword_corpus_texts() -> list[str]:
+    signature = _keyword_corpus_signature()
+    cached_signature = _KEYWORD_CORPUS_CACHE.get("signature")
+    cached_texts = _KEYWORD_CORPUS_CACHE.get("texts") if isinstance(_KEYWORD_CORPUS_CACHE.get("texts"), list) else []
+    if cached_signature == signature and cached_texts:
+        return cached_texts
+
+    texts = [_search_text(item) for item in _iter_all_items()]
+    _KEYWORD_CORPUS_CACHE["signature"] = signature
+    _KEYWORD_CORPUS_CACHE["texts"] = texts
+    return texts
+
+
+def _keyword_idf(token: str) -> float:
+    value = str(token or "").strip().lower()
+    if not value:
+        return 0.0
+    texts = _keyword_corpus_texts()
+    if not texts:
+        return 0.0
+    df = sum(1 for text in texts if value in text)
+    total = len(texts)
+    return math.log((total + 1.0) / (df + 1.0)) + 1.0
+
+
 def _matches_filters(item: dict[str, Any], filters: dict[str, list[str]] | None) -> bool:
     if not filters:
         return True
@@ -344,6 +405,41 @@ def _sort_text_values(values: set[str]) -> list[str]:
 def _search_text(item: dict[str, Any]) -> str:
     parts = [str(item.get(k) or "") for k in TEXT_FIELDS]
     return " ".join(parts).strip().lower()
+
+
+def _extract_keyword_terms(query: str) -> list[str]:
+    q = str(query or "").strip().lower()
+    if not q:
+        return []
+
+    terms: list[str] = []
+    seen: set[str] = set()
+
+    def add_term(raw: str) -> None:
+        value = str(raw or "").strip().lower()
+        if not value:
+            return
+        if value in GENERIC_QUERY_TOKENS:
+            return
+        if re.fullmatch(r"[\u4e00-\u9fff]+", value) and len(value) < 2:
+            return
+        if re.fullmatch(r"[a-z0-9_]+", value) and len(value) < 2:
+            return
+        if value in seen:
+            return
+        seen.add(value)
+        terms.append(value)
+
+    add_term(q)
+
+    prefix = q.split("的", 1)[0].strip()
+    if len(prefix) >= 2:
+        add_term(prefix)
+
+    for seg in re.findall(r"[a-z0-9_]+|[\u4e00-\u9fff]{2,}", q):
+        add_term(seg)
+
+    return terms
 
 
 def _normalize_ai_label(raw: str) -> str:
@@ -452,25 +548,12 @@ def _keyword_score(item: dict[str, Any], query: str) -> float:
     text = _search_text(item)
     if not text:
         return 0.0
-    count = text.count(q)
-    if count > 0:
-        return float(count)
-
-    # Natural-language Chinese queries are often long; extract title-like segment and chunks.
-    tokens: list[str] = [t for t in re.split(r"\s+", q) if t]
-    prefix = q.split("的", 1)[0].strip()
-    if len(prefix) >= 2 and prefix not in tokens:
-        tokens.append(prefix)
-
-    for seg in re.findall(r"[a-z0-9_]+|[\u4e00-\u9fff]{2,}", q):
-        val = str(seg).strip()
-        if len(val) >= 2 and val not in tokens:
-            tokens.append(val)
+    tokens = _extract_keyword_terms(q)
 
     if not tokens:
         return 0.0
 
-    return float(sum(1 for t in tokens if t in text))
+    return float(sum(_keyword_idf(t) for t in tokens if t in text))
 
 
 def _tokenize_for_vector(text: str) -> list[str]:
@@ -537,7 +620,7 @@ def _keyword_hits(item: dict[str, Any], query: str, context_chars: int = 5) -> l
         return []
 
     q_lower = q.lower()
-    tokens = [t for t in re.split(r"\s+", q_lower) if t]
+    tokens = _extract_keyword_terms(q_lower)
     hits: list[dict[str, str]] = []
 
     for field in TEXT_FIELDS:

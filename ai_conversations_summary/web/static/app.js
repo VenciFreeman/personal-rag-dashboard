@@ -1027,6 +1027,13 @@ function appendWorkflowLog(lines) {
   }
 }
 
+function setWorkflowLastClassify(text) {
+  const el = document.getElementById("wf-last-classify");
+  if (!el) return;
+  const value = String(text || "").trim();
+  el.textContent = value ? `上次分类归档: ${value}` : "上次分类归档: 未记录";
+}
+
 async function refreshWorkflowStats() {
   const startDate = String(document.getElementById("wf-start")?.value || "").trim();
   const endDate = String(document.getElementById("wf-end")?.value || "").trim();
@@ -1034,6 +1041,7 @@ async function refreshWorkflowStats() {
     start_date: startDate,
     end_date: endDate,
   });
+  setWorkflowLastClassify(data.last_classify_archive_at || "");
   const countEl = document.getElementById("wf-count");
   if (!countEl) return;
   if (data.error) {
@@ -1246,6 +1254,7 @@ async function startWorkflowAction(action, extraPayload = {}) {
   workflowJobId = String(started.job_id || "");
   if (!workflowJobId) throw new Error("任务启动失败");
   setWorkflowStatus("已启动");
+  refreshWorkflowStats().catch(() => {});
   pollWorkflowJob(workflowJobId);
 }
 

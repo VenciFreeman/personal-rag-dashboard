@@ -25,6 +25,7 @@ SUMMARIZE_DIR = DATA_DIR / "summarize_dir"
 CORE_CONFIG_PATH = WORKSPACE_ROOT.parent / "core_service" / "config.local.json"
 DEFAULT_TIMEOUT = int(os.getenv("DEEPSEEK_TIMEOUT", "120") or "120")
 REEMBED_QUEUE_PATH = VECTOR_DB_DIR / "reembed_queue.json"
+WORKFLOW_STATE_PATH = DATA_DIR / "workflow_state.json"
 AUTO_REEMBED_ENABLED = os.getenv("AI_SUMMARY_AUTO_REEMBED", "1") != "0"
 AUTO_REEMBED_INTERVAL_SECONDS = max(10, int(os.getenv("AI_SUMMARY_AUTO_REEMBED_INTERVAL", "20") or "20"))
 _AUTO_REEMBED_STARTED = False
@@ -169,6 +170,40 @@ def _save_reembed_queue(items: list[dict[str, Any]]) -> None:
         "updated_at": datetime.now().isoformat(timespec="seconds"),
     }
     REEMBED_QUEUE_PATH.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
+
+
+def _load_workflow_state() -> dict[str, Any]:
+    if not WORKFLOW_STATE_PATH.exists():
+        return {"last_classify_archive_at": ""}
+    try:
+        payload = json.loads(WORKFLOW_STATE_PATH.read_text(encoding="utf-8"))
+    except Exception:
+        return {"last_classify_archive_at": ""}
+    if not isinstance(payload, dict):
+        return {"last_classify_archive_at": ""}
+    return {
+        "last_classify_archive_at": str(payload.get("last_classify_archive_at", "") or "").strip(),
+    }
+
+
+def _save_workflow_state(state: dict[str, Any]) -> None:
+    WORKFLOW_STATE_PATH.parent.mkdir(parents=True, exist_ok=True)
+    WORKFLOW_STATE_PATH.write_text(json.dumps(state, ensure_ascii=False, indent=2), encoding="utf-8")
+
+
+def _record_last_classify_archive_at(ts: str | None = None) -> str:
+    timestamp = str(ts or datetime.now().isoformat(timespec="seconds")).strip()
+    with _LOCK:
+        state = _load_workflow_state()
+        state["last_classify_archive_at"] = timestamp
+        _save_workflow_state(state)
+    return timestamp
+
+
+def _get_last_classify_archive_at() -> str:
+    with _LOCK:
+        state = _load_workflow_state()
+        return str(state.get("last_classify_archive_at", "") or "").strip()
 
 
 def _enqueue_reembed_paths(paths: list[str], reason: str) -> int:
@@ -706,6 +741,7 @@ def get_extracted_stats(start_date: str, end_date: str) -> dict[str, Any]:
         "total": total,
         "matched": len(files),
         "error": err or "",
+        "last_classify_archive_at": _get_last_classify_archive_at(),
     }
 
 
@@ -775,6 +811,10 @@ def start_job(action: str, payload: dict[str, Any]) -> dict[str, Any]:
         job = WorkflowJob(id=str(uuid4()), action=str(action or "").strip())
         _JOBS[job.id] = job
         _ACTIVE_JOB_ID = job.id
+
+    if job.action == "classify_archive":
+        locked_at = _record_last_classify_archive_at()
+        _append_log(job, f"分类归档时间已锁存: {locked_at}")
 
     thread = threading.Thread(target=_run_job_worker, args=(job, payload), daemon=True)
     thread.start()

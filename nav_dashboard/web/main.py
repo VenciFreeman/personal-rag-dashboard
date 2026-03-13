@@ -139,6 +139,52 @@ def _load_custom_cards() -> list[dict[str, str]]:
     return _save_custom_cards([_normalize_card(item) for item in raw])
 
 
+def _is_loopback_host(host: str) -> bool:
+    return str(host or "").strip().lower() in {"127.0.0.1", "localhost", "::1"}
+
+
+def _rewrite_loopback_url_for_request(raw_url: str, request: Request, fallback_port: int) -> str:
+    url_text = str(raw_url or "").strip()
+    if not url_text:
+        host = request.url.hostname or "127.0.0.1"
+        scheme = request.url.scheme or "http"
+        return f"{scheme}://{host}:{int(fallback_port)}/"
+
+    parsed = urlparse.urlparse(url_text)
+    if not parsed.scheme or not parsed.hostname:
+        return url_text
+    if not _is_loopback_host(parsed.hostname):
+        return url_text
+
+    target_host = request.url.hostname or parsed.hostname or "127.0.0.1"
+    target_scheme = request.url.scheme or parsed.scheme or "http"
+    target_port = parsed.port or int(fallback_port)
+    target_path = parsed.path or "/"
+    rewritten = parsed._replace(
+        scheme=target_scheme,
+        netloc=f"{target_host}:{target_port}",
+        path=target_path,
+    )
+    return urlparse.urlunparse(rewritten)
+
+
+def _browser_custom_cards(request: Request) -> list[dict[str, str]]:
+    cards = _load_custom_cards()
+    rewritten: list[dict[str, str]] = []
+    for item in cards:
+        row = _normalize_card(item)
+        url_value = row.get("url", "")
+        if url_value:
+            parsed = urlparse.urlparse(url_value)
+            row["url"] = _rewrite_loopback_url_for_request(
+                url_value,
+                request,
+                parsed.port or 80,
+            )
+        rewritten.append(row)
+    return rewritten
+
+
 def _trigger_custom_card_compression() -> None:
     """Run custom card compression script asynchronously after save."""
     try:
@@ -627,9 +673,18 @@ def _load_agent_metrics_summary() -> dict[str, Any]:
     rows = rows[-20:]
     n = len(rows)
     if not n:
-        return {"records": 0, "web_cache_hit_rate": None, "no_context_rate": None, "by_profile": {}}
+        return {
+            "records": 0,
+            "rag_trigger_rate": None,
+            "media_trigger_rate": None,
+            "web_trigger_rate": None,
+            "no_context_rate": None,
+            "by_profile": {},
+        }
 
-    web_hits = sum(1 for r in rows if int(r.get("web_cache_hit", 0) or 0))
+    rag_hits = sum(1 for r in rows if int(r.get("rag_used", 0) or 0))
+    media_hits = sum(1 for r in rows if int(r.get("media_used", 0) or 0))
+    web_hits = sum(1 for r in rows if int(r.get("web_used", 0) or 0))
     no_ctx = sum(1 for r in rows if int(r.get("no_context", 0) or 0))
 
     # Rerank quality delta (agent uses vector+keyword fusion — same scale 0-1)
@@ -677,7 +732,9 @@ def _load_agent_metrics_summary() -> dict[str, Any]:
 
     return {
         "records": n,
-        "web_cache_hit_rate": round(web_hits / n, 3) if n else None,
+        "rag_trigger_rate": round(rag_hits / n, 3) if n else None,
+        "media_trigger_rate": round(media_hits / n, 3) if n else None,
+        "web_trigger_rate": round(web_hits / n, 3) if n else None,
         "no_context_rate": round(no_ctx / n, 3) if n else None,
         "rerank_quality": rerank_quality,
         "wall_clock": _timing_stats(wall_vals),
@@ -711,8 +768,8 @@ def _load_startup_status() -> dict[str, Any]:
 
 
 @app.get("/api/custom_cards")
-def get_custom_cards() -> dict[str, Any]:
-    return {"cards": _load_custom_cards()}
+def get_custom_cards(request: Request) -> dict[str, Any]:
+    return {"cards": _browser_custom_cards(request)}
 
 
 # ─── Dashboard overview TTL cache ─────────────────────────────────────────────
@@ -787,7 +844,9 @@ def _build_overview() -> dict[str, Any]:
             "rag_embed_cache_hit_rate": retrieval_latency.get("embed_cache_hit_rate"),
             "rag_web_cache_hit_rate": retrieval_latency.get("web_cache_hit_rate"),
             "rag_no_context_rate": retrieval_latency.get("no_context_rate"),
-            "agent_web_cache_hit_rate": agent_metrics.get("web_cache_hit_rate"),
+            "agent_rag_trigger_rate": agent_metrics.get("rag_trigger_rate"),
+            "agent_media_trigger_rate": agent_metrics.get("media_trigger_rate"),
+            "agent_web_trigger_rate": agent_metrics.get("web_trigger_rate"),
             "agent_no_context_rate": agent_metrics.get("no_context_rate"),
         },
         "retrieval_by_profile": retrieval_latency.get("by_profile", {}),
@@ -912,31 +971,20 @@ def get_startup_status_lean() -> dict[str, Any]:
 @app.patch("/api/dashboard/usage")
 def adjust_dashboard_usage(payload: UsageAdjustPayload) -> dict[str, Any]:
     month_key = datetime.now().strftime("%Y-%m")
-    history_path = APP_DIR.parent / "data" / "agent_quota_history.json"
-    data = _safe_load_json(history_path, default={})
-    if not isinstance(data, dict):
-        data = {}
-    if "months" not in data or not isinstance(data.get("months"), dict):
-        data["months"] = {}
-    existing = data["months"].get(month_key, {})
-    if not isinstance(existing, dict):
-        existing = {}
-    data["months"][month_key] = {
-        **existing,
-        "web_search": max(0, int(payload.month_web_search_calls)),
-        "deepseek": max(0, int(payload.month_deepseek_calls)),
-    }
     try:
-        history_path.parent.mkdir(parents=True, exist_ok=True)
-        history_path.write_text(json.dumps(data, indent=2, ensure_ascii=False), encoding="utf-8")
+        updated = agent_service._set_monthly_quota_usage(  # noqa: SLF001
+            web_search=payload.month_web_search_calls,
+            deepseek=payload.month_deepseek_calls,
+        )
     except Exception as exc:
         raise HTTPException(status_code=500, detail=str(exc)) from exc
-    return {"ok": True, "month": month_key, **data["months"][month_key]}
+    return {"ok": True, "month": month_key, **updated}
 
 
 class UsageRecordPayload(BaseModel):
     web_search_delta: int = 0
     deepseek_delta: int = 0
+    count_daily: bool = True
 
 
 @app.post("/api/dashboard/usage/record")
@@ -946,14 +994,23 @@ def record_dashboard_usage(payload: UsageRecordPayload) -> dict[str, Any]:
     """
     web_inc = max(0, int(payload.web_search_delta or 0))
     deepseek_inc = max(0, int(payload.deepseek_delta or 0))
+    count_daily = bool(payload.count_daily)
     if web_inc <= 0 and deepseek_inc <= 0:
         return {"ok": True, "skipped": True}
     try:
-        quota_state = agent_service._load_quota_state()  # noqa: SLF001
-        agent_service._increment_quota_state(quota_state, web_search_delta=web_inc, deepseek_delta=deepseek_inc)  # noqa: SLF001
+        if count_daily:
+            quota_state = agent_service._load_quota_state()  # noqa: SLF001
+            agent_service._increment_quota_state(quota_state, web_search_delta=web_inc, deepseek_delta=deepseek_inc)  # noqa: SLF001
+        else:
+            agent_service._record_quota_usage(web_search_delta=web_inc, deepseek_delta=deepseek_inc)  # noqa: SLF001
     except Exception as exc:
         raise HTTPException(status_code=500, detail=str(exc)) from exc
-    return {"ok": True, "web_search_delta": web_inc, "deepseek_delta": deepseek_inc}
+    return {
+        "ok": True,
+        "web_search_delta": web_inc,
+        "deepseek_delta": deepseek_inc,
+        "count_daily": count_daily,
+    }
 
 
 @app.post("/api/dashboard/trigger-rag-sync")
@@ -988,7 +1045,7 @@ def trigger_rag_sync() -> dict[str, Any]:
 
 
 @app.post("/api/custom_cards/slot/{index}")
-def save_custom_card(index: int, payload: CustomCardPayload, background_tasks: BackgroundTasks) -> dict[str, Any]:
+def save_custom_card(index: int, payload: CustomCardPayload, background_tasks: BackgroundTasks, request: Request) -> dict[str, Any]:
     if index < 0 or index >= CUSTOM_CARDS_MAX:
         raise HTTPException(status_code=400, detail=f"index out of range: {index}")
 
@@ -1000,7 +1057,7 @@ def save_custom_card(index: int, payload: CustomCardPayload, background_tasks: B
     return {
         "ok": True,
         "card": saved[index],
-        "cards": saved,
+        "cards": _browser_custom_cards(request),
     }
 
 
@@ -1053,10 +1110,9 @@ async def upload_custom_card_image(request: Request, filename: str | None = None
 
 @app.get("/", response_class=HTMLResponse)
 async def index(request: Request):
-    scheme = request.url.scheme or "http"
-    host = request.url.hostname or "127.0.0.1"
-    ai_summary_url = AI_SUMMARY_URL_OVERRIDE or f"{scheme}://{host}:8000/"
-    library_tracker_url = LIBRARY_TRACKER_URL_OVERRIDE or f"{scheme}://{host}:8091/"
+    ai_summary_url = _rewrite_loopback_url_for_request(AI_SUMMARY_URL_OVERRIDE, request, 8000)
+    library_tracker_url = _rewrite_loopback_url_for_request(LIBRARY_TRACKER_URL_OVERRIDE, request, 8091)
+    browser_cards = _browser_custom_cards(request)
 
     local_model = os.getenv("AI_SUMMARY_LOCAL_LLM_MODEL", "qwen2.5-7b-instruct").strip() or "qwen2.5-7b-instruct"
     deepseek_model = os.getenv("DEEPSEEK_MODEL", "deepseek-chat").strip() or "deepseek-chat"
@@ -1070,7 +1126,7 @@ async def index(request: Request):
             "library_tracker_url": library_tracker_url,
             "local_model": local_model,
             "deepseek_model": deepseek_model,
-            "custom_cards_json": json.dumps(_load_custom_cards(), ensure_ascii=False),
+            "custom_cards_json": json.dumps(browser_cards, ensure_ascii=False),
             "dashboard_prefill_json": json.dumps(dashboard_prefill, ensure_ascii=False),
         },
     )

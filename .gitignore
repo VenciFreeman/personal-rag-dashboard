@@ -1,3 +1,21 @@
+# Workspace-level ignore rules
+
+# Python virtual environments
+.venv/
+venv/
+env/
+**/.venv/
+**/venv/
+
+# Local model assets
+local_models/
+**/local_models/
+
+# Private vector index lives in sub-repo private-data branch.
+core_service/data/vector_db/**
+!core_service/data/vector_db/.gitkeep
+
+# Python cache/build artifacts
 __pycache__/
 **/__pycache__/
 *.py[cod]
@@ -5,78 +23,51 @@ __pycache__/
 .pytest_cache/
 .mypy_cache/
 .ruff_cache/
+.coverage
+.coverage.*
+htmlcov/
+*.egg-info/
+.eggs/
+build/
+dist/
+
+# Notebook/runtime
 .ipynb_checkpoints/
 
-.venv/
-venv/
-env/
-ENV/
-**/.venv/
-**/venv/
+# Logs and temp files
+*.log
+*.tmp
+*.temp
 
+# Node/frontend artifacts
+node_modules/
+.npm/
+.pnpm-store/
+.yarn/
+*.tsbuildinfo
+
+# IDE/editor
 .vscode/
 .idea/
+*.code-workspace
+
+# OS files
 .DS_Store
 Thumbs.db
 Desktop.ini
-
-.env
-.env.*
-!.env.example
-env.local.ps1
-
-*.log
-*.pid
-*.tmp
-*.temp
-*.bak
-
-_tmp_*
-
-build/
-dist/
-release/build/
-release/dist/
-scripts/build/
-scripts/dist/
-scripts/release/
-scripts/.pyi_build/
-release/.pyi_build/
-
-*.exe
-
+/core_service/data
 data/benchmark_results.json
-
-ai_conversations_summary/data/cache/
-ai_conversations_summary/data/deepseek_api_audit/
-ai_conversations_summary/data/extracted_dir/
-ai_conversations_summary/data/hf_cache/
-ai_conversations_summary/data/raw_dir/
-ai_conversations_summary/data/rag_sessions/
-ai_conversations_summary/data/split_dir/
-ai_conversations_summary/data/summarize_dir/
-ai_conversations_summary/data/vector_db/
-ai_conversations_summary/data/*.log
-ai_conversations_summary/data/*.pid
-
-core_service/data/hf_cache/
-core_service/data/local_models/
-core_service/data/vector_db/
-
-nav_dashboard/data/agent_metrics.json
-nav_dashboard/data/agent_quota.json
-nav_dashboard/data/agent_quota_history.json
-nav_dashboard/data/agent_sessions/
-nav_dashboard/data/benchmark/
-
-library_tracker/data/vector_db/
-
-local_models/
-**/local_models/
+env.local.ps1
+.gitmodules
+_tmp_run_two_rag_checks.ps1
+_tmp_benchmark_rag_two_requests.ps1
+/ai_conversations_summary/data/cache
+/ai_conversations_summary/data/summarize_dir
 /ai_conversations_summary/documents
+/ai_conversations_summary/data
+/ai_conversations_summary/web/static
 /library_tracker/data
 /nav_dashboard/web/static
-/library_tracker/web/static/favicon_logosc
 /nav_dashboard/favicon_logosc
-/ai_conversations_summary/web/static/favicon_logosc
-ai_conversations_summary/release/app/scripts/deepseek_v3_tokenizer/tokenizer.json
+/library_tracker/web/static
+/wardrobe

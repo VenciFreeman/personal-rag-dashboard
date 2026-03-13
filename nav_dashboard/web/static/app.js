@@ -466,9 +466,6 @@ function buildDashboardHealthFlags({
       isAbsAboveThreshold(ragRerank.avg_rank_shift, 2) ||
       isAbsAboveThreshold(agentRerank.avg_rank_shift, 2),
     embedCache: isBelowThreshold(cacheStats.rag_embed_cache_hit_rate, 0.7),
-    webCache:
-      isBelowThreshold(cacheStats.rag_web_cache_hit_rate, 0.25) ||
-      isBelowThreshold(cacheStats.agent_web_cache_hit_rate, 0.25),
     noContext:
       isAboveThreshold(cacheStats.rag_no_context_rate, 0.15) ||
       isAboveThreshold(cacheStats.agent_no_context_rate, 0.15),
@@ -647,9 +644,9 @@ async function refreshDashboard({ force = false } = {}) {
       buildStatCard("RAG 平均换榜", `${formatSigned(ragRerank.avg_rank_shift, 2)}`, `Agent 平均换榜 ${formatSigned(agentRerank.avg_rank_shift, 2)}`, "", unhealthyState(health.rankShift)),
       
       buildStatCard("Embedding 缓存命中率", formatRate(cacheStats.rag_embed_cache_hit_rate), `近 ${formatNum(latency.record_count)} 次`, "", unhealthyState(health.embedCache)),
-      buildStatCard("网络检索缓存命中率", formatRate(cacheStats.rag_web_cache_hit_rate), `Agent: ${formatRate(cacheStats.agent_web_cache_hit_rate)}`, "", unhealthyState(health.webCache)),
+      buildStatCard("Agent 文档调用率", `${formatRate(cacheStats.agent_rag_trigger_rate)}`, `Media ${formatRate(cacheStats.agent_media_trigger_rate)} | Web ${formatRate(cacheStats.agent_web_trigger_rate)}`),
 
-      buildStatCard("RAG 文档未命中率", formatRate(cacheStats.rag_no_context_rate), `Agent 未命中率 ${formatRate(cacheStats.agent_no_context_rate)}`, "", unhealthyState(health.noContext)),
+      buildStatCard("RAG 未命中率", formatRate(cacheStats.rag_no_context_rate), `Agent 未命中率 ${formatRate(cacheStats.agent_no_context_rate)}`, "", unhealthyState(health.noContext)),
       buildStatCard("月检索缺失问题数", formatNum(missingQueries.count), "长按查看导出", "missing-queries-summary"),
       
       buildStatCard("RAG 最相关 Top1", ragRerank.avg_top1_local_doc_score_p99 != null ? Number(ragRerank.avg_top1_local_doc_score_p99).toFixed(4) : "—", `同口径均值 ${ragRerank.avg_top1_local_doc_score != null ? Number(ragRerank.avg_top1_local_doc_score).toFixed(4) : "—"}`, "", unhealthyState(health.top1Score)),
@@ -1958,7 +1955,7 @@ async function init() {
   qaInput.addEventListener("keydown", (event) => {
     if (event.key === "Enter" && !event.shiftKey) {
       event.preventDefault();
-      ask("hybrid").catch((e) => appendChatRow("assistant", `**错误**: ${String(e)}`));
+      ask("local_only").catch((e) => appendChatRow("assistant", `**错误**: ${String(e)}`));
     }
   });
 

@@ -3,7 +3,7 @@
 <head>
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, viewport-fit=cover" />
-  <title>Navigation Dashboard</title>
+  <title>Vincent's Navigation Dashboard</title>
   <link rel="apple-touch-icon" sizes="180x180" href="/static/favicon_logosc/apple-touch-icon.png" />
   <link rel="icon" type="image/png" sizes="32x32" href="/static/favicon_logosc/favicon-32x32.png" />
   <link rel="icon" type="image/png" sizes="16x16" href="/static/favicon_logosc/favicon-16x16.png" />
@@ -13,7 +13,7 @@
 </head>
 <body data-local-model="{{ local_model }}" data-deepseek-model="{{ deepseek_model }}" data-ai-summary-url="{{ ai_summary_url }}" data-library-url="{{ library_tracker_url }}">
   <header class="top">
-    <h1>Navigation Dashboard</h1>
+    <h1>Vincent's Dashboard</h1>
   </header>
 
   <main class="shell">
@@ -79,7 +79,7 @@
           <div id="qa-messages" class="doc chat-box markdown-body"></div>
 
           <div class="input-wrap">
-            <textarea id="qa-input" placeholder="输入问题，Enter发送，Shift+Enter换行" autocomplete="off" spellcheck="false"></textarea>
+            <textarea id="qa-input" placeholder="输入问题，Enter本地回答，Shift+Enter换行" autocomplete="off" spellcheck="false"></textarea>
             <div class="row input-actions">
               <label class="debug-switch" for="qa-debug-toggle">
                 <input id="qa-debug-toggle" type="checkbox" />
@@ -123,7 +123,7 @@
         </div>
 
         <section class="dashboard-log-panel">
-          <div class="dashboard-log-head">启动一致性检查日志（最近20条）</div>
+          <div class="dashboard-log-head">启动一致性检查日志</div>
           <pre id="dashboard-startup-logs" class="dashboard-log-window">等待加载...</pre>
         </section>
       </div>
