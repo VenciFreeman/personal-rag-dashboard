@@ -1,0 +1,16 @@
+{
+  "api": {
+    "base_url": "https://api.deepseek.com",
+    "api_key": "",
+    "chat_model": "deepseek-chat",
+    "timeout": 120
+  },
+  "rag": {
+    "embedding_model": "BAAI/bge-base-zh-v1.5"
+  },
+  "local_llm": {
+    "url": "http://127.0.0.1:1234/v1",
+    "model": "qwen2.5-7b-instruct",
+    "api_key": "local"
+  }
+}

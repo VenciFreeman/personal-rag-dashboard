@@ -1,0 +1,7 @@
+# Core web runtime dependencies
+# Setup script installs these into monorepo top-level .venv by default.
+fastapi
+uvicorn
+jinja2
+Pillow
+openai>=1.0.0
