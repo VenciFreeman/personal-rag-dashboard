@@ -44,12 +44,31 @@ const missingQueriesSourceSelect = document.getElementById("missing-queries-sour
 const missingQueriesExportBtn = document.getElementById("missing-queries-export-btn");
 const missingQueriesClearBtn = document.getElementById("missing-queries-clear-btn");
 const missingQueriesCloseBtn = document.getElementById("missing-queries-close-btn");
+const feedbackModal = document.getElementById("feedback-modal");
+const feedbackModalList = document.getElementById("feedback-modal-list");
+const feedbackModalMeta = document.getElementById("feedback-modal-meta");
+const feedbackSourceSelect = document.getElementById("feedback-source");
+const feedbackExportBtn = document.getElementById("feedback-export-btn");
+const feedbackClearBtn = document.getElementById("feedback-clear-btn");
+const feedbackCloseBtn = document.getElementById("feedback-close-btn");
 const runtimeDataModal = document.getElementById("runtime-data-modal");
 const runtimeDataModalList = document.getElementById("runtime-data-modal-list");
 const runtimeDataModalMeta = document.getElementById("runtime-data-modal-meta");
 const runtimeDataRefreshBtn = document.getElementById("runtime-data-refresh-btn");
 const runtimeDataClearBtn = document.getElementById("runtime-data-clear-btn");
 const runtimeDataCloseBtn = document.getElementById("runtime-data-close-btn");
+const dashboardTraceInput = document.getElementById("dashboard-trace-input");
+const dashboardTraceQueryBtn = document.getElementById("dashboard-trace-query-btn");
+const dashboardTraceOpenBtn = document.getElementById("dashboard-trace-open-btn");
+const dashboardTraceMeta = document.getElementById("dashboard-trace-meta");
+const dashboardTraceResult = document.getElementById("dashboard-trace-result");
+const traceModal = document.getElementById("trace-modal");
+const traceModalMeta = document.getElementById("trace-modal-meta");
+const traceModalContent = document.getElementById("trace-modal-content");
+const traceModalExport = document.getElementById("trace-modal-export");
+const traceModalExportBtn = document.getElementById("trace-modal-export-btn");
+const traceModalCloseBtn = document.getElementById("trace-modal-close-btn");
+const benchmarkCaseTraceRefreshBtn = document.getElementById("bm-case-trace-refresh");
 const customCardModal = document.getElementById("custom-card-modal");
 const customCardModalTitle = document.getElementById("custom-card-modal-title");
 const customCardNameInput = document.getElementById("custom-card-name");
@@ -80,8 +99,12 @@ let currentWarningsTimestamp = "";
 let dismissedWarnings = new Set();
 let currentMissingQueries = [];
 let currentMissingQueriesSource = "all";
+let currentFeedbackItems = [];
+let currentFeedbackSource = "all";
 let currentRuntimeDataItems = [];
 let currentRuntimeDataSummary = {};
+let currentTraceRecord = null;
+let currentTraceExportText = "";
 
 // Startup polling
 let lastStartupStatus = "";
@@ -97,6 +120,8 @@ let currentTaskJobs = [];
 let selectedTaskJobId = "";
 let taskCenterPollInterval = null;
 let dashboardJobsView = "active";
+let taskLogFollowFrame = 0;
+let lastDashboardForceRefreshAt = 0;
 
 if (dashboardJobsFilter?.value) {
   dashboardJobsView = String(dashboardJobsFilter.value || "active");
@@ -107,6 +132,8 @@ const SOURCE_LABELS = {
   agent: "LLM Agent",
   rag_qa: "RAG 问答",
   rag_qa_stream: "RAG 问答（流式）",
+  agent_chat: "LLM Agent",
+  rag_chat: "RAG 问答",
   unknown: "未知来源",
 };
 
@@ -146,7 +173,42 @@ function summarizeAssertionFailures(scope) {
   const checks = Array.isArray(scope?.checks) ? scope.checks : [];
   const failed = checks.filter((item) => !item?.passed);
   if (!failed.length) return `<span style="color:#8fb08d">全部通过</span>`;
-  return failed.map((item) => escapeHtml(String(item?.name || "unknown"))).join(" / ");
+  return failed.map((item) => {
+    const name = escapeHtml(String(item?.name || "unknown"));
+    const traceIds = Array.isArray(item?.trace_ids)
+      ? item.trace_ids.map((value) => String(value || "").trim()).filter(Boolean)
+      : [];
+    if (!traceIds.length) return `<span class="bm-assert-fail-item">${name}</span>`;
+    const preview = traceIds
+      .slice(0, 2)
+      .map((value) => `<span class="bm-assert-fail-trace"><code>${escapeHtml(value)}</code></span>`)
+      .join("");
+    const more = traceIds.length > 2 ? `<span class="bm-assert-fail-more">+${traceIds.length - 2} more</span>` : "";
+    return `<span class="bm-assert-fail-item"><span>${name}</span>${preview}${more}</span>`;
+  }).join(" ");
+}
+
+function syncBenchmarkLogBox(logBox, logs, { reset = false } = {}) {
+  if (!logBox) return;
+  const normalized = Array.isArray(logs) ? logs.map((line) => String(line || "")) : [];
+  if (reset || !lastBenchmarkLogMarker) {
+    logBox.textContent = normalized.length ? `${normalized.join("\n")}\n` : "";
+    lastBenchmarkLogMarker = normalized.length ? normalized[normalized.length - 1] : "";
+    lastBenchmarkLogCount = normalized.length;
+    logBox.scrollTop = logBox.scrollHeight;
+    return;
+  }
+
+  const markerIndex = normalized.lastIndexOf(lastBenchmarkLogMarker);
+  if (markerIndex === -1) {
+    logBox.textContent = normalized.length ? `${normalized.join("\n")}\n` : "";
+  } else if (markerIndex < normalized.length - 1) {
+    logBox.textContent += `${normalized.slice(markerIndex + 1).join("\n")}\n`;
+  }
+
+  lastBenchmarkLogMarker = normalized.length ? normalized[normalized.length - 1] : "";
+  lastBenchmarkLogCount = normalized.length;
+  logBox.scrollTop = logBox.scrollHeight;
 }
 
 function jobTypeLabel(type) {
@@ -209,6 +271,30 @@ function renderTaskCenter() {
       ${expanded}
     </div>`;
   }).join("\n");
+
+  const selectedStatus = String(selected?.status || "");
+  if (["queued", "running"].includes(selectedStatus)) scheduleTaskLogFollow();
+}
+
+function scheduleTaskLogFollow() {
+  if (taskLogFollowFrame) cancelAnimationFrame(taskLogFollowFrame);
+  taskLogFollowFrame = requestAnimationFrame(() => {
+    taskLogFollowFrame = 0;
+    const logWindow = dashboardJobsList?.querySelector(".dashboard-job-expanded .dashboard-job-log-window");
+    if (!(logWindow instanceof HTMLElement)) return;
+    logWindow.scrollTop = logWindow.scrollHeight;
+    requestAnimationFrame(() => {
+      if (logWindow.isConnected) logWindow.scrollTop = logWindow.scrollHeight;
+    });
+  });
+}
+
+function hasRunningLibraryGraphJob() {
+  return currentTaskJobs.some((job) => {
+    const type = String(job?.type || "");
+    const status = String(job?.status || "");
+    return type === "library_graph_rebuild" && ["queued", "running"].includes(status);
+  });
 }
 
 async function refreshTaskCenter() {
@@ -216,6 +302,13 @@ async function refreshTaskCenter() {
   const payload = await apiGet(`/api/dashboard/jobs?only_active=${onlyActive ? "true" : "false"}`);
   currentTaskJobs = Array.isArray(payload?.jobs) ? payload.jobs : [];
   renderTaskCenter();
+
+  const dashboardPanelActive = document.getElementById("panel-dashboard")?.classList.contains("active");
+  const now = Date.now();
+  if (dashboardPanelActive && hasRunningLibraryGraphJob() && (now - lastDashboardForceRefreshAt) >= 8000) {
+    lastDashboardForceRefreshAt = now;
+    refreshDashboard({ force: true, skipTaskCenter: true }).catch(() => {});
+  }
 }
 
 function startTaskCenterPolling() {
@@ -361,6 +454,11 @@ function markdownToHtml(text) {
   });
 
   const lines = html.split("\n");
+  function isTreeLikeText(value) {
+    const text = String(value || "").replace(/<[^>]+>/g, " ").trim();
+    if (!text) return false;
+    return /[├└│┌┐┘┤┬┴─═]/.test(text) || /(?:📁|📄|folder|file)/i.test(text);
+  }
   function getListMeta(line) {
     const normalizedLine = normalizeListWhitespace(stripZeroWidth(line));
     if (/^__HR_BLOCK_\d+__|^__CODE_BLOCK_\d+__|^__MATH_BLOCK_\d+__/.test(normalizedLine.trim())) return null;
@@ -402,6 +500,18 @@ function markdownToHtml(text) {
     let out = "";
     let idx = startIdx;
     let currentType = null;
+    let levelIsTree = false;
+
+    for (let probe = startIdx; probe < allItems.length; probe += 1) {
+      const candidate = allItems[probe];
+      if (candidate.indent < targetIndent) break;
+      if (candidate.indent !== targetIndent) continue;
+      levelIsTree = true;
+      if (!isTreeLikeText(candidate.text)) {
+        levelIsTree = false;
+        break;
+      }
+    }
 
     while (idx < allItems.length) {
       let item = allItems[idx];
@@ -410,7 +520,7 @@ function markdownToHtml(text) {
 
       if (currentType !== item.type) {
         if (currentType) out += `</${currentType}>\n`;
-        out += `<${item.type}>\n`;
+        out += `<${item.type}${levelIsTree ? ' class="markdown-tree-list"' : ""}>\n`;
         currentType = item.type;
       }
 
@@ -421,7 +531,8 @@ function markdownToHtml(text) {
         if (child.html) content += `\n${child.html}`;
         idx = child.nextIdx;
       }
-      out += `<li>${content}</li>\n`;
+      const cls = isTreeLikeText(content) ? ' class="markdown-tree-item"' : "";
+      out += `<li${cls}>${content}</li>\n`;
     }
 
     if (currentType) out += `</${currentType}>`;
@@ -451,7 +562,8 @@ function markdownToHtml(text) {
     if (/^<h\d|^<pre|^<blockquote|^__CODE_BLOCK_\d+__|^__HR_BLOCK_\d+__|^__MATH_BLOCK_\d+__/.test(trimmed)) {
       out.push(trimmed);
     } else {
-      out.push(`<p>${raw}</p>`);
+      const cls = isTreeLikeText(raw) ? ' class="markdown-tree-line"' : "";
+      out.push(`<p${cls}>${raw}</p>`);
     }
     i += 1;
   }
@@ -554,6 +666,87 @@ function formatSigned(value, digits = 4) {
   return n > 0 ? `+${text}` : text;
 }
 
+function formatShortText(value, max = 120) {
+  const text = String(value || "").trim().replace(/\s+/g, " ");
+  if (!text) return "—";
+  return text.length > max ? `${text.slice(0, max)}...` : text;
+}
+
+function computeRerankOptimization(trace) {
+  const retrieval = trace?.retrieval && typeof trace.retrieval === "object" ? trace.retrieval : {};
+  const ranking = trace?.ranking && typeof trace.ranking === "object" ? trace.ranking : {};
+  const before = Number(retrieval.top1_score_before_rerank);
+  const after = Number(retrieval.top1_score_after_rerank);
+  const threshold = Number(retrieval.similarity_threshold);
+  const identityChanged = Number(ranking.top1_identity_changed ?? retrieval.top1_identity_changed);
+  const rankShift = Number(ranking.top1_rank_shift ?? retrieval.top1_rank_shift);
+  const delta = Number.isFinite(before) && Number.isFinite(after) ? after - before : null;
+  const margin = Number.isFinite(after) && Number.isFinite(threshold) ? after - threshold : null;
+  let direction = "无法判断";
+  if (delta != null) {
+    if (delta > 0.0001) direction = "正优化";
+    else if (delta < -0.0001) direction = "负优化";
+    else direction = "基本持平";
+  }
+  return {
+    direction,
+    delta,
+    margin,
+    identityChanged: Number.isFinite(identityChanged) ? identityChanged > 0 : null,
+    rankShift: Number.isFinite(rankShift) ? rankShift : null,
+  };
+}
+
+function renderRerankOptimization(trace) {
+  const optimization = computeRerankOptimization(trace);
+  return `
+    <div class="trace-kv"><span>重排序优化</span><strong>${escapeHtml(optimization.direction)}</strong></div>
+    <div class="trace-kv"><span>同口径提升</span><strong>${escapeHtml(formatSigned(optimization.delta, 4))}</strong></div>
+    <div class="trace-kv"><span>阈值余量</span><strong>${escapeHtml(formatSigned(optimization.margin, 4))}</strong></div>
+    <div class="trace-kv"><span>是否换榜</span><strong>${optimization.identityChanged == null ? "—" : optimization.identityChanged ? "是" : "否"}</strong></div>
+    <div class="trace-kv"><span>Top1 排名提升</span><strong>${escapeHtml(formatSigned(optimization.rankShift, 2))}</strong></div>
+  `;
+}
+
+function ensureMessageActions(row) {
+  if (!(row instanceof HTMLElement)) return null;
+  let host = row.querySelector(":scope > .msg-actions");
+  if (host instanceof HTMLElement) return host;
+  host = document.createElement("div");
+  host.className = "msg-actions";
+  row.appendChild(host);
+  return host;
+}
+
+function addFeedbackButton(row, payload) {
+  if (!(row instanceof HTMLElement) || !payload) return;
+  const host = ensureMessageActions(row);
+  if (!host) return;
+  let button = host.querySelector("[data-action='feedback']");
+  if (!(button instanceof HTMLButtonElement)) {
+    button = document.createElement("button");
+    button.type = "button";
+    button.className = "msg-action-btn";
+    button.dataset.action = "feedback";
+    button.textContent = "反馈";
+    host.appendChild(button);
+  }
+  if (button.dataset.bound === "1") return;
+  button.dataset.bound = "1";
+  button.addEventListener("click", async () => {
+    if (button.disabled) return;
+    button.disabled = true;
+    try {
+      await apiPost("/api/dashboard/feedback", payload);
+      button.textContent = "已反馈";
+      button.classList.add("is-done");
+    } catch (err) {
+      button.disabled = false;
+      window.alert(`反馈保存失败: ${String(err)}`);
+    }
+  });
+}
+
 function toFiniteNumber(value) {
   const n = Number(value);
   return Number.isFinite(n) ? n : null;
@@ -626,15 +819,15 @@ function buildDashboardHealthFlags({
     vectorRecall:
       isAboveThreshold(latency.stages?.total?.avg, 0.35),
     rerankLatency:
-      isAboveThreshold(latency.stages?.rerank_seconds?.avg, 3.5),
+      isAboveThreshold(latency.stages?.rerank_seconds?.avg, 5),
     retrievalPercentiles:
       isAboveThreshold(latency.stages?.total?.p50, 0.25) ||
       isAboveThreshold(latency.stages?.total?.p95, 0.45) ||
       isAboveThreshold(latency.stages?.total?.p99, 0.8),
     endToEnd:
-      isAboveThreshold(latency.stages?.elapsed_seconds?.p50, 9) ||
-      isAboveThreshold(latency.stages?.elapsed_seconds?.p95, 18) ||
-      isAboveThreshold(agentWallClock.p50, 15),
+      isAboveThreshold(latency.stages?.elapsed_seconds?.p50, 25) ||
+      isAboveThreshold(latency.stages?.elapsed_seconds?.p95, 45) ||
+      isAboveThreshold(agentWallClock.p50, 25),
     rerankChangeRate:
       isAboveThreshold(ragRerank.top1_identity_change_rate, 0.35) ||
       isAboveThreshold(agentRerank.top1_identity_change_rate, 0.35),
@@ -643,8 +836,8 @@ function buildDashboardHealthFlags({
       isAbsAboveThreshold(agentRerank.avg_rank_shift, 2),
     embedCache: isBelowThreshold(cacheStats.rag_embed_cache_hit_rate, 0.7),
     noContext:
-      isAboveThreshold(cacheStats.rag_no_context_rate, 0.15) ||
-      isAboveThreshold(cacheStats.agent_no_context_rate, 0.15),
+      isAboveThreshold(cacheStats.rag_no_context_rate, 0.20) ||
+      isAboveThreshold(cacheStats.agent_no_context_rate, 0.30),
     top1Score:
       isBelowThreshold(ragRerank.avg_top1_local_doc_score_p99, 0.6) ||
       isAboveThreshold(ragTop1Spread, 6),
@@ -827,11 +1020,11 @@ function renderDashboardObservabilityTable(data) {
     <thead>
       <tr>
         <th>维度</th>
-        <th>未命中</th>
-        <th>Embed 缓存</th>
-        <th>问题重写</th>
-        <th>端到端</th>
-        <th>向量召回</th>
+        <th>检索未命中</th>
+        <th>Embed 缓存命中率</th>
+        <th>问题重写率</th>
+        <th>端到端用时</th>
+        <th>召回用时</th>
       </tr>
     </thead>
     <tbody>
@@ -895,7 +1088,7 @@ function loadDashboardPrefill() {
   }
 }
 
-async function refreshDashboard({ force = false } = {}) {
+async function refreshDashboard({ force = false, skipTaskCenter = false } = {}) {
   if (dashboardGeneratedAt) dashboardGeneratedAt.textContent = "正在拉取最新状态...";
   if (dashboardRefreshBtn) dashboardRefreshBtn.disabled = true;
   try {
@@ -936,7 +1129,7 @@ async function refreshDashboard({ force = false } = {}) {
       buildStatCard("书影音游戏总条目", formatNum(library.total_items), `今年条目 ${formatNum(library.this_year_items)}`),
 
       buildStatCard("RAG Graph 节点数", formatNum(rag.graph_nodes), `边数 ${formatNum(rag.graph_edges)}`),
-      buildStatCard("Library Graph 节点数", formatNum(library.graph_nodes), `覆盖 ${formatRate(libraryGraphQuality.item_coverage_rate)} | 孤点 ${formatRate(libraryGraphQuality.isolated_node_rate)} | 长按补缺`, "library-graph-summary", unhealthyState(health.libraryGraphScale)),
+      buildStatCard("Library Graph 节点数", formatNum(library.graph_nodes), `边数 ${formatNum(library.graph_edges)} | 覆盖 ${formatRate(libraryGraphQuality.item_coverage_rate)} | 孤点 ${formatRate(libraryGraphQuality.isolated_node_rate)}`, "library-graph-summary", unhealthyState(health.libraryGraphScale)),
 
       buildStatCard("RAG 平均节点数", `${rag.nodes_per_doc != null ? Number(rag.nodes_per_doc).toFixed(2) : "—"}`, `每节点平均边数 ${rag.edges_per_node != null ? Number(rag.edges_per_node).toFixed(2) : "—"}`, "", unhealthyState(health.ragGraphDensity)),
       buildStatCard("RAG 待重建文档", formatNum(rag.changed_pending), rag.changed_pending > 0 ? "等待后台同步" : "已全部同步", "rag-changed-pending", unhealthyState(health.ragPending)),
@@ -948,7 +1141,7 @@ async function refreshDashboard({ force = false } = {}) {
       buildStatCard("RAG Q&A 消息总数", formatNum(ragQa.message_count), `会话数 ${formatNum(ragQa.session_count)}`),
 
       buildStatCard("向量召回均值", formatDuration(latency.stages?.total?.avg), `近 ${formatNum(latency.stages?.total?.count)} 次 | p50 ${formatDuration(latency.stages?.total?.p50)}`, "", unhealthyState(health.vectorRecall)),
-      buildStatCard("RAG 模型重排均值", formatDuration(latency.stages?.rerank_seconds?.avg), `近 ${formatNum(latency.stages?.rerank_seconds?.count)} 次 | Agent 融合重排见下表`, "", unhealthyState(health.rerankLatency)),
+      buildStatCard("RAG 模型重排均值", formatDuration(latency.stages?.rerank_seconds?.avg), `近 ${formatNum(latency.stages?.rerank_seconds?.count)} 次`, "", unhealthyState(health.rerankLatency)),
 
       buildStatCard("检索分位 p50", `${formatDuration(latency.stages?.total?.p50)}`, `p95 ${formatDuration(latency.stages?.total?.p95)} | p99 ${formatDuration(latency.stages?.total?.p99)}`, "", unhealthyState(health.retrievalPercentiles)),
       buildStatCard("RAG 全流程 p50",`${formatDuration(latency.stages?.elapsed_seconds?.p50)}`,`p95 ${formatDuration(latency.stages?.elapsed_seconds?.p95)} | Agent p50 ${formatDuration(agentWallClock.p50)}`, "", unhealthyState(health.endToEnd)),
@@ -961,6 +1154,7 @@ async function refreshDashboard({ force = false } = {}) {
 
       buildStatCard("RAG 未命中率", formatRate(cacheStats.rag_no_context_rate), `Agent 未命中率 ${formatRate(cacheStats.agent_no_context_rate)}`, "", unhealthyState(health.noContext)),
       buildStatCard("月检索缺失问题数", formatNum(missingQueries.count), "长按查看导出", "missing-queries-summary"),
+      buildStatCard("聊天反馈数", formatNum(data?.chat_feedback?.count), "长按查看导出", "feedback-summary"),
       buildStatCard("运行时数据", formatSizeValue(runtimeData.total_size_bytes), `非空 ${formatNum(runtimeData.nonzero_items)} 项 | 长按查看`, "runtime-data-summary"),
       
       buildStatCard("RAG 最相关 Top1", ragRerank.avg_top1_local_doc_score_p99 != null ? Number(ragRerank.avg_top1_local_doc_score_p99).toFixed(4) : "—", `同口径均值 ${ragRerank.avg_top1_local_doc_score != null ? Number(ragRerank.avg_top1_local_doc_score).toFixed(4) : "—"}`, "", unhealthyState(health.top1Score)),
@@ -980,7 +1174,7 @@ async function refreshDashboard({ force = false } = {}) {
     renderDashboardLatencyTable(data);
     renderDashboardObservabilityTable(data);
     renderDashboardStartupLogs(data);
-  refreshTaskCenter().catch(() => {});
+    if (!skipTaskCenter) refreshTaskCenter().catch(() => {});
 
     const generated = String(data?.generated_at || "").trim();
     const month = String(data?.month || "").trim();
@@ -988,9 +1182,8 @@ async function refreshDashboard({ force = false } = {}) {
     if (dashboardGeneratedAt) {
       dashboardGeneratedAt.textContent = `统计月份: ${month || "-"} | 更新时间: ${generated || "-"}`;
     }
-    if (dashboardDeployTime && deployed && !dashboardDeployTime.dataset.set) {
+    if (dashboardDeployTime && deployed) {
       dashboardDeployTime.textContent = `部署时间: ${deployed}`;
-      dashboardDeployTime.dataset.set = "1";
     }
   } catch (err) {
     renderDashboardError(err);
@@ -1007,7 +1200,7 @@ async function bootstrapDashboardTab() {
     renderDashboardObservabilityTable(prefill);
     renderDashboardStartupLogs(prefill);
   }
-  await refreshDashboard();
+  await refreshDashboard({ force: true });
   await refreshTaskCenter().catch(() => {});
   startTaskCenterPolling();
   dashboardBootstrapped = true;
@@ -1126,6 +1319,75 @@ async function openMissingQueriesModal() {
         }).join("")
       : "<li>最近30天暂无未命中 query</li>";
   }
+}
+
+async function loadFeedback(source = "all") {
+  currentFeedbackSource = String(source || "all");
+  const data = await apiGet(`/api/dashboard/feedback?limit=200&source=${encodeURIComponent(currentFeedbackSource)}`);
+  currentFeedbackItems = Array.isArray(data?.items) ? data.items : [];
+}
+
+function showFeedbackDetail(item) {
+  const metadata = item?.metadata && typeof item.metadata === "object" ? item.metadata : {};
+  const text = [
+    `时间: ${String(item?.created_at || "")}`,
+    `来源: ${displaySourceLabel(item?.source || "unknown")}`,
+    `trace_id: ${String(item?.trace_id || "—")}`,
+    `session_id: ${String(item?.session_id || "—")}`,
+    `模型: ${String(item?.model || "—")}`,
+    `搜索模式: ${String(item?.search_mode || "—")}`,
+    `问题类型: ${String(item?.query_type || metadata.query_type || "—")}`,
+    "",
+    "原始问题:",
+    String(item?.question || "—"),
+    "",
+    "回答:",
+    String(item?.answer || "—"),
+  ].join("\n");
+  window.alert(text);
+}
+
+async function openFeedbackModal() {
+  if (!feedbackModal) return;
+  const source = feedbackSourceSelect?.value || "all";
+  await loadFeedback(source);
+  feedbackModal.classList.remove("hidden");
+  feedbackModal.setAttribute("aria-hidden", "false");
+  if (feedbackModalMeta) {
+    feedbackModalMeta.textContent = `共 ${formatNum(currentFeedbackItems.length)} 条 | 来源: ${displaySourceLabel(currentFeedbackSource)}`;
+  }
+  if (feedbackModalList) {
+    feedbackModalList.innerHTML = currentFeedbackItems.length
+      ? currentFeedbackItems.map((item) => `
+          <li class="feedback-item" data-feedback-id="${escapeHtml(String(item.id || ""))}">
+            <strong>${escapeHtml(String(item.created_at || ""))}</strong> [${escapeHtml(displaySourceLabel(item.source || "unknown"))}]<br/>
+            <span class="dashboard-meta">${escapeHtml(formatShortText(item.question || "", 72))}</span>
+            <div class="feedback-item-answer">${escapeHtml(formatShortText(item.answer || "", 180))}</div>
+            <div class="feedback-item-hint">长按查看 trace_id 和原始问题</div>
+          </li>`).join("")
+      : "<li>暂无聊天反馈</li>";
+  }
+}
+
+function closeFeedbackModal() {
+  if (!feedbackModal) return;
+  feedbackModal.classList.add("hidden");
+  feedbackModal.setAttribute("aria-hidden", "true");
+}
+
+async function clearFeedback() {
+  await apiPost(`/api/dashboard/feedback?source=${encodeURIComponent(currentFeedbackSource)}`, {}, "DELETE");
+  currentFeedbackItems = [];
+  closeFeedbackModal();
+  await refreshDashboard({ force: true });
+}
+
+async function exportFeedbackJson() {
+  const source = feedbackSourceSelect?.value || currentFeedbackSource || "all";
+  const resp = await fetch(`/api/dashboard/feedback/export?limit=5000&source=${encodeURIComponent(source)}`);
+  if (!resp.ok) throw new Error(`导出失败: HTTP ${resp.status}`);
+  const text = await resp.text();
+  downloadTextFile(text, `chat_feedback_${source}_${new Date().toISOString().slice(0, 19).replace(/[:T]/g, "-")}.json`);
 }
 
 function closeMissingQueriesModal() {
@@ -1440,11 +1702,381 @@ let benchmarkAbortController = null;
 let benchmarkTimerInterval = null;
 let activeBenchmarkJobId = "";
 let lastBenchmarkLogCount = 0;
-const BENCHMARK_HISTORY_COLUMNS = 4;
+let lastBenchmarkLogMarker = "";
+const BENCHMARK_HISTORY_COLUMNS = 5;
 let benchmarkCaseSets = [];
+const TRACE_STAGE_COLORS = ["#7fc97f", "#beaed4", "#fdc086", "#ffff99", "#386cb0", "#f0027f", "#bf5b17", "#666666"];
+const TRACE_STAGE_ORDER = [
+  "planning_seconds",
+  "vector_recall_seconds",
+  "rerank_seconds",
+  "context_assembly_seconds",
+  "web_search_seconds",
+  "tool_execution_seconds",
+  "llm_seconds",
+];
+const TRACE_STAGE_LABELS = {
+  planning_seconds: "planning",
+  vector_recall_seconds: "vector_recall",
+  rerank_seconds: "rerank",
+  context_assembly_seconds: "context_assembly",
+  web_search_seconds: "web_search",
+  tool_execution_seconds: "tool_execution",
+  llm_seconds: "llm",
+};
+let benchmarkLiveLatestCase = null;
+let benchmarkLiveLatestCaseKey = "";
+let benchmarkLatestTraceRenderSeq = 0;
+let benchmarkLatestTraceCacheKey = "";
 
 // Current test-set selection: "<module>/<length>"
 let currentBmTestSet = "rag/short";
+
+function formatTraceNumber(value, digits = 4) {
+  const n = Number(value);
+  if (!Number.isFinite(n)) return "—";
+  return n.toFixed(digits);
+}
+
+function formatTracePercent(value) {
+  const n = Number(value);
+  if (!Number.isFinite(n) || n < 0) return "—";
+  return (n * 100).toFixed(1) + "%";
+}
+
+function downloadTextFile(text, filename) {
+  const blob = new Blob([String(text || "")], { type: "text/plain;charset=utf-8" });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement("a");
+  a.href = url;
+  a.download = filename;
+  document.body.appendChild(a);
+  a.click();
+  a.remove();
+  URL.revokeObjectURL(url);
+}
+
+function formatTraceStageLabel(key) {
+  const normalized = String(key || "").trim();
+  if (!normalized) return "";
+  const mapped = TRACE_STAGE_LABELS[normalized] || normalized;
+  return mapped.replace(/_seconds$/i, "").replace(/_/g, " ");
+}
+
+function buildTraceStageEntries(trace) {
+  const stages = trace?.stages && typeof trace.stages === "object" ? trace.stages : {};
+  const orderedKeys = [
+    ...TRACE_STAGE_ORDER.filter((key) => Object.prototype.hasOwnProperty.call(stages, key)),
+    ...Object.keys(stages).filter((key) => key !== "wall_clock_seconds" && !TRACE_STAGE_ORDER.includes(key)),
+  ];
+  const entries = orderedKeys
+    .filter((key) => key !== "wall_clock_seconds")
+    .map((key, index) => ({
+      key,
+      label: formatTraceStageLabel(key),
+      value: Number(stages[key]),
+      color: TRACE_STAGE_COLORS[index % TRACE_STAGE_COLORS.length],
+    }))
+    .filter((entry) => Number.isFinite(entry.value) && entry.value > 0);
+  const stageTotal = entries.reduce((sum, entry) => sum + entry.value, 0);
+  return entries.map((entry) => ({
+    ...entry,
+    ratio: stageTotal > 0 ? Math.max(0, Math.min(1, entry.value / stageTotal)) : 0,
+  }));
+}
+
+function renderTraceStageBars(trace) {
+  const entries = buildTraceStageEntries(trace);
+  if (!entries.length) return '<div class="trace-result-empty">暂无阶段时延</div>';
+  const totalSeconds = Number(trace?.total_elapsed_seconds || trace?.stages?.wall_clock_seconds || entries.reduce((sum, entry) => sum + entry.value, 0));
+  return `
+    <div class="trace-stage-composite-wrap">
+      <div class="trace-stage-composite" aria-label="阶段时长占比总览">${entries.map((entry) => {
+        const widthPct = Math.max(entry.ratio * 100, entry.ratio > 0 ? 1.5 : 0);
+        const label = `${entry.label}: ${formatDuration(entry.value)} / ${formatTracePercent(entry.ratio)}`;
+        return `<button type="button" class="trace-stage-segment" data-trace-stage-key="${escapeHtml(String(entry.key))}" title="${escapeHtml(label)}" style="width:${widthPct.toFixed(2)}%;background:${entry.color}"></button>`;
+      }).join("")}</div>
+      <div class="trace-stage-table-wrap">
+        <table class="trace-stage-table">
+          <thead><tr><th>阶段</th><th>用时</th><th>占比</th></tr></thead>
+          <tbody>${entries.map((entry) => `<tr data-trace-stage-row="${escapeHtml(String(entry.key))}"><td><span class="trace-stage-label"><i style="background:${entry.color}"></i>${escapeHtml(String(entry.label))}</span></td><td>${escapeHtml(formatDuration(entry.value))}</td><td>${escapeHtml(formatTracePercent(entry.ratio))}</td></tr>`).join("")}</tbody>
+          <tfoot><tr><td>total</td><td>${escapeHtml(formatDuration(totalSeconds))}</td><td>100.0%</td></tr></tfoot>
+        </table>
+      </div>
+    </div>`;
+}
+
+function renderTraceSummary(trace) {
+  if (!trace || typeof trace !== "object") return '<div class="trace-result-empty">未找到 trace 数据</div>';
+  const profile = trace.query_profile && typeof trace.query_profile === "object" ? trace.query_profile : {};
+  const router = trace.router && typeof trace.router === "object" ? trace.router : {};
+  const retrieval = trace.retrieval && typeof trace.retrieval === "object" ? trace.retrieval : {};
+  const ranking = trace.ranking && typeof trace.ranking === "object" ? trace.ranking : {};
+  const llm = trace.llm && typeof trace.llm === "object" ? trace.llm : {};
+  const result = trace.result && typeof trace.result === "object" ? trace.result : {};
+  const tools = Array.isArray(trace.tools) ? trace.tools : [];
+  const plannedTools = Array.isArray(router.planned_tools) ? router.planned_tools : [];
+  return `
+    <div class="trace-summary-grid">
+      <section class="trace-summary-card">
+        <div class="bm-card-section-label">基本信息</div>
+        <div class="trace-kv"><span>trace_id</span><strong>${escapeHtml(String(trace.trace_id || ""))}</strong></div>
+        <div class="trace-kv"><span>时间</span><strong>${escapeHtml(String(trace.timestamp || ""))}</strong></div>
+        <div class="trace-kv"><span>入口</span><strong>${escapeHtml(String(trace.entrypoint || ""))}</strong></div>
+        <div class="trace-kv"><span>调用类型</span><strong>${escapeHtml(String(trace.call_type || ""))}</strong></div>
+        <div class="trace-kv"><span>检索模式</span><strong>${escapeHtml(String(trace.search_mode || ""))}</strong></div>
+        <div class="trace-kv"><span>问题长度判定</span><strong>${escapeHtml(String(profile.profile || ""))} / ${escapeHtml(String(profile.token_count || 0))} tokens</strong></div>
+        <div class="trace-kv"><span>问题类型判定</span><strong>${escapeHtml(String(trace.query_type || "—"))}</strong></div>
+      </section>
+      <section class="trace-summary-card">
+        <div class="bm-card-section-label">路由与工具</div>
+        <div class="trace-kv"><span>调用工具</span><strong>${escapeHtml(String(router.selected_tool || "—"))}</strong></div>
+        <div class="trace-kv"><span>分类器结果</span><strong>${escapeHtml(String(router.classifier_label || "—"))}</strong></div>
+        <div class="trace-kv"><span>文档相似度</span><strong>${escapeHtml(formatTraceNumber(router.doc_similarity))}</strong></div>
+        <div class="trace-kv"><span>媒体工具调用</span><strong>${router.media_entity_confident ? "true" : "false"}</strong></div>
+        <div class="trace-chip-list">${plannedTools.length ? plannedTools.map((tool) => `<span class="trace-chip">${escapeHtml(String(tool))}</span>`).join("") : '<span class="trace-chip">none</span>'}</div>
+        <div class="trace-tool-list">${tools.length ? tools.map((tool) => `<div class="trace-tool-row"><strong>${escapeHtml(String(tool?.name || ""))}</strong><span>${escapeHtml(String(tool?.status || ""))}</span><span>${escapeHtml(formatDuration((Number(tool?.latency_ms || 0) || 0) / 1000))}</span></div>`).join("") : '<div class="trace-result-empty">暂无工具记录</div>'}</div>
+      </section>
+      <section class="trace-summary-card">
+        <div class="bm-card-section-label">检索与排序</div>
+        <div class="trace-kv"><span>向量命中</span><strong>${escapeHtml(String(retrieval.vector_hits ?? "—"))}</strong></div>
+        <div class="trace-kv"><span>阈值</span><strong>${escapeHtml(formatTraceNumber(retrieval.similarity_threshold))}</strong></div>
+        ${renderRerankOptimization(trace)}
+        <div class="trace-kv"><span>问题重写</span><strong>${escapeHtml(String(retrieval.query_rewrite_status || "—"))} / ${escapeHtml(String(retrieval.query_rewrite_count ?? 0))}</strong></div>
+        <div class="trace-kv"><span>重排序</span><strong>${escapeHtml(String(ranking.method || "—"))} / k=${escapeHtml(String(ranking.rerank_k ?? "—"))}</strong></div>
+      </section>
+      <section class="trace-summary-card">
+        <div class="bm-card-section-label">LLM 与结果</div>
+        <div class="trace-kv"><span>调用类型</span><strong>${escapeHtml(String(llm.backend || "—"))}</strong></div>
+        <div class="trace-kv"><span>使用模型</span><strong>${escapeHtml(String(llm.model || "—"))}</strong></div>
+        <div class="trace-kv"><span>LLM 用时</span><strong>${escapeHtml(formatDuration(llm.latency_seconds))}</strong></div>
+        <div class="trace-kv"><span>输入 Tokens</span><strong>${escapeHtml(String(llm.input_tokens_est ?? 0))}</strong></div>
+        <div class="trace-kv"><span>输出 Tokens</span><strong>${escapeHtml(String(llm.output_tokens_est ?? 0))}</strong></div>
+        <div class="trace-kv"><span>无效回答</span><strong>${result.no_context ? `true / ${escapeHtml(String(result.no_context_reason || ""))}` : "false"}</strong></div>
+      </section>
+    </div>
+    <section class="trace-summary-card trace-stage-panel">
+      <div class="bm-card-section-label">阶段用时</div>
+      ${renderTraceStageBars(trace)}
+    </section>
+  `;
+}
+
+function renderDashboardTrace(trace, exportText) {
+  currentTraceRecord = trace;
+  currentTraceExportText = String(exportText || "");
+  if (dashboardTraceMeta) {
+    dashboardTraceMeta.textContent = trace
+      ? `${trace.entrypoint || "trace"} | ${trace.call_type || ""} | 总耗时 ${formatDuration(trace.total_elapsed_seconds || trace?.stages?.wall_clock_seconds || 0)}`
+      : "输入 trace_id 查看阶段用时、路由和工具调用摘要";
+  }
+  if (dashboardTraceOpenBtn) dashboardTraceOpenBtn.disabled = !trace;
+  if (dashboardTraceResult) dashboardTraceResult.innerHTML = trace ? renderTraceSummary(trace) : '<div class="trace-result-empty">暂无 trace 数据</div>';
+}
+
+async function fetchTrace(traceId) {
+  const payload = await apiGet(`/api/dashboard/trace?trace_id=${encodeURIComponent(traceId)}`);
+  return {
+    trace: payload?.trace || null,
+    exportText: String(payload?.export_text || ""),
+  };
+}
+
+async function lookupDashboardTrace(traceId) {
+  const value = String(traceId || dashboardTraceInput?.value || "").trim();
+  if (!value) {
+    window.alert("请输入 trace_id");
+    return;
+  }
+  if (dashboardTraceMeta) dashboardTraceMeta.textContent = `正在查询 ${value} ...`;
+  const { trace, exportText } = await fetchTrace(value);
+  if (dashboardTraceInput) dashboardTraceInput.value = value;
+  renderDashboardTrace(trace, exportText);
+}
+
+function closeTraceModal() {
+  traceModal?.classList.add("hidden");
+  traceModal?.setAttribute("aria-hidden", "true");
+}
+
+async function openTraceModal(traceId) {
+  const value = String(traceId || currentTraceRecord?.trace_id || "").trim();
+  if (!value) {
+    window.alert("缺少 trace_id");
+    return;
+  }
+  const { trace, exportText } = await fetchTrace(value);
+  currentTraceRecord = trace;
+  currentTraceExportText = exportText;
+  if (traceModalMeta) {
+    traceModalMeta.textContent = `${trace?.trace_id || value} | ${trace?.entrypoint || ""} | ${trace?.call_type || ""}`;
+  }
+  if (traceModalContent) traceModalContent.innerHTML = "";
+  if (traceModalExport) traceModalExport.textContent = exportText;
+  traceModal?.classList.remove("hidden");
+  traceModal?.setAttribute("aria-hidden", "false");
+}
+
+async function exportCurrentTrace(traceId) {
+  const value = String(traceId || currentTraceRecord?.trace_id || dashboardTraceInput?.value || "").trim();
+  if (!value) {
+    window.alert("缺少 trace_id");
+    return;
+  }
+  if (currentTraceRecord && currentTraceRecord.trace_id === value && currentTraceExportText) {
+    downloadTextFile(currentTraceExportText, `${value}.txt`);
+    return;
+  }
+  const response = await fetch(`/api/dashboard/trace/export?trace_id=${encodeURIComponent(value)}`);
+  if (!response.ok) throw new Error(await response.text());
+  const text = await response.text();
+  downloadTextFile(text, `${value}.txt`);
+}
+
+function getBenchmarkModuleLabel(module) {
+  return ({ rag: "RAG", agent: "LLM Agent", hybrid: "Hybrid" }[String(module || "").trim()] || String(module || "").toUpperCase());
+}
+
+function getLatestBenchmarkCaseFromRun(run) {
+  if (!run || typeof run !== "object") return null;
+  const modules = Array.isArray(run?.config?.modules) ? run.config.modules.map((item) => String(item || "").trim()).filter(Boolean) : [];
+  const orderedModules = [];
+  if (modules.includes("rag")) orderedModules.push("rag");
+  modules.forEach((module) => {
+    if ((module === "agent" || module === "hybrid") && !orderedModules.includes(module)) orderedModules.push(module);
+  });
+  let latest = null;
+  ["short", "medium", "long"].forEach((length) => {
+    orderedModules.forEach((module) => {
+      const records = Array.isArray(run?.[module]?.records_by_length?.[length]) ? run[module].records_by_length[length] : [];
+      if (!records.length) return;
+      latest = {
+        module,
+        length,
+        case_index: records.length,
+        case_total: records.length,
+        timestamp: String(run.timestamp || "").trim(),
+        record: records[records.length - 1],
+      };
+    });
+  });
+  return latest;
+}
+
+function getLatestBenchmarkCase(results) {
+  if (benchmarkLiveLatestCase?.record) return benchmarkLiveLatestCase;
+  if (!Array.isArray(results) || !results.length) return null;
+  return getLatestBenchmarkCaseFromRun(results[results.length - 1]);
+}
+
+function getBenchmarkLatestCaseKey(latestCase, mode = benchmarkLiveLatestCase?.record ? "live" : "history") {
+  if (!latestCase?.record || typeof latestCase.record !== "object") return "";
+  return [
+    mode,
+    String(latestCase.module || "").trim(),
+    String(latestCase.length || "").trim(),
+    Number(latestCase.case_index || 0),
+    Number(latestCase.case_total || 0),
+    String(latestCase.timestamp || "").trim(),
+    String(latestCase.record?.trace_id || "").trim(),
+  ].join("|");
+}
+
+function renderBenchmarkLatestCaseFallback(latestCase) {
+  const record = latestCase?.record && typeof latestCase.record === "object" ? latestCase.record : {};
+  const traceId = String(record.trace_id || "");
+  const plannedTools = Array.isArray(record.planned_tools) ? record.planned_tools : [];
+  const noContext = Number(record.no_context || 0) > 0;
+  return `<article class="bm-case-card">
+    <div class="trace-kv"><span>Trace ID</span><strong>${escapeHtml(traceId || "—")}</strong></div>
+    <div class="trace-kv"><span>Query</span><strong>${escapeHtml(String(record.query || "—"))}</strong></div>
+    <div class="trace-kv"><span>Query Type</span><strong>${escapeHtml(String(record.query_type || "—"))}</strong></div>
+    <div class="trace-kv"><span>No Context</span><strong>${noContext ? `true / ${escapeHtml(String(record.no_context_reason || ""))}` : "false"}</strong></div>
+    <div class="trace-chip-list">${plannedTools.length ? plannedTools.map((tool) => `<span class="trace-chip">${escapeHtml(String(tool))}</span>`).join("") : '<span class="trace-chip">none</span>'}</div>
+    <div class="card-modal-actions">
+      <button class="ghost" data-trace-open="${escapeHtml(traceId)}"${traceId ? "" : " disabled"}>查看 Trace</button>
+    </div>
+  </article>`;
+}
+
+async function renderBenchmarkCaseTraceList(results, latestCase = benchmarkLiveLatestCase, { force = false } = {}) {
+  const container = document.getElementById("bm-case-trace-list");
+  const meta = document.getElementById("bm-case-trace-meta");
+  if (!container) return;
+  const resolved = latestCase?.record ? latestCase : getLatestBenchmarkCase(results);
+  if (!resolved?.record) {
+    benchmarkLatestTraceCacheKey = "";
+    if (meta) meta.textContent = "显示正在运行或最近一次 Benchmark 的最新 trace 详情";
+    container.innerHTML = '<div class="trace-result-empty">暂无 case trace 数据</div>';
+    return;
+  }
+  const traceId = String(resolved.record?.trace_id || "").trim();
+  if (meta) {
+    meta.textContent = `${benchmarkLiveLatestCase?.record ? "运行中最新" : "最近完成"}: ${String(resolved.timestamp || "")} | ${getBenchmarkModuleLabel(resolved.module)} / ${resolved.length || ""} | case ${resolved.case_index || "-"}/${resolved.case_total || "-"}`;
+  }
+  if (!traceId) {
+    benchmarkLatestTraceCacheKey = "";
+    container.innerHTML = renderBenchmarkLatestCaseFallback(resolved);
+    return;
+  }
+  const cacheKey = `${traceId}|${benchmarkLiveLatestCase?.record ? "live" : "history"}`;
+  if (!force && benchmarkLatestTraceCacheKey === cacheKey) return;
+  benchmarkLatestTraceCacheKey = cacheKey;
+  const renderSeq = ++benchmarkLatestTraceRenderSeq;
+  if (!container.children.length) {
+    container.innerHTML = '<div class="trace-result-empty">正在加载最新 case trace...</div>';
+  }
+  try {
+    const { trace } = await fetchTrace(traceId);
+    if (renderSeq !== benchmarkLatestTraceRenderSeq) return;
+    if (!trace) {
+      container.innerHTML = renderBenchmarkLatestCaseFallback(resolved);
+      return;
+    }
+    container.innerHTML = `${renderTraceSummary(trace)}<div class="card-modal-actions"><button class="ghost" data-trace-open="${escapeHtml(traceId)}">弹窗查看</button></div>`;
+  } catch (_err) {
+    if (renderSeq !== benchmarkLatestTraceRenderSeq) return;
+    container.innerHTML = renderBenchmarkLatestCaseFallback(resolved);
+  }
+}
+
+function updateBenchmarkLiveStateFromJob(job, { render = true } = {}) {
+  const meta = job?.metadata && typeof job.metadata === "object" ? job.metadata : {};
+  const latestCase = meta.latest_case && typeof meta.latest_case === "object" ? meta.latest_case : null;
+  let changed = false;
+  if (latestCase && latestCase.record && typeof latestCase.record === "object") {
+    const nextLatestCase = {
+      module: String(latestCase.module || "").trim(),
+      length: String(latestCase.length || "").trim(),
+      case_index: Number(latestCase.case_index || 0),
+      case_total: Number(latestCase.case_total || 0),
+      timestamp: String(latestCase.timestamp || "").trim(),
+      record: latestCase.record,
+    };
+    const nextKey = getBenchmarkLatestCaseKey(nextLatestCase, "live");
+    changed = nextKey !== benchmarkLiveLatestCaseKey;
+    benchmarkLiveLatestCase = nextLatestCase;
+    benchmarkLiveLatestCaseKey = nextKey;
+  } else if (benchmarkLiveLatestCase || benchmarkLiveLatestCaseKey) {
+    benchmarkLiveLatestCase = null;
+    benchmarkLiveLatestCaseKey = "";
+    changed = true;
+  }
+  if (render && changed) renderBenchmarkCaseTraceList(benchmarkHistory, benchmarkLiveLatestCase, { force: true }).catch(() => {});
+  return changed;
+}
+
+async function refreshBenchmarkLatestCase() {
+  if (!activeBenchmarkJobId) {
+    benchmarkLiveLatestCase = null;
+    benchmarkLiveLatestCaseKey = "";
+    await renderBenchmarkCaseTraceList(benchmarkHistory, null, { force: true });
+    return;
+  }
+  const job = await apiGet(`/api/benchmark/jobs/${encodeURIComponent(activeBenchmarkJobId)}`);
+  updateBenchmarkLiveStateFromJob(job, { render: false });
+  await renderBenchmarkCaseTraceList(benchmarkHistory, benchmarkLiveLatestCase, { force: true });
+}
 
 function renderBenchmarkTable(results) {
   const table = document.getElementById("bm-history-table");
@@ -1456,6 +2088,7 @@ function renderBenchmarkTable(results) {
 
   if (!results.length) {
     table.innerHTML = `<tbody><tr><td colspan="${emptyColspan}" style="text-align:center;color:#7a7f6f">运行测试后查看历史对比数据</td></tr></tbody>`;
+    renderBenchmarkCaseTraceList([], benchmarkLiveLatestCase, { force: true }).catch(() => {});
     return;
   }
 
@@ -1465,6 +2098,7 @@ function renderBenchmarkTable(results) {
     const mod = ({ rag: "RAG", agent: "AGENT", hybrid: "HYBRID" }[module] || module.toUpperCase());
     const lenLabel = { short: "短", medium: "中", long: "长" }[length] || length;
     table.innerHTML = `<tbody><tr><td colspan="${emptyColspan}" style="text-align:center;color:#7a7f6f">当前测试集（${mod} / ${lenLabel}查询）暂无数据，请先运行包含该模块的测试</td></tr></tbody>`;
+    renderBenchmarkCaseTraceList(results, benchmarkLiveLatestCase, { force: true }).catch(() => {});
     return;
   }
 
@@ -1488,6 +2122,13 @@ function renderBenchmarkTable(results) {
     else if (n >= 0.001) s = (n * 1000).toFixed(1) + "ms";
     else s = Math.round(n * 1_000_000) + "µs";
     return `<span style="font-variant-numeric:tabular-nums">${s}</span>`;
+  };
+  const fmtZeroable = (v) => {
+    if (v == null) return `<span style='color:#5a5f50'>—</span>`;
+    const n = Number(v);
+    if (!Number.isFinite(n)) return `<span style='color:#5a5f50'>—</span>`;
+    if (n === 0) return `<span style="font-variant-numeric:tabular-nums">0ms</span>`;
+    return fmt(n);
   };
   const fmtPct = (v) =>
     v != null && Number.isFinite(Number(v))
@@ -1513,8 +2154,8 @@ function renderBenchmarkTable(results) {
     ["端到端 p95",    (d) => fmt(d?.p95_elapsed_s ?? d?.p95_wall_clock_s)],
     ["向量召回均值", (d) => fmt(d?.avg_vector_recall_seconds_s)],
     ["向量召回 p95",  (d) => fmt(d?.p95_vector_recall_seconds_s)],
-    ["融合重排均值", (d) => fmt(d?.avg_rerank_seconds_s)],
-    ["融合重排 p95",  (d) => fmt(d?.p95_rerank_seconds_s)],
+    ["融合排序均值", (d) => fmtZeroable(d?.avg_rerank_seconds_s)],
+    ["融合排序 p95",  (d) => fmtZeroable(d?.p95_rerank_seconds_s)],
   ];
   const assertionRows = [
     ["当前集断言", (_d, run) => summarizeAssertionScope(run?.assertions?.[module]?.by_length?.[length])],
@@ -1523,12 +2164,14 @@ function renderBenchmarkTable(results) {
   ];
   const rowDefs = (module === "rag" ? ragRows : agentRows).concat(assertionRows);
 
-  const rows = rowDefs.map(([label, getter]) =>
-    `<tr><td style="white-space:nowrap;color:#b0b89a;font-size:0.82em">${escapeHtml(label)}</td>${recent
-      .map((r) => `<td>${getter(r?.[module]?.by_length?.[length], r)}</td>`)
-      .join("")}</tr>`
-  );
+  const rows = rowDefs.map(([label, getter]) => {
+    const cellClass = /断言|失败项/.test(String(label)) ? "benchmark-assert-cell" : "benchmark-metric-cell";
+    return `<tr><td style="white-space:nowrap;color:#b0b89a;font-size:0.82em">${escapeHtml(label)}</td>${recent
+      .map((r) => `<td class="${cellClass}">${getter(r?.[module]?.by_length?.[length], r)}</td>`)
+      .join("")}</tr>`;
+  });
   table.innerHTML = `${thead}<tbody>${rows.join("")}</tbody>`;
+  renderBenchmarkCaseTraceList(results, benchmarkLiveLatestCase, { force: true }).catch(() => {});
 }
 
 async function bootstrapBenchmarkTab() {
@@ -1555,7 +2198,7 @@ async function bootstrapBenchmarkTab() {
           const id = String(item?.id || "");
           const label = String(item?.label || id);
           const maxCount = Number(item?.max_query_count_per_type || 0);
-          const desc = `${id} / ${label}${maxCount > 0 ? ` / 每类最多 ${maxCount}` : ""}`;
+          const desc = `${id} / ${label}`;
           return `<option value="${escapeHtml(id)}"${id === "regression_v1" ? " selected" : ""}>${escapeHtml(desc)}</option>`;
         }).join("");
       }
@@ -1631,6 +2274,10 @@ function runBenchmark() {
   if (abortBtn) abortBtn.disabled = false;
   if (progressWrap) progressWrap.classList.remove("hidden");
   if (logBox) { logBox.textContent = ""; logBox.classList.remove("hidden"); }
+  benchmarkLiveLatestCase = null;
+  benchmarkLiveLatestCaseKey = "";
+  benchmarkLatestTraceCacheKey = "";
+  renderBenchmarkCaseTraceList(benchmarkHistory, null, { force: true }).catch(() => {});
   if (progressFill) progressFill.style.width = "0%";
   if (progressText) progressText.textContent = "连接中...";
 
@@ -1649,8 +2296,10 @@ function runBenchmark() {
     .then(async (resp) => {
       activeBenchmarkJobId = String(resp?.job?.id || "");
       lastBenchmarkLogCount = 0;
+      lastBenchmarkLogMarker = "";
       const job = await pollJsonJob(`/api/benchmark/jobs/${encodeURIComponent(activeBenchmarkJobId)}`, {
         onUpdate: (runningJob) => {
+          updateBenchmarkLiveStateFromJob(runningJob, { render: true });
           const msg = String(runningJob?.message || "等待中...");
           if (progressText) progressText.textContent = msg;
           const total = Number(runningJob?.total || 0);
@@ -1659,16 +2308,15 @@ function runBenchmark() {
             progressFill.style.width = `${Math.round((current / total) * 100)}%`;
           }
           const logs = Array.isArray(runningJob?.logs) ? runningJob.logs : [];
-          if (logBox && logs.length > lastBenchmarkLogCount) {
-            logBox.textContent += logs.slice(lastBenchmarkLogCount).join("\n") + "\n";
-            logBox.scrollTop = logBox.scrollHeight;
-            lastBenchmarkLogCount = logs.length;
-          }
+          syncBenchmarkLogBox(logBox, logs);
         },
       });
       if (job?.status === "completed") {
         const result = job?.result;
         if (result) {
+          benchmarkLiveLatestCase = null;
+          benchmarkLiveLatestCaseKey = "";
+          benchmarkLatestTraceCacheKey = "";
           benchmarkHistory.push(result);
           renderBenchmarkTable(benchmarkHistory);
           if (lastRun) {
@@ -1686,6 +2334,10 @@ function runBenchmark() {
           logBox.scrollTop = logBox.scrollHeight;
         }
       } else if (job?.status === "cancelled") {
+        benchmarkLiveLatestCase = null;
+        benchmarkLiveLatestCaseKey = "";
+        benchmarkLatestTraceCacheKey = "";
+        renderBenchmarkCaseTraceList(benchmarkHistory, null, { force: true }).catch(() => {});
         if (progressText) progressText.textContent = "已中止";
         if (logBox) {
           logBox.textContent += "⏸ 用户中止测试\n";
@@ -1711,6 +2363,9 @@ async function clearBenchmarkHistory() {
   if (!window.confirm("确定清除所有 Benchmark 历史记录？")) return;
   await apiDelete("/api/benchmark/history");
   benchmarkHistory = [];
+  benchmarkLiveLatestCase = null;
+  benchmarkLiveLatestCaseKey = "";
+  benchmarkLatestTraceCacheKey = "";
   renderBenchmarkTable([]);
   const lastRun = document.getElementById("benchmark-last-run");
   if (lastRun) lastRun.textContent = "从未运行";
@@ -1958,13 +2613,43 @@ function renderSessions() {
   }
 }
 
-function appendChatRow(role, text, keepBottom = true, extraClass = "") {
+function formatTraceMeta(traceId) {
+  const value = String(traceId || "").trim();
+  return value ? `\`Trace ID:\` ${value}` : "";
+}
+
+function appendChatRow(role, text, keepBottom = true, extraClass = "", metaText = "") {
   const row = document.createElement("div");
   row.className = `msg ${role}${extraClass ? ` ${extraClass}` : ""}`;
   const roleLabel = role === "user" ? "用户" : role === "assistant" ? "助手" : "系统";
-  row.innerHTML = `<div class="role">${roleLabel}</div><div class="content markdown-body">${markdownToHtml(text)}</div>`;
+  const metaHtml = metaText ? `<div class="msg-meta">${escapeHtml(metaText)}</div>` : "";
+  row.innerHTML = `<div class="role">${roleLabel}</div>${metaHtml}<div class="content markdown-body">${markdownToHtml(text)}</div>`;
   qaMessages.appendChild(row);
   if (keepBottom) qaMessages.scrollTop = qaMessages.scrollHeight;
+  return row;
+}
+
+function upsertTraceMetaRowBefore(targetRow, metaText) {
+  if (!targetRow || !targetRow.parentElement) return null;
+  const chat = targetRow.parentElement;
+  let anchor = targetRow;
+  let sibling = targetRow.previousSibling;
+  while (sibling && sibling.classList && sibling.classList.contains("think")) {
+    anchor = sibling;
+    sibling = sibling.previousSibling;
+  }
+
+  const existingMetaRow = sibling && sibling.classList && sibling.classList.contains("trace-meta") ? sibling : null;
+  const normalizedMeta = String(metaText || "").trim();
+  if (!normalizedMeta) {
+    if (existingMetaRow) existingMetaRow.remove();
+    return null;
+  }
+
+  const row = existingMetaRow || document.createElement("div");
+  row.className = "msg system trace-meta";
+  row.innerHTML = `<div class="role">系统</div><div class="content trace-meta-content markdown-body">${markdownToHtml(normalizedMeta)}</div>`;
+  if (!existingMetaRow) chat.insertBefore(row, anchor);
   return row;
 }
 
@@ -1988,12 +2673,15 @@ function renderChat(messages) {
     const roleRaw = String(message.role || "").trim().toLowerCase();
     const role = roleRaw === "user" || roleRaw === "用户" ? "user" : roleRaw === "assistant" || roleRaw === "助手" ? "assistant" : "system";
     const text = String(message.text || "");
+    const metaText = formatTraceMeta(message.trace_id);
     if (role === "assistant") {
       const parsed = splitThinkBlocks(text);
       const assistantRow = appendChatRow("assistant", parsed.answer || text, false);
       insertSystemRowsBefore(assistantRow, parsed.thoughts);
+      upsertTraceMetaRowBefore(assistantRow, metaText);
+      addAgentFeedbackForRow(assistantRow, { answer: parsed.answer || text, traceId: message.trace_id });
     } else {
-      appendChatRow(role, text, false);
+      appendChatRow(role, text, false, "", metaText);
     }
   }
   qaMessages.scrollTop = qaMessages.scrollHeight;
@@ -2085,6 +2773,11 @@ function buildPlanDetailsMarkdown(result, elapsedSeconds) {
   const planned = Array.isArray(result?.planned_tools) ? result.planned_tools : [];
   const toolResults = Array.isArray(result?.tool_results) ? result.tool_results : [];
   const lines = [`正在规划与调用工具... (${formatElapsed(elapsedSeconds)})`, ""];
+  const traceId = String(result?.trace_id || "").trim();
+
+  if (traceId) {
+    lines.push(`Trace ID: ${traceId}`, "");
+  }
 
   if (planned.length) {
     lines.push("计划调用：");
@@ -2209,13 +2902,48 @@ function wireChatLinks() {
   });
 }
 
-function appendLocalMessage(role, text) {
+function appendLocalMessage(role, text, traceId = "") {
   const session = getCurrentSession();
   if (!session) return;
   if (!Array.isArray(session.messages)) session.messages = [];
-  session.messages.push({ role, text });
+  const message = { role, text };
+  const normalizedTrace = String(traceId || "").trim();
+  if (normalizedTrace) message.trace_id = normalizedTrace;
+  session.messages.push(message);
   session.updated_at = new Date().toISOString().slice(0, 19);
   renderSessions();
+}
+
+function getPreviousUserQuestion(row) {
+  let node = row?.previousSibling;
+  while (node) {
+    if (node instanceof HTMLElement && node.classList.contains("msg") && node.classList.contains("user")) {
+      const content = node.querySelector(".content");
+      return String(content?.textContent || "").trim();
+    }
+    node = node.previousSibling;
+  }
+  return "";
+}
+
+function addAgentFeedbackForRow(row, payload = {}) {
+  const question = String(payload.question || getPreviousUserQuestion(row) || "").trim();
+  const answer = String(payload.answer || row?.querySelector(".content")?.textContent || "").trim();
+  const traceId = String(payload.traceId || "").trim();
+  addFeedbackButton(row, {
+    source: "agent_chat",
+    question,
+    answer,
+    trace_id: traceId,
+    session_id: currentSessionId,
+    model: pageLocalModel,
+    search_mode: String(payload.searchMode || ""),
+    query_type: String(payload.queryType || ""),
+    metadata: {
+      trace_id: traceId,
+      planned_tools: Array.isArray(payload.plannedTools) ? payload.plannedTools : [],
+    },
+  });
 }
 
 async function ask(searchMode) {
@@ -2234,6 +2962,7 @@ async function ask(searchMode) {
   let toolDoneLines = [];
   let streamFinalized = false;
   let quotaExceededEvent = null;
+  let activeTraceId = "";
 
   const pendingTimer = window.setInterval(() => {
     if (streamFinalized) return;
@@ -2294,14 +3023,17 @@ async function ask(searchMode) {
           try { event = JSON.parse(jsonText); } catch (_e) { continue; }
 
           if (event.type === "progress") {
+            if (event.trace_id) activeTraceId = String(event.trace_id || "").trim();
             progressLines.push(String(event.message || ""));
           } else if (event.type === "tool_done") {
+            if (event.trace_id) activeTraceId = String(event.trace_id || "").trim();
             const tool = String(event.tool || "");
             const status = String(event.status || "");
             const summary = String(event.summary || "");
             const statusIcon = status === "ok" ? "✓" : status === "error" ? "✗" : "•";
             toolDoneLines.push(`${statusIcon} **${tool}** [${status}]${summary ? `: ${summary}` : ""}`);
           } else if (event.type === "quota_exceeded") {
+            if (event.trace_id) activeTraceId = String(event.trace_id || "").trim();
             streamFinalized = true;
             quotaExceededEvent = event;
             pending.classList.remove("processing");
@@ -2310,6 +3042,7 @@ async function ask(searchMode) {
             streamFinalized = true;
             throw new Error(String(event.message || "Agent 服务出错"));
           } else if (event.type === "done") {
+            if (event.trace_id) activeTraceId = String(event.trace_id || "").trim();
             streamFinalized = true;
             return { done: true, payload: event.payload };
           }
@@ -2325,6 +3058,7 @@ async function ask(searchMode) {
           if (!jsonText) continue;
           let event;
           try { event = JSON.parse(jsonText); } catch (_e) { continue; }
+          if (event.trace_id) activeTraceId = String(event.trace_id || "").trim();
           if (event.type === "done") { streamFinalized = true; return { done: true, payload: event.payload }; }
           if (event.type === "error") { streamFinalized = true; throw new Error(String(event.message || "Agent 服务出错")); }
           if (event.type === "quota_exceeded") { streamFinalized = true; quotaExceededEvent = event; pending.classList.remove("processing"); return { quotaExceeded: true, event }; }
@@ -2360,6 +3094,7 @@ async function ask(searchMode) {
 
     const result = streamResult?.payload;
     if (!result) throw new Error("未收到回答");
+    if (!result.trace_id && activeTraceId) result.trace_id = activeTraceId;
 
     currentSessionId = String(result.session_id || currentSessionId || "").trim();
 
@@ -2377,9 +3112,18 @@ async function ask(searchMode) {
     }
 
     const parsed = splitThinkBlocks(finalText);
-    const assistantRow = appendChatRow("assistant", parsed.answer || finalText);
+    const assistantRow = appendChatRow("assistant", parsed.answer || finalText, true);
     insertSystemRowsBefore(assistantRow, parsed.thoughts);
-    appendLocalMessage("assistant", finalText);
+    upsertTraceMetaRowBefore(assistantRow, formatTraceMeta(result.trace_id));
+    addAgentFeedbackForRow(assistantRow, {
+      question,
+      answer: parsed.answer || finalText,
+      traceId: result.trace_id,
+      searchMode,
+      queryType: result?.query_classification?.query_type,
+      plannedTools: Array.isArray(result?.planned_tools) ? result.planned_tools.map((item) => item?.name).filter(Boolean) : [],
+    });
+    appendLocalMessage("assistant", finalText, result.trace_id);
   } catch (err) {
     streamFinalized = true;
     window.clearInterval(pendingTimer);
@@ -2490,6 +3234,7 @@ async function init() {
     if (event.key === "Escape") {
       if (warningsModal && !warningsModal.classList.contains("hidden")) closeWarningsModal();
       if (missingQueriesModal && !missingQueriesModal.classList.contains("hidden")) closeMissingQueriesModal();
+      if (traceModal && !traceModal.classList.contains("hidden")) closeTraceModal();
       if (customCardModal && !customCardModal.classList.contains("hidden")) closeCustomCardModal();
       const usageModal = document.getElementById("usage-edit-modal");
       if (usageModal && !usageModal.classList.contains("hidden")) closeUsageModal();
@@ -2551,6 +3296,36 @@ async function init() {
     clearRuntimeDataSelection().catch((e) => window.alert(`清除失败: ${String(e)}`));
   });
   runtimeDataCloseBtn?.addEventListener("click", closeRuntimeDataModal);
+  dashboardTraceQueryBtn?.addEventListener("click", () => {
+    lookupDashboardTrace().catch((e) => window.alert(`Trace 查询失败: ${String(e)}`));
+  });
+  dashboardTraceOpenBtn?.addEventListener("click", () => {
+    openTraceModal().catch((e) => window.alert(`Trace 加载失败: ${String(e)}`));
+  });
+  dashboardTraceInput?.addEventListener("keydown", (event) => {
+    if (event.key === "Enter") {
+      event.preventDefault();
+      lookupDashboardTrace().catch((e) => window.alert(`Trace 查询失败: ${String(e)}`));
+    }
+  });
+  traceModalCloseBtn?.addEventListener("click", closeTraceModal);
+  traceModalExportBtn?.addEventListener("click", () => {
+    exportCurrentTrace().catch((e) => window.alert(`Trace 导出失败: ${String(e)}`));
+  });
+  const traceStageClickHandler = (event) => {
+    const target = event.target;
+    const segment = target instanceof Element ? target.closest("[data-trace-stage-key]") : null;
+    const row = target instanceof Element ? target.closest("[data-trace-stage-row]") : null;
+    const key = String(segment?.getAttribute("data-trace-stage-key") || row?.getAttribute("data-trace-stage-row") || "").trim();
+    if (!key) return;
+    const scope = target instanceof Element ? target.closest(".trace-stage-composite-wrap") : null;
+    if (!scope) return;
+    scope.querySelectorAll("[data-trace-stage-key], [data-trace-stage-row]").forEach((node) => {
+      node.classList.toggle("is-active", String(node.getAttribute("data-trace-stage-key") || node.getAttribute("data-trace-stage-row") || "") === key);
+    });
+  };
+  dashboardTraceResult?.addEventListener("click", traceStageClickHandler);
+  traceModalContent?.addEventListener("click", traceStageClickHandler);
   warningsModal?.addEventListener("click", (event) => {
     const target = event.target;
     if (target instanceof Element && target.getAttribute("data-role") === "warnings-backdrop") {
@@ -2567,6 +3342,12 @@ async function init() {
     const target = event.target;
     if (target instanceof Element && target.getAttribute("data-role") === "runtime-data-backdrop") {
       closeRuntimeDataModal();
+    }
+  });
+  traceModal?.addEventListener("click", (event) => {
+    const target = event.target;
+    if (target instanceof Element && target.getAttribute("data-role") === "trace-backdrop") {
+      closeTraceModal();
     }
   });
   dashboardJobsRefreshBtn?.addEventListener("click", () => {
@@ -2604,6 +3385,11 @@ async function init() {
       openMissingQueriesModal().catch((e) => window.alert(`加载失败: ${String(e)}`));
       return;
     }
+    const feedbackCard = target.closest("[data-role='feedback-summary']");
+    if (feedbackCard) {
+      openFeedbackModal().catch((e) => window.alert(`加载失败: ${String(e)}`));
+      return;
+    }
     const runtimeDataCard = target.closest("[data-role='runtime-data-summary']");
     if (runtimeDataCard) {
       openRuntimeDataModal().catch((e) => window.alert(`加载失败: ${String(e)}`));
@@ -2629,6 +3415,47 @@ async function init() {
     } catch (_err) {
       // Ignore cancel race with completed jobs.
     }
+  });
+  benchmarkCaseTraceRefreshBtn?.addEventListener("click", () => {
+    refreshBenchmarkLatestCase().catch((e) => window.alert(`刷新最新 case 失败: ${String(e)}`));
+  });
+  document.getElementById("bm-case-trace-list")?.addEventListener("click", (event) => {
+    const target = event.target;
+    const btn = target instanceof Element ? target.closest("[data-trace-open]") : null;
+    if (!btn) return;
+    const traceId = String(btn.getAttribute("data-trace-open") || "").trim();
+    if (!traceId) return;
+    openTraceModal(traceId).catch((e) => window.alert(`Trace 加载失败: ${String(e)}`));
+  });
+  feedbackSourceSelect?.addEventListener("change", () => {
+    openFeedbackModal().catch((e) => window.alert(`加载失败: ${String(e)}`));
+  });
+  feedbackExportBtn?.addEventListener("click", () => {
+    exportFeedbackJson().catch((e) => window.alert(`导出失败: ${String(e)}`));
+  });
+  feedbackClearBtn?.addEventListener("click", () => {
+    clearFeedback().catch((e) => window.alert(`清空失败: ${String(e)}`));
+  });
+  feedbackCloseBtn?.addEventListener("click", closeFeedbackModal);
+  feedbackModal?.addEventListener("click", (event) => {
+    const target = event.target;
+    if (!(target instanceof Element)) return;
+    if (target.dataset.role === "feedback-backdrop") closeFeedbackModal();
+  });
+  feedbackModalList?.addEventListener("click", (event) => {
+    const target = event.target;
+    const item = target instanceof Element ? target.closest("[data-feedback-id]") : null;
+    if (!item) return;
+    const feedbackId = String(item.getAttribute("data-feedback-id") || "").trim();
+    const row = currentFeedbackItems.find((entry) => String(entry.id || "") === feedbackId);
+    if (row) showFeedbackDetail(row);
+  });
+  if (feedbackModalList) bindLongPress(feedbackModalList, (target) => {
+    const item = target.closest("[data-feedback-id]");
+    if (!item) return;
+    const feedbackId = String(item.getAttribute("data-feedback-id") || "").trim();
+    const row = currentFeedbackItems.find((entry) => String(entry.id || "") === feedbackId);
+    if (row) showFeedbackDetail(row);
   });
 
   wireChatLinks();

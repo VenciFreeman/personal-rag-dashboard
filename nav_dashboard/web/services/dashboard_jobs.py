@@ -1,9 +1,11 @@
 from __future__ import annotations
 
+import json
 import threading
 import traceback
 from dataclasses import dataclass, field
 from datetime import datetime
+from pathlib import Path
 from typing import Any, Callable
 from uuid import uuid4
 
@@ -32,8 +34,10 @@ class DashboardJob:
 
 _LOCK = threading.Lock()
 _JOBS: dict[str, DashboardJob] = {}
-_MAX_LOGS = 200
-_MAX_JOBS = 80
+_MAX_LOGS = 800
+_MAX_JOBS = 200
+_DATA_DIR = Path(__file__).resolve().parents[2] / "data"
+_JOBS_FILE = _DATA_DIR / "dashboard_jobs.json"
 
 
 def _now_iso() -> str:
@@ -59,6 +63,72 @@ def _snapshot(job: DashboardJob) -> dict[str, Any]:
         "error": job.error,
         "cancel_requested": job.cancel_requested,
     }
+
+
+def _job_from_payload(payload: dict[str, Any]) -> DashboardJob | None:
+    try:
+        return DashboardJob(
+            id=str(payload.get("id") or uuid4().hex[:10]),
+            job_type=str(payload.get("type") or payload.get("job_type") or "job"),
+            label=str(payload.get("label") or payload.get("job_type") or "job"),
+            metadata=dict(payload.get("metadata") or {}),
+            status=str(payload.get("status") or "queued"),
+            message=str(payload.get("message") or ""),
+            created_at=str(payload.get("created_at") or _now_iso()),
+            updated_at=str(payload.get("updated_at") or payload.get("created_at") or _now_iso()),
+            started_at=str(payload.get("started_at") or ""),
+            finished_at=str(payload.get("finished_at") or ""),
+            current=max(0, int(payload.get("current") or 0)),
+            total=max(0, int(payload.get("total") or 0)),
+            logs=[str(item) for item in list(payload.get("logs") or [])[-_MAX_LOGS:]],
+            result=payload.get("result"),
+            error=str(payload.get("error") or ""),
+            cancel_requested=bool(payload.get("cancel_requested")),
+        )
+    except Exception:
+        return None
+
+
+def _save_jobs_locked() -> None:
+    try:
+        _DATA_DIR.mkdir(parents=True, exist_ok=True)
+        ordered = sorted(_JOBS.values(), key=lambda item: (item.updated_at, item.created_at), reverse=True)
+        payload = {
+            "jobs": [_snapshot(job) for job in ordered[:_MAX_JOBS]],
+            "updated_at": _now_iso(),
+        }
+        _JOBS_FILE.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
+    except Exception:
+        pass
+
+
+def _load_jobs() -> None:
+    if not _JOBS_FILE.exists():
+        return
+    try:
+        raw = json.loads(_JOBS_FILE.read_text(encoding="utf-8"))
+    except Exception:
+        return
+    items = raw.get("jobs") if isinstance(raw, dict) else []
+    if not isinstance(items, list):
+        return
+    with _LOCK:
+        _JOBS.clear()
+        for item in items[-_MAX_JOBS:]:
+            if not isinstance(item, dict):
+                continue
+            job = _job_from_payload(item)
+            if job is None:
+                continue
+            if job.status in {"queued", "running"}:
+                job.status = "failed"
+                job.message = job.message or "服务重启，任务状态已失效"
+                job.error = job.error or "dashboard service restarted before task completion"
+                if not job.finished_at:
+                    job.finished_at = _now_iso()
+                job.updated_at = _now_iso()
+            _JOBS[job.id] = job
+        _prune_jobs()
 
 
 def _append_log(job: DashboardJob, line: str) -> None:
@@ -90,6 +160,7 @@ def create_job(*, job_type: str, label: str, target: JobTarget, metadata: dict[s
     with _LOCK:
         _JOBS[job.id] = job
         _prune_jobs()
+        _save_jobs_locked()
 
     def _run() -> None:
         with _LOCK:
@@ -118,6 +189,7 @@ def create_job(*, job_type: str, label: str, target: JobTarget, metadata: dict[s
                 if log:
                     _append_log(current_job, log)
                 current_job.updated_at = _now_iso()
+                _save_jobs_locked()
 
         def is_cancelled() -> bool:
             with _LOCK:
@@ -139,6 +211,7 @@ def create_job(*, job_type: str, label: str, target: JobTarget, metadata: dict[s
                 else:
                     current_job.status = "completed"
                     current_job.message = current_job.message or "任务完成"
+                _save_jobs_locked()
         except Exception as exc:  # noqa: BLE001
             with _LOCK:
                 current_job = _JOBS.get(job.id)
@@ -152,6 +225,7 @@ def create_job(*, job_type: str, label: str, target: JobTarget, metadata: dict[s
                 tb = traceback.format_exc(limit=6)
                 if tb:
                     _append_log(current_job, tb)
+                _save_jobs_locked()
 
     thread = threading.Thread(target=_run, daemon=True, name=f"dashboard-job-{job.job_type}-{job.id}")
     thread.start()
@@ -188,4 +262,8 @@ def request_cancel(job_id: str) -> dict[str, Any] | None:
         if not job.message:
             job.message = "已请求取消"
         _append_log(job, "收到取消请求")
+        _save_jobs_locked()
         return _snapshot(job)
+
+
+    _load_jobs()

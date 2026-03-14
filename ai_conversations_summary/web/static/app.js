@@ -402,6 +402,31 @@ function insertSystemRowsBefore(targetRow, blocks) {
   }
 }
 
+function upsertTraceMetaRowBefore(targetRow, metaText) {
+  if (!targetRow || !targetRow.parentElement) return null;
+  const chat = targetRow.parentElement;
+  let anchor = targetRow;
+  let sibling = targetRow.previousSibling;
+
+  while (sibling && sibling.classList && sibling.classList.contains("think")) {
+    anchor = sibling;
+    sibling = sibling.previousSibling;
+  }
+
+  const existingMetaRow = sibling && sibling.classList && sibling.classList.contains("trace-meta") ? sibling : null;
+  const normalizedMeta = String(metaText || "").trim();
+  if (!normalizedMeta) {
+    if (existingMetaRow) existingMetaRow.remove();
+    return null;
+  }
+
+  const row = existingMetaRow || document.createElement("div");
+  row.className = "msg system trace-meta";
+  row.innerHTML = `<div class="role">系统</div><div class="content trace-meta-content markdown-body">${markdownToHtml(normalizedMeta)}</div>`;
+  if (!existingMetaRow) chat.insertBefore(row, anchor);
+  return row;
+}
+
 function formatElapsed(ms) {
   const total = Math.max(0, Math.floor(ms / 1000));
   const min = Math.floor(total / 60);
@@ -433,15 +458,89 @@ function hideOverlay() {
   overlay.classList.add("hidden");
 }
 
-function appendChatRow(role, text, keepBottom = true, extraClass = "") {
+function formatTraceMeta(traceId) {
+  const value = String(traceId || "").trim();
+  return value ? `\`Trace ID\`: ${value}` : "";
+}
+
+function appendChatRow(role, text, keepBottom = true, extraClass = "", metaText = "") {
   const chat = document.getElementById("chat");
   const row = document.createElement("div");
   row.className = `msg ${role}${extraClass ? ` ${extraClass}` : ""}`;
   const roleLabel = role === "user" ? "用户" : role === "assistant" ? "助手" : "系统";
-  row.innerHTML = `<div class="role">${roleLabel}</div><div class="content">${markdownToHtml(text)}</div>`;
+  const metaHtml = metaText ? `<div class="msg-meta">${escapeHtml(metaText)}</div>` : "";
+  row.innerHTML = `<div class="role">${roleLabel}</div>${metaHtml}<div class="content">${markdownToHtml(text)}</div>`;
   chat.appendChild(row);
   if (keepBottom) chat.scrollTop = chat.scrollHeight;
   return row;
+}
+
+function ensureMessageActions(row) {
+  if (!(row instanceof HTMLElement)) return null;
+  let host = row.querySelector(":scope > .msg-actions");
+  if (host instanceof HTMLElement) return host;
+  host = document.createElement("div");
+  host.className = "msg-actions";
+  row.appendChild(host);
+  return host;
+}
+
+function addFeedbackButton(row, payload) {
+  if (!(row instanceof HTMLElement) || !payload) return;
+  const host = ensureMessageActions(row);
+  if (!host) return;
+  let button = host.querySelector("[data-action='feedback']");
+  if (!(button instanceof HTMLButtonElement)) {
+    button = document.createElement("button");
+    button.type = "button";
+    button.className = "msg-action-btn";
+    button.dataset.action = "feedback";
+    button.textContent = "反馈";
+    host.appendChild(button);
+  }
+  if (button.dataset.bound === "1") return;
+  button.dataset.bound = "1";
+  button.addEventListener("click", async () => {
+    if (button.disabled) return;
+    button.disabled = true;
+    try {
+      await apiPost("/api/rag/feedback", payload);
+      button.textContent = "已反馈";
+      button.classList.add("is-done");
+    } catch (err) {
+      button.disabled = false;
+      window.alert(`反馈保存失败: ${String(err)}`);
+    }
+  });
+}
+
+function getPreviousUserQuestion(row) {
+  let node = row?.previousSibling;
+  while (node) {
+    if (node instanceof HTMLElement && node.classList.contains("msg") && node.classList.contains("user")) {
+      const content = node.querySelector(".content");
+      return String(content?.textContent || "").trim();
+    }
+    node = node.previousSibling;
+  }
+  return "";
+}
+
+function addRagFeedbackForRow(row, payload = {}) {
+  const question = String(payload.question || getPreviousUserQuestion(row) || "").trim();
+  const answer = String(payload.answer || row?.querySelector(".content")?.textContent || "").trim();
+  addFeedbackButton(row, {
+    question,
+    answer,
+    trace_id: String(payload.traceId || "").trim(),
+    session_id: String(currentSessionId || "").trim(),
+    model: String(payload.model || currentMode || "local"),
+    search_mode: String(payload.searchMode || ""),
+    metadata: {
+      mode: String(payload.mode || currentMode || "local"),
+      debug_enabled: !!payload.debugEnabled,
+    },
+  });
 }
 
 function appendChat(role, text, keepBottom = true) {
@@ -456,10 +555,12 @@ function renderChat(messages) {
     const role = roleRaw === "用户" ? "user" : roleRaw === "助手" ? "assistant" : "system";
     const text = String(message.text || "");
     if (role === "assistant") {
+      const metaText = formatTraceMeta(message.trace_id);
       const parsed = splitThinkBlocks(text);
-      // Create assistant row first, then insert think blocks before it
       const assistantRow = appendChatRow("assistant", parsed.answer || text, false);
       insertSystemRowsBefore(assistantRow, parsed.thoughts);
+      upsertTraceMetaRowBefore(assistantRow, metaText);
+      addRagFeedbackForRow(assistantRow, { answer: parsed.answer || text, traceId: message.trace_id });
       continue;
     }
     appendChat(role, text, false);
@@ -770,6 +871,16 @@ async function ask(searchMode = "hybrid", forcedMode = null, confirmOverQuota = 
   let lastRenderedText = "";
   let lastRenderAt = 0;
   let quotaExceededEvent = null;
+  let activeTraceId = "";
+  let finalPayload = null;
+  const removePending = () => {
+    try {
+      pending.remove();
+    } catch (_err) {
+      if (pendingContent) pendingContent.innerHTML = "";
+      pending.classList.remove("processing");
+    }
+  };
   const pendingStartedAt = Date.now();
   const pendingTimer = setInterval(() => {
     if (!pendingContent) return;
@@ -823,8 +934,19 @@ async function ask(searchMode = "hybrid", forcedMode = null, confirmOverQuota = 
         if (pendingContent) pendingContent.innerHTML = markdownToHtml("已中止");
         pending.classList.remove("processing");
       } else {
-        if (pendingContent) pendingContent.innerHTML = markdownToHtml(answer.answer || "");
-        pending.classList.remove("processing");
+        pending.remove();
+        const parsed = splitThinkBlocks(answer.answer || "");
+        const assistantRow = appendChatRow("assistant", parsed.answer || answer.answer || "", true);
+        insertSystemRowsBefore(assistantRow, parsed.thoughts);
+        upsertTraceMetaRowBefore(assistantRow, formatTraceMeta(answer.trace_id));
+        addRagFeedbackForRow(assistantRow, {
+          question,
+          answer: parsed.answer || answer.answer || "",
+          traceId: answer.trace_id,
+          searchMode,
+          mode: answer.mode,
+          debugEnabled,
+        });
       }
       await refreshSidebarTitles();
       return;
@@ -849,12 +971,15 @@ async function ask(searchMode = "hybrid", forcedMode = null, confirmOverQuota = 
         }
 
         if (event.type === "quota_exceeded") {
+          if (event.trace_id) activeTraceId = String(event.trace_id || "").trim();
           streamFinalized = true;
           quotaExceededEvent = event;
           pending.classList.remove("processing");
         } else if (event.type === "progress") {
+          if (event.trace_id) activeTraceId = String(event.trace_id || "").trim();
           progressText = String(event.message || progressText);
         } else if (event.type === "chunk") {
+          if (event.trace_id) activeTraceId = String(event.trace_id || "").trim();
           const chunk = String(event.text || "");
           if (!assistantRow) {
             assistantRow = appendChatRow("assistant", "", true);
@@ -867,12 +992,14 @@ async function ask(searchMode = "hybrid", forcedMode = null, confirmOverQuota = 
             if (assistantContent && now - lastRenderAt >= 180) {
               const parsed = stripThinkForPreview(streamedText);
               insertSystemRowsBefore(assistantRow, parsed.thoughts);
+              upsertTraceMetaRowBefore(assistantRow, formatTraceMeta(activeTraceId));
               assistantContent.innerHTML = markdownPreviewForStreaming(parsed.answer);
               lastRenderedText = streamedText;
               lastRenderAt = now;
             }
           }
         } else if (event.type === "aborted") {
+          if (event.trace_id) activeTraceId = String(event.trace_id || "").trim();
           streamFinalized = true;
           if (pendingContent) pendingContent.innerHTML = markdownToHtml("已中止");
           pending.classList.remove("processing");
@@ -880,9 +1007,11 @@ async function ask(searchMode = "hybrid", forcedMode = null, confirmOverQuota = 
           if (streamedText && assistantContent) {
             const parsed = stripThinkForPreview(streamedText);
             insertSystemRowsBefore(assistantRow, parsed.thoughts);
+            upsertTraceMetaRowBefore(assistantRow, formatTraceMeta(activeTraceId));
             assistantContent.innerHTML = markdownToHtml(parsed.answer + "\n\n_[已中止]_");
           }
         } else if (event.type === "error") {
+          if (event.trace_id) activeTraceId = String(event.trace_id || "").trim();
           streamFinalized = true;
           const errorMsg = event.message || "请求失败";
           if (pendingContent) pendingContent.innerHTML = markdownToHtml(`[错误] ${errorMsg}`);
@@ -891,12 +1020,18 @@ async function ask(searchMode = "hybrid", forcedMode = null, confirmOverQuota = 
           if (streamedText && assistantContent) {
             const parsed = stripThinkForPreview(streamedText);
             insertSystemRowsBefore(assistantRow, parsed.thoughts);
+            upsertTraceMetaRowBefore(assistantRow, formatTraceMeta(activeTraceId));
             assistantContent.innerHTML = markdownToHtml(parsed.answer + `\n\n---\n\n**错误**: ${errorMsg}`);
           } else if (!assistantRow) {
             // No content yet, just show error
             assistantRow = appendChatRow("assistant", `**错误**: ${errorMsg}`, true);
+            upsertTraceMetaRowBefore(assistantRow, formatTraceMeta(activeTraceId));
           }
         } else if (event.type === "done") {
+          if (event.trace_id) activeTraceId = String(event.trace_id || "").trim();
+          streamFinalized = true;
+          removePending();
+          finalPayload = event.payload || null;
           const answer = String(event.payload?.answer || streamedText || "");
           currentSessionId = event.payload?.session_id || currentSessionId;
           if (!assistantRow) {
@@ -905,12 +1040,19 @@ async function ask(searchMode = "hybrid", forcedMode = null, confirmOverQuota = 
           }
           const parsed = splitThinkBlocks(answer);
           insertSystemRowsBefore(assistantRow, parsed.thoughts);
+          upsertTraceMetaRowBefore(assistantRow, formatTraceMeta(activeTraceId || event.payload?.trace_id));
           if (assistantContent) {
             const fallback = stripThinkForPreview(answer);
             assistantContent.innerHTML = markdownToHtml(parsed.answer || fallback.answer || "");
           }
-          pending.classList.remove("processing");
-          streamFinalized = true;
+          addRagFeedbackForRow(assistantRow, {
+            question,
+            answer: parsed.answer || answer,
+            traceId: activeTraceId || event.payload?.trace_id,
+            searchMode,
+            mode: event.payload?.mode,
+            debugEnabled,
+          });
         }
       }
     };
@@ -932,11 +1074,17 @@ async function ask(searchMode = "hybrid", forcedMode = null, confirmOverQuota = 
     // finalize the UI so the user isn't stuck with a spinning indicator.
     if (!streamFinalized && !quotaExceededEvent) {
       streamFinalized = true;
-      pending.classList.remove("processing");
+      removePending();
       if (streamedText && assistantContent) {
         const parsed = stripThinkForPreview(streamedText);
         insertSystemRowsBefore(assistantRow, parsed.thoughts);
+        upsertTraceMetaRowBefore(assistantRow, formatTraceMeta(activeTraceId || finalPayload?.trace_id));
         assistantContent.innerHTML = markdownToHtml(parsed.answer);
+      } else if (streamedText && !assistantRow) {
+        const parsed = stripThinkForPreview(streamedText);
+        assistantRow = appendChatRow("assistant", parsed.answer, true);
+        upsertTraceMetaRowBefore(assistantRow, formatTraceMeta(activeTraceId || finalPayload?.trace_id));
+        assistantContent = assistantRow.querySelector(".content");
       } else if (!assistantRow) {
         // No content was received at all
         appendChatRow("assistant", "**\u9519\u8BEF**: \u670D\u52A1\u5668\u8FDE\u63A5\u5F02\u5E38\u4E2D\u65AD\uFF0C\u8BF7\u91CD\u8BD5", true);
@@ -976,8 +1124,7 @@ async function ask(searchMode = "hybrid", forcedMode = null, confirmOverQuota = 
   } catch (err) {
     streamFinalized = true;
     const errorMsg = err.message || "请求失败";
-    if (pendingContent) pendingContent.innerHTML = markdownToHtml(`[错误] ${errorMsg}`);
-    pending.classList.remove("processing");
+    removePending();
     // Preserve any streamed content before network/parsing error
     if (streamedText && assistantContent) {
       const parsed = stripThinkForPreview(streamedText);
@@ -990,6 +1137,12 @@ async function ask(searchMode = "hybrid", forcedMode = null, confirmOverQuota = 
   } finally {
     clearInterval(pendingTimer);
     clearInterval(streamRenderTimer);
+    if (!quotaExceededEvent) {
+      removePending();
+      document.querySelectorAll("#chat .msg.processing").forEach((node) => {
+        if (node instanceof HTMLElement) node.remove();
+      });
+    }
     askInFlight = false;
     document.getElementById("ask").disabled = false;
     const askLocalBtn = document.getElementById("ask-local");

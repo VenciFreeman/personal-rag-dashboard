@@ -197,6 +197,9 @@ body {
   color: #a8ad98;
   margin-bottom: 6px;
 }
+.filter-select {
+  width: 100%;
+}
 .chips { display: flex; flex-wrap: wrap; gap: 6px; }
 .filter-toggle {
   margin-top: 6px;
@@ -224,6 +227,19 @@ body {
   cursor: pointer;
   opacity: 1;
 }
+html {
+  width: 100%;
+  max-width: 100%;
+  overflow-x: hidden;
+  -webkit-text-size-adjust: 100%;
+}
+
+body {
+  width: 100%;
+  max-width: 100%;
+  overflow-x: hidden;
+}
+
 .search-row {
   display: grid;
   grid-template-columns: minmax(0, 1fr) auto auto auto;
@@ -572,6 +588,7 @@ button.full { width: 100%; margin-top: 0; }
   text-decoration: underline;
 }
 dialog {
+  box-sizing: border-box;
   border: 1px solid #42443a;
   border-radius: 10px;
   background: #252720;
@@ -714,10 +731,21 @@ body.dialog-open {
     button {
       font-size: 16px;
     }
+  #item-form input,
+  #item-form textarea,
+  #item-form select,
+  #query-input,
+  #stats-field,
+  #stats-year,
+  #filter-year-select,
+  #filter-rating-select {
+    font-size: 16px !important;
+  }
   dialog {
     width: calc(100vw - 24px);
     max-width: calc(100vw - 24px);
     min-width: 0;
+    box-sizing: border-box;
     padding: 0;
     margin-top: 0;
     margin-bottom: 20px;
@@ -741,6 +769,9 @@ body.dialog-open {
 
   #item-form {
     padding: 0 12px 12px;
+    width: 100%;
+    max-width: 100%;
+    box-sizing: border-box;
   }
 
   #item-form .dialog-head .row.end {

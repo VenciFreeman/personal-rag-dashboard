@@ -21,3 +21,8 @@ data/benchmark/results.json
 data/agent_quota_history.json
 data/agent_quota_history.json
 data/agent_quota_history.json
+data/trace_records.json
+data/dashboard_jobs.json
+data/trace_records.jsonl
+data/agent_quota_history.json
+/data

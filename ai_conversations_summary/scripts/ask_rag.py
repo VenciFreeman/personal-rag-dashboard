@@ -70,6 +70,7 @@ except ModuleNotFoundError:
         timeout: int,
         messages: list[dict[str, str]],
         temperature: float = 0.2,
+        max_tokens: int | None = None,
     ):
         try:
             from openai import OpenAI
@@ -77,12 +78,15 @@ except ModuleNotFoundError:
             raise RuntimeError("Missing dependency: openai. Install with: pip install openai") from exc
 
         client = OpenAI(api_key=api_key, base_url=base_url, timeout=timeout)
-        response_stream = client.chat.completions.create(
-            model=model,
-            messages=messages,
-            temperature=temperature,
-            stream=True,
-        )
+        kwargs: dict[str, Any] = {
+            "model": model,
+            "messages": messages,
+            "temperature": temperature,
+            "stream": True,
+        }
+        if max_tokens is not None:
+            kwargs["max_tokens"] = max_tokens
+        response_stream = client.chat.completions.create(**kwargs)
         for chunk in response_stream:
             if not chunk.choices:
                 continue
@@ -211,6 +215,7 @@ def _parse_args() -> argparse.Namespace:
     parser.add_argument("--output-json", default="", help="Optional JSON output file path")
     parser.add_argument("--debug", default="false", help="Enable debug trace output in payload")
     parser.add_argument("--session-id", default="", help="Session id for debug trace correlation")
+    parser.add_argument("--trace-id", default="", help="End-to-end trace id for this query")
     parser.add_argument("--enable-query-rewrite", default="true" if DEFAULT_ENABLE_QUERY_REWRITE else "false", help="Enable local-LLM query rewrite before retrieval")
     parser.add_argument("--query-rewrite-count", type=int, default=DEFAULT_QUERY_REWRITE_COUNT, help="How many rewritten queries to keep")
     parser.add_argument("--stream", action="store_true", help="Enable streaming output via stdout")
@@ -558,6 +563,10 @@ def _build_rerank_text(item: dict[str, Any], documents_dir: Path) -> str:
     ).strip()
 
 
+def _result_identity(item: dict[str, Any]) -> str:
+    return str(item.get("relative_path") or item.get("path") or item.get("file_path") or "").strip()
+
+
 def _rerank_local_rows(
     *,
     query: str,
@@ -606,9 +615,9 @@ def _rerank_local_rows(
             ranked_rows: list[dict[str, Any]] = []
             for row, score in zip(rows, scores):
                 item = dict(row)
-                item["vector_score"] = float(item.get("score", 0.0))
+                item["vector_score"] = float(item.get("vector_score", item.get("score", 0.0)))
                 item["rerank_score"] = float(score)
-                item["score"] = float(score)
+                item["score"] = float(item.get("vector_score", item.get("score", 0.0)))
                 ranked_rows.append(item)
             ranked_rows.sort(key=lambda x: float(x.get("rerank_score", 0.0)), reverse=True)
             return ranked_rows[: max(1, int(top_k))], "sidecar", _infer_elapsed, 0.0
@@ -637,9 +646,9 @@ def _rerank_local_rows(
         ranked_rows = []
         for row, score in zip(rows, scores):
             item = dict(row)
-            item["vector_score"] = float(item.get("score", 0.0))
+            item["vector_score"] = float(item.get("vector_score", item.get("score", 0.0)))
             item["rerank_score"] = float(score)
-            item["score"] = float(score)
+            item["score"] = float(item.get("vector_score", item.get("score", 0.0)))
             ranked_rows.append(item)
 
         ranked_rows.sort(key=lambda x: float(x.get("rerank_score", 0.0)), reverse=True)
@@ -661,9 +670,9 @@ def _rerank_local_rows(
                 dn = _norm(vec) or 1e-12
                 score = sum(a * b for a, b in zip(query_vec, vec)) / (qn * dn)
                 item = dict(row)
-                item["vector_score"] = float(item.get("score", 0.0))
+                item["vector_score"] = float(item.get("vector_score", item.get("score", 0.0)))
                 item["rerank_score"] = float(score)
-                item["score"] = float(score)
+                item["score"] = float(item.get("vector_score", item.get("score", 0.0)))
                 ranked_rows.append(item)
 
             ranked_rows.sort(key=lambda x: float(x.get("rerank_score", 0.0)), reverse=True)
@@ -839,13 +848,20 @@ def _build_topic_context_segment(item: dict[str, Any], index_no: int) -> tuple[s
     summary = str(item.get("summary", "")).strip()
     topic = str(item.get("topic", "")).strip() or "untitled-topic"
     score = float(item.get("score", 0.0))
+    rerank_score = item.get("rerank_score")
     keywords = _normalize_keywords(item.get("keywords", []))
     if not summary:
         summary = topic
 
     kw_text = ", ".join(keywords[:12]) if keywords else ""
+    score_text = f"score={score:.4f}"
+    try:
+        if rerank_score is not None:
+            score_text = f"{score_text} rerank={float(rerank_score):.4f}"
+    except Exception:
+        pass
     body_lines = [
-        f"[资料{index_no}] path={rel} score={score:.4f}",
+        f"[资料{index_no}] path={rel} {score_text}",
         f"topic: {topic}",
     ]
     if title:
@@ -862,6 +878,11 @@ def _build_topic_context_segment(item: dict[str, Any], index_no: int) -> tuple[s
         "summary": summary,
         "topic": topic,
     }
+    try:
+        if rerank_score is not None:
+            used_doc["rerank_score"] = float(rerank_score)
+    except Exception:
+        pass
     return "\n".join(body_lines), used_doc
 
 
@@ -997,7 +1018,19 @@ def _load_context_hybrid(
     context_mode: str = "topic",
 ) -> tuple[str, list[dict[str, Any]]]:
     """Build context from mixed local/web rows sorted by score (desc)."""
-    sorted_rows = sorted(rows, key=lambda x: float(x.get("score", 0.0)), reverse=True)
+    def _sort_score(item: dict[str, Any]) -> float:
+        source = str(item.get("source", "local")).strip().lower()
+        if source != "web":
+            try:
+                return float(item.get("rerank_score", item.get("score", 0.0)) or 0.0)
+            except Exception:
+                return 0.0
+        try:
+            return float(item.get("score", 0.0) or 0.0)
+        except Exception:
+            return 0.0
+
+    sorted_rows = sorted(rows, key=_sort_score, reverse=True)
     mode = (context_mode or "topic").strip().lower()
 
     context_parts: list[str] = []
@@ -1043,8 +1076,15 @@ def _load_context_hybrid(
                 clipped_text = raw_text[:max_chars_per_doc]
                 rel = str(item.get("relative_path", "")).strip() or file_path.name
                 topic = str(item.get("topic", "")).strip()
+                rerank_score = item.get("rerank_score")
+                score_text = f"score={score:.4f}"
+                try:
+                    if rerank_score is not None:
+                        score_text = f"{score_text} rerank={float(rerank_score):.4f}"
+                except Exception:
+                    pass
                 segment = (
-                    f"[资料{idx}] path={rel} score={score:.4f} topic={topic}\n"
+                    f"[资料{idx}] path={rel} {score_text} topic={topic}\n"
                     f"{clipped_text}\n"
                 )
                 used_doc = {
@@ -1052,6 +1092,11 @@ def _load_context_hybrid(
                     "score": score,
                     "topic": topic,
                 }
+                try:
+                    if rerank_score is not None:
+                        used_doc["rerank_score"] = float(rerank_score)
+                except Exception:
+                    pass
 
         if total_chars + len(segment) > max_context_chars:
             break
@@ -1074,21 +1119,24 @@ def _ask_llm(
     call_type: str = "answer",
     memory_context: str = "",
     stream: bool = False,
+    trace_id: str = "",
     debug_trace: dict[str, Any] | None = None,
+    llm_stats_sink: dict[str, Any] | None = None,
 ) -> str:
     if not api_url or not api_key or not model:
         raise RuntimeError("Missing API settings: api_url/api_key/model are required")
 
+    response_max_tokens = 900 if context_text.strip() else 1100
+
     system_prompt = (
-        "你是知识助手。优先使用检索资料，同时可以结合通用知识补充，并明确标注不确定点。\n"
+        "你是一个知识助手，回答原则“\n"
         f"当前调用类型 call_type={call_type or 'answer'}。\n\n"
-        "**输出格式要求（必须严格遵守）**：\n"
-        "1) 必须使用标准Markdown格式输出；\n"
-        "2) 请用中文思考和回答；\n"
-        #"3) 列表项前后必须空行（- * 1. 2.）；\n"
-        #"4) 段落之间必须用空行分隔；\n"
-        #"5) 代码块使用```包裹，前后空行；\n"
-        #"6) 分割线使用三个横杠（---）单独成行，前后空行。"
+        "1) 优先依据提供的检索资料，用中文思考和回答回答；\n"
+        "2) 如果资料不足，可以使用通用知识补充，但需标注“推断”\n"
+        "3) 不允许编造资料中不存在的事实\n"
+        "4) 如果资料无法回答，应明确说明\n"
+        "5) 输出使用Markdown\n"
+        "6) 默认给出更完整的解释，不要只用一两句话结束；优先包含结论、原因机制、影响或局限。\n"
     )
     
     # Build user prompt based on whether we have context or not.
@@ -1098,43 +1146,63 @@ def _ask_llm(
     if context_text.strip():
         user_prompt = (
             "请先阅读下面的本地检索资料，再回答用户问题。\n"
-            "回答要求：\n"
-            "1) 请进行简短思考（不超过400字），用<think>思考内容</think>标签包裹；\n"
-            "2) 基于资料和会话记忆 (如果有提供)给出最终答案；\n"
-            "3) 资料不足处可用通用知识补充，但要标注'推断/可能/不确定'；\n"
-            "4) 不要编造不存在于资料或常识中的细节；\n"
-            "5) 禁止在输出中列出参考资料。\n\n"
+            "会话记忆：\n"
             f"{memory_section}"
+            "检索资料：\n"
             f"资料:\n{context_text}\n\n"
+            "用户问题：：\n"
             f"问题:\n{question}\n"
+            "回答要求：\n"
+            "1) 如果问题复杂，允许进行简短思考（不超过400字），用<think>思考内容</think>标签包裹；\n"
+            "2) 基于资料和会话记忆 (如果不为空)给出最终答案；\n"
+            "3) 资料不足或必要时可用通用知识补充\n"
+            "4) 默认至少写成 3 个要点或 2 段以上，说明背景、关键机制、实际影响；\n"
+            "5) 不要编造不存在的细节；\n"
+            "6) 不要引用资料编号。\n\n"
         )
     else:
         user_prompt = (
-            "本地知识库中未找到与问题高度相关的资料（相似度过低）。\n"
+            "会话记忆：\n"
+            f"{memory_section}"
+            "用户问题：：\n"
+            f"问题:\n{question}\n"
+            "本地知识库中未找到与问题高度相关的资料。\n"
             "请基于你的通用知识尝试回答以下问题，但请明确标注这是基于通用知识的推断，而非本地资料。\n"
             "回答要求：\n"
             "1) 明确说明未找到相关本地资料；\n"
-            "2) 基于通用知识给出可能的答案，标注'基于通用知识推断'；\n"
-            "3) 不要编造不存在的细节。\n\n"
-            f"{memory_section}"
-            f"问题:\n{question}\n"
+            "2) 基于通用知识给出尽量完整的分析，不要只给结论；\n"
+            "3) 默认至少写成 3 个要点，覆盖背景、原因机制、影响或建议；\n"
+            "4) 不要编造不存在的细节。\n\n"
         )
 
-
-    request_id = str(uuid4())
+    request_id = str(trace_id or "").strip() or str(uuid4())
     should_audit = _is_deepseek_url(api_url)
     request_messages = [
         {"role": "system", "content": system_prompt},
         {"role": "user", "content": user_prompt},
     ]
+    context_tokens_est = _approx_tokens(context_text)
+    input_tokens_est = _approx_tokens(system_prompt) + _approx_tokens(user_prompt)
+    prompt_tokens_est = max(0, input_tokens_est - context_tokens_est)
     if debug_trace is not None:
         debug_trace["llm_request"] = {
+            "trace_id": request_id,
             "api_url": api_url,
             "model": model,
             "messages": request_messages,
             "memory_tokens_est": _approx_tokens(memory_context),
-            "input_tokens_est": _approx_tokens(system_prompt) + _approx_tokens(user_prompt),
+            "input_tokens_est": input_tokens_est,
+            "prompt_tokens_est": prompt_tokens_est,
+            "context_tokens_est": context_tokens_est,
         }
+    if llm_stats_sink is not None:
+        llm_stats_sink["api_url"] = api_url
+        llm_stats_sink["model"] = model
+        llm_stats_sink["input_tokens_est"] = input_tokens_est
+        llm_stats_sink["prompt_tokens_est"] = prompt_tokens_est
+        llm_stats_sink["context_tokens_est"] = context_tokens_est
+        llm_stats_sink["memory_tokens_est"] = _approx_tokens(memory_context)
+        llm_stats_sink["calls"] = 1
 
     if stream:
         # Stream mode: output chunks to stdout in real-time.
@@ -1146,6 +1214,7 @@ def _ask_llm(
                 messages=request_messages,
                 temperature=0.2,
                 timeout=timeout,
+                max_tokens=response_max_tokens,
             )
         except Exception as exc:  # noqa: BLE001
             if should_audit:
@@ -1196,8 +1265,11 @@ def _ask_llm(
             raise RuntimeError("LLM response text is empty")
         if debug_trace is not None:
             debug_trace["llm_response"] = {
+                "trace_id": request_id,
                 "output_tokens_est": _approx_tokens(answer),
             }
+        if llm_stats_sink is not None:
+            llm_stats_sink["output_tokens_est"] = _approx_tokens(answer)
         if should_audit:
             _write_deepseek_audit_log(
                 {
@@ -1225,6 +1297,7 @@ def _ask_llm(
                 messages=request_messages,
                 temperature=0.2,
                 timeout=timeout,
+                max_tokens=response_max_tokens,
             )
         except Exception as exc:  # noqa: BLE001
             if should_audit:
@@ -1262,8 +1335,11 @@ def _ask_llm(
             )
         if debug_trace is not None:
             debug_trace["llm_response"] = {
+                "trace_id": request_id,
                 "output_tokens_est": _approx_tokens(answer),
             }
+        if llm_stats_sink is not None:
+            llm_stats_sink["output_tokens_est"] = _approx_tokens(answer)
         return answer
 
 
@@ -1330,6 +1406,7 @@ def main() -> None:
     
     search_mode = (args.search_mode or "hybrid").strip().lower()
     debug_enabled = _parse_bool_arg(getattr(args, "debug", False), default=False)
+    trace_id = str(getattr(args, "trace_id", "") or "").strip() or f"trace_{uuid4().hex[:16]}"
     enable_rerank = _parse_bool_arg(args.enable_rerank, default=DEFAULT_ENABLE_RERANK)
     enable_query_rewrite = _parse_bool_arg(getattr(args, "enable_query_rewrite", False), default=DEFAULT_ENABLE_QUERY_REWRITE)
     rewrite_count = max(1, int(getattr(args, "query_rewrite_count", DEFAULT_QUERY_REWRITE_COUNT)))
@@ -1473,23 +1550,32 @@ def main() -> None:
     # reranker_load_seconds = model load from disk (0 when cached in warm process; non-zero for subprocess cold-start)
     timings["rerank_seconds"] = round(_rerank_infer_s, 3)
     timings["reranker_load_seconds"] = round(_rerank_load_s, 3)
-    _top1_path_before = str(local_rows[0].get("path", "")).strip() if local_rows else ""
-    _top1_path_after = str(reranked_local_rows[0].get("path", "")).strip() if reranked_local_rows else ""
+    _top1_path_before = _result_identity(local_rows[0]) if local_rows else ""
+    _top1_path_after = _result_identity(reranked_local_rows[0]) if reranked_local_rows else ""
+    _top1_rerank_score_after = 0.0
+    _top1_vector_score_after = 0.0
+    if reranked_local_rows:
+        _top1_rerank_score_after = float(
+            reranked_local_rows[0].get("rerank_score", reranked_local_rows[0].get("score", 0.0)) or 0.0
+        )
+        _top1_vector_score_after = float(
+            reranked_local_rows[0].get("vector_score", reranked_local_rows[0].get("score", 0.0)) or 0.0
+        )
     _top1_identity_changed = None
     _top1_rank_shift = None
     if _top1_path_before and _top1_path_after:
         _top1_identity_changed = 1 if _top1_path_before != _top1_path_after else 0
         _before_rank_after_top1 = next(
-            (idx + 1 for idx, row in enumerate(local_rows) if str(row.get("path", "")).strip() == _top1_path_after),
+            (idx + 1 for idx, row in enumerate(local_rows) if _result_identity(row) == _top1_path_after),
             None,
         )
         if _before_rank_after_top1 is not None:
             # Positive means moved up in ranking (e.g. 7 -> 2 gives +5).
             _top1_rank_shift = float(_before_rank_after_top1 - 1)
     # Record top1 score after reranking (cross-encoder score for neural rerank; cosine sim for fallback)
-    timings["local_top1_score_after_rerank"] = max(
-        (float(r.get("score", 0.0)) for r in reranked_local_rows), default=0.0
-    )
+    timings["local_top1_score_after_rerank"] = _top1_rerank_score_after
+    timings["local_top1_vector_score_after_rerank"] = _top1_vector_score_after
+    timings["local_top1_rerank_score_after_rerank"] = _top1_rerank_score_after
     timings["local_top1_identity_changed"] = _top1_identity_changed
     timings["local_top1_rank_shift"] = _top1_rank_shift
     timings["local_top1_path_before_rerank"] = _top1_path_before
@@ -1497,6 +1583,7 @@ def main() -> None:
 
     debug_trace: dict[str, Any] = {
         "timestamp": datetime.now().isoformat(timespec="seconds"),
+        "trace_id": trace_id,
         "question": question,
         "query": question,
         "rewritten_queries": rewrite_queries,
@@ -1569,13 +1656,20 @@ def main() -> None:
     debug_trace["context_tokens_est"] = _approx_tokens(context_text)
     
     if args.stream:
-        filtered_count = len([r for r in reranked_local_rows if float(r.get("score", 0.0)) >= local_threshold])
+        filtered_count = len(
+            [
+                r for r in reranked_local_rows
+                if float(r.get("vector_score", r.get("score", 0.0)) or 0.0) >= local_threshold
+            ]
+        )
         print(
             f"PROGRESS: 本地候选 {len(results)} -> 重排保留 {len(reranked_local_rows)}（阈值后可用 {filtered_count}），联网补充 {len(web_results)} 个结果，上下文已加载（{len(context_text)} 字符），正在请求模型生成回答...",
             flush=True,
         )
     
     # Exactly one external/local LLM call when available.
+    llm_stats: dict[str, Any] = {}
+    llm_t0 = time.perf_counter()
     try:
         answer = _ask_llm(
             api_url=args.api_url,
@@ -1587,20 +1681,26 @@ def main() -> None:
             call_type=str(args.call_type or "answer"),
             memory_context=str(args.memory_context or ""),
             stream=args.stream,
+            trace_id=trace_id,
             debug_trace=debug_trace if debug_enabled else None,
+            llm_stats_sink=llm_stats,
         )
     except Exception as exc:  # noqa: BLE001
         if args.allow_local_fallback and _is_local_llm_unavailable_error(str(exc)):
             answer = _build_local_fallback_answer(question=question, used_docs=used_docs)
+            llm_stats["output_tokens_est"] = _approx_tokens(answer)
             if args.stream:
                 print(f"STREAM_CHUNK_JSON: {json.dumps(answer, ensure_ascii=False)}", flush=True)
         else:
             raise
+    llm_elapsed = round(time.perf_counter() - llm_t0, 6)
 
     # Session title is always local (no external API call).
     session_title = _fallback_session_title(question)
 
     payload = {
+        "trace_id": trace_id,
+        "call_type": str(args.call_type or "answer"),
         "question": question,
         "query": question,
         "session_title": session_title,
@@ -1617,6 +1717,15 @@ def main() -> None:
         "graph_expansion_batches": expanded_batches,
         "used_context_docs": used_docs,
         "timings": timings,
+        "llm": {
+            "model": str(args.model or "").strip(),
+            "latency_seconds": llm_elapsed,
+            "input_tokens_est": int(llm_stats.get("input_tokens_est", 0) or 0),
+            "prompt_tokens_est": int(llm_stats.get("prompt_tokens_est", 0) or 0),
+            "context_tokens_est": int(llm_stats.get("context_tokens_est", 0) or 0),
+            "output_tokens_est": int(llm_stats.get("output_tokens_est", 0) or 0),
+            "calls": int(llm_stats.get("calls", 0) or 0),
+        },
         "elapsed_seconds": round(time.perf_counter() - t0, 3),
     }
     if debug_enabled:

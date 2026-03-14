@@ -44,7 +44,7 @@ GENERIC_QUERY_TOKENS = {
     "请问",
     "帮我",
 }
-FILTER_FIELDS = ["media_type", "nationality", "category", "channel"]
+FILTER_FIELDS = ["year", "rating", "media_type", "nationality", "category", "channel"]
 FORM_SUGGESTION_FIELDS = ["author", "nationality", "category", "channel", "publisher"]
 MULTI_TAG_FIELDS = {"author", "nationality", "category", "publisher"}
 STATS_DIMENSION_FIELDS = ["category", "nationality", "channel", "author", "publisher"]
@@ -83,15 +83,15 @@ _GRAPH_JOBS: dict[str, dict[str, Any]] = {}
 _GRAPH_JOB_HISTORY_LIMIT = 12
 
 
-def rebuild_library_graph() -> dict[str, Any]:
+def rebuild_library_graph(*, progress_callback=None) -> dict[str, Any]:
     all_items = _iter_all_items()
-    graph_path = VECTOR_DB_DIR / library_graph.GRAPH_FILE_NAME
-    graph_path.unlink(missing_ok=True)
+    library_graph.initialize_empty_graph(VECTOR_DB_DIR)
     graph_stats = library_graph.sync_library_graph(
         graph_dir=VECTOR_DB_DIR,
         items=all_items,
         target_item_ids=None,
         only_missing=False,
+        progress_callback=progress_callback,
     )
     return {
         "ok": True,
@@ -100,13 +100,14 @@ def rebuild_library_graph() -> dict[str, Any]:
     }
 
 
-def sync_missing_library_graph() -> dict[str, Any]:
+def sync_missing_library_graph(*, progress_callback=None) -> dict[str, Any]:
     all_items = _iter_all_items()
     graph_stats = library_graph.sync_library_graph(
         graph_dir=VECTOR_DB_DIR,
         items=all_items,
         target_item_ids=None,
         only_missing=True,
+        progress_callback=progress_callback,
     )
     return {
         "ok": True,
@@ -170,8 +171,19 @@ def start_graph_job(*, full: bool = False) -> dict[str, Any]:
     def _runner() -> None:
         started_at = datetime.now().isoformat(timespec="seconds")
         _update_graph_job(job_id, status="running", started_at=started_at, message="正在重建 Library Graph")
+
+        def _on_progress(snapshot: dict[str, Any]) -> None:
+            processed = int(snapshot.get("processed_item_count") or 0)
+            nodes_total = int(snapshot.get("nodes_total") or 0)
+            edges_total = int(snapshot.get("edges_total") or 0)
+            label = "正在全量重建 Library Graph" if full else "正在补足 Library Graph"
+            _update_graph_job(
+                job_id,
+                message=f"{label} | 已处理 {processed} 项 | 节点 {nodes_total} | 边 {edges_total}",
+            )
+
         try:
-            result = rebuild_library_graph() if full else sync_missing_library_graph()
+            result = rebuild_library_graph(progress_callback=_on_progress) if full else sync_missing_library_graph(progress_callback=_on_progress)
             finished_at = datetime.now().isoformat(timespec="seconds")
             _update_graph_job(
                 job_id,
@@ -493,7 +505,7 @@ def _matches_filters(item: dict[str, Any], filters: dict[str, list[str]] | None)
             if not value_tokens or value_tokens.isdisjoint(selected_set):
                 return False
             continue
-        value = str(item.get(field) or "").strip()
+        value = _filter_scalar_value(item, field)
         if value not in selected_set:
             return False
     return True
@@ -525,6 +537,32 @@ def _normalize_multi_tag_field(raw: Any) -> str | None:
 
 def _sort_text_values(values: set[str]) -> list[str]:
     return sorted(values, key=lambda value: (value.casefold(), value))
+
+
+def _sort_filter_values(field: str, values: set[str]) -> list[str]:
+    if field in {"year", "rating"}:
+        numeric: list[tuple[int, str]] = []
+        fallback: list[str] = []
+        for value in values:
+            try:
+                numeric.append((int(str(value).strip()), str(value).strip()))
+            except Exception:
+                fallback.append(str(value).strip())
+        numeric.sort(key=lambda item: item[0], reverse=True)
+        return [value for _num, value in numeric] + _sort_text_values(set(fallback))
+    return _sort_text_values(values)
+
+
+def _filter_scalar_value(item: dict[str, Any], field: str) -> str:
+    if field == "year":
+        year_value = _int_or_none(item.get("year"))
+        if year_value is None:
+            year_value = _item_year(item)
+        return str(year_value) if year_value is not None else ""
+    if field == "rating":
+        rating_value = _int_or_none(item.get("rating"))
+        return str(rating_value) if rating_value is not None else ""
+    return str(item.get(field) or "").strip()
 
 
 def _search_text(item: dict[str, Any]) -> str:
@@ -797,6 +835,13 @@ def _build_sql_preview(filters: dict[str, list[str]] | None, query: str, mode: s
         values = [str(v).strip() for v in filters.get(field, []) if str(v).strip()]
         if not values:
             continue
+        if field == "year":
+            if len(values) == 1:
+                clauses.append(f"substr(date, 1, 4) = '{values[0]}'")
+            else:
+                joined = ", ".join(f"'{v}'" for v in values)
+                clauses.append(f"substr(date, 1, 4) IN ({joined})")
+            continue
         if len(values) == 1:
             clauses.append(f"{field} = '{values[0]}'")
         else:
@@ -823,10 +868,10 @@ def get_filter_options() -> dict[str, list[str]]:
                 for token in _split_multi_tags(item.get(field)):
                     options[field].add(token)
                 continue
-            value = str(item.get(field) or "").strip()
+            value = _filter_scalar_value(item, field)
             if value:
                 options[field].add(value)
-    return {k: _sort_text_values(v) for k, v in options.items()}
+    return {k: _sort_filter_values(k, v) for k, v in options.items()}
 
 
 def get_form_suggestions() -> dict[str, list[str]]:
@@ -871,7 +916,7 @@ def get_facet_counts(filters: dict[str, list[str]] | None = None) -> dict[str, d
                 for token in _split_multi_tags(item.get(target_field)):
                     field_counts[token] = field_counts.get(token, 0) + 1
                 continue
-            value = str(item.get(target_field) or "").strip()
+            value = _filter_scalar_value(item, target_field)
             if not value:
                 continue
             field_counts[value] = field_counts.get(value, 0) + 1
@@ -1245,6 +1290,7 @@ def refresh_pending_embeddings() -> dict[str, Any]:
     scanned = 0
     refreshed = 0
     failed = 0
+    pending_item_ids: list[str] = []
     all_items = _iter_all_items()
     item_ids = [str(item.get("id") or "") for item in all_items if str(item.get("id") or "")]
     states = _load_embedding_states(item_ids)
@@ -1260,6 +1306,7 @@ def refresh_pending_embeddings() -> dict[str, Any]:
             status = _embedding_status_value((state or {}).get("embedding_status"))
             if status == 1:
                 continue
+            pending_item_ids.append(item_id)
 
             try:
                 semantic_text = _build_semantic_text(item)
@@ -1293,11 +1340,12 @@ def refresh_pending_embeddings() -> dict[str, Any]:
         if pending_writes:
             conn.commit()
 
+    full_graph_rebuild = library_graph.graph_requires_full_rebuild(VECTOR_DB_DIR)
     graph_stats = library_graph.sync_library_graph(
         graph_dir=VECTOR_DB_DIR,
         items=all_items,
-        target_item_ids=None,
-        only_missing=True,
+        target_item_ids=None if full_graph_rebuild else (set(pending_item_ids) if pending_item_ids else None),
+        only_missing=not full_graph_rebuild,
     )
     return {
         "scanned": scanned,
@@ -1357,11 +1405,12 @@ def refresh_embeddings_for_item_ids(item_ids: list[str]) -> dict[str, Any]:
         if pending_writes:
             conn.commit()
 
+    full_graph_rebuild = library_graph.graph_requires_full_rebuild(VECTOR_DB_DIR)
     graph_stats = library_graph.sync_library_graph(
         graph_dir=VECTOR_DB_DIR,
-        items=list(item_map.values()),
-        target_item_ids=set(normalized_ids),
-        only_missing=True,
+        items=all_items,
+        target_item_ids=None if full_graph_rebuild else set(normalized_ids),
+        only_missing=not full_graph_rebuild,
     )
     return {
         "scanned": scanned,

@@ -19,6 +19,10 @@ from urllib.parse import urlparse
 from urllib.parse import quote
 from uuid import uuid4
 
+WORKSPACE_ROOT = Path(__file__).resolve().parents[3]
+if str(WORKSPACE_ROOT) not in sys.path:
+    sys.path.insert(0, str(WORKSPACE_ROOT))
+
 from web.config import DOCUMENTS_DIR, RAG_SESSIONS_DIR, VECTOR_DB_DIR
 from web.services.context import (
     DEFAULT_API_BASE_URL,
@@ -31,6 +35,7 @@ from web.services.context import (
 )
 from rag_knowledge_graph import expand_query_by_graph
 from web.services.preview_service import resolve_embedding_model
+from core_service.trace_store import write_trace_record
 
 _LOCK = threading.Lock()
 _PROCESS_LOCK = threading.Lock()
@@ -77,6 +82,17 @@ LONG_QUERY_TOP_K_DELTA = int(os.getenv("AI_SUMMARY_LONG_QUERY_TOP_K_DELTA", "-1"
 
 RETRIEVAL_METRICS_FILE = RAG_SESSIONS_DIR / "retrieval_metrics.json"
 RETRIEVAL_METRICS_MAX = 20
+
+
+def _new_trace_id() -> str:
+    return f"trace_{uuid4().hex[:16]}"
+
+
+def _normalize_trace_id(trace_id: str = "") -> str:
+    value = re.sub(r"[^a-zA-Z0-9_.:-]", "", str(trace_id or "").strip())
+    if value:
+        return value[:80]
+    return _new_trace_id()
 
 # ─── In-process reranker sidecar ──────────────────────────────────────────────
 # A minimal HTTP server that wraps the CrossEncoder and stays alive for the
@@ -515,8 +531,12 @@ def record_retrieval_metrics(
     embed_cache_hit: int = 0,
     web_cache_hit: int = 0,
     no_context: int = 0,
+    no_context_reason: str = "",
+    trace_id: str = "",
+    similarity_threshold: float | None = None,
     top1_score_before_rerank: float | None = None,
     top1_score_after_rerank: float | None = None,
+    top1_rerank_score_after_rerank: float | None = None,
     top1_identity_changed: int | None = None,
     top1_rank_shift: float | None = None,
 ) -> None:
@@ -542,14 +562,131 @@ def record_retrieval_metrics(
         "embed_cache_hit": int(embed_cache_hit or 0),
         "web_cache_hit": int(web_cache_hit or 0),
         "no_context": int(no_context or 0),
+        "no_context_reason": str(no_context_reason or "").strip(),
+        "trace_id": str(trace_id or "").strip(),
+        "similarity_threshold": round(float(similarity_threshold), 4) if similarity_threshold is not None else None,
         "top1_score_before_rerank": round(float(top1_score_before_rerank), 4) if top1_score_before_rerank is not None else None,
         "top1_score_after_rerank": round(float(top1_score_after_rerank), 4) if top1_score_after_rerank is not None else None,
+        "top1_rerank_score_after_rerank": round(float(top1_rerank_score_after_rerank), 4) if top1_rerank_score_after_rerank is not None else None,
         "top1_identity_changed": int(top1_identity_changed) if top1_identity_changed is not None else None,
         "top1_rank_shift": round(float(top1_rank_shift), 4) if top1_rank_shift is not None else None,
     }
     rows = _load_retrieval_metrics_records()
     rows.append(row)
     _save_retrieval_metrics_records(rows)
+
+
+def _build_rag_trace_record(
+    *,
+    trace_id: str,
+    session_id: str,
+    source: str,
+    mode: str,
+    search_mode: str,
+    query_profile: dict[str, Any],
+    similarity_threshold: float,
+    payload: dict[str, Any],
+    timings: dict[str, Any],
+    no_context: int,
+    no_context_reason: str,
+) -> dict[str, Any]:
+    used_docs = payload.get("used_context_docs") if isinstance(payload.get("used_context_docs"), list) else []
+    llm = payload.get("llm") if isinstance(payload.get("llm"), dict) else {}
+    graph_batches = payload.get("graph_expansion_batches") if isinstance(payload.get("graph_expansion_batches"), list) else []
+    call_type = "benchmark_case" if str(source or "").startswith("benchmark") else str(payload.get("call_type") or "answer")
+    return {
+        "trace_id": trace_id,
+        "timestamp": datetime.now().isoformat(timespec="seconds"),
+        "entrypoint": "rag",
+        "call_type": "qa_stream" if source == "rag_qa_stream" else (call_type if call_type == "benchmark_case" else "qa"),
+        "session_id": session_id,
+        "search_mode": search_mode,
+        "query_type": "",
+        "query_profile": {
+            "profile": str(query_profile.get("profile", "medium") or "medium"),
+            "token_count": int(query_profile.get("token_count", 0) or 0),
+        },
+        "router": {
+            "selected_tool": "ask_rag",
+            "planned_tools": ["vector_recall", "llm_answer"],
+            "decision_category": "local_rag_pipeline",
+            "decision_path": ["local_rag_pipeline", "vector_recall", "llm_answer"],
+            "planned_tool_depth": 2,
+            "executed_tool_depth": 2,
+            "classifier_label": "",
+            "doc_similarity": timings.get("local_top1_vector_score_after_rerank", timings.get("local_top1_score")),
+            "media_entity_confident": False,
+        },
+        "tools": [
+            {
+                "name": "vector_recall",
+                "status": "ok",
+                "latency_ms": round(float(timings.get("total", 0) or 0) * 1000, 1),
+                "result_count": int(payload.get("retrieved_local_count", 0) or 0),
+                "trace_stage": "rag.vector_recall",
+            },
+            {
+                "name": "llm_answer",
+                "status": "ok",
+                "latency_ms": round(float(llm.get("latency_seconds", 0) or 0) * 1000, 1),
+                "result_count": int(payload.get("retrieved_count", 0) or 0),
+                "trace_stage": "rag.llm.answer",
+            },
+        ],
+        "retrieval": {
+            "vector_hits": int(payload.get("retrieved_local_count", 0) or 0),
+            "vector_candidates": int(payload.get("retrieved_local_vector_candidates", 0) or 0),
+            "similarity_threshold": round(float(similarity_threshold), 4),
+            "top1_score_before_rerank": timings.get("local_top1_score"),
+            "top1_score_after_rerank": timings.get("local_top1_vector_score_after_rerank", timings.get("local_top1_score")),
+            "top1_rerank_score_after_rerank": timings.get("local_top1_rerank_score_after_rerank", timings.get("local_top1_score_after_rerank")),
+            "top1_path_before_rerank": timings.get("local_top1_path_before_rerank"),
+            "top1_path_after_rerank": timings.get("local_top1_path_after_rerank"),
+            "query_rewrite_status": str(timings.get("query_rewrite_status", "") or ""),
+            "query_rewrite_count": len(list(timings.get("query_rewrite_queries") or [])),
+            "graph_expansion_batches": len(graph_batches),
+        },
+        "ranking": {
+            "method": str(payload.get("reranker_model", "") or "") and "cross_encoder",
+            "rerank_k": int(payload.get("rerank_top_k", 0) or 0),
+            "top1_rerank_score": timings.get("local_top1_rerank_score_after_rerank", timings.get("local_top1_score_after_rerank")),
+            "top1_identity_changed": timings.get("local_top1_identity_changed"),
+            "top1_rank_shift": timings.get("local_top1_rank_shift"),
+        },
+        "llm": {
+            "backend": mode,
+            "model": str(llm.get("model", "") or payload.get("mode", "")),
+            "latency_seconds": round(float(llm.get("latency_seconds", 0) or 0), 6),
+            "input_tokens_est": int(llm.get("input_tokens_est", 0) or 0),
+            "prompt_tokens_est": int(llm.get("prompt_tokens_est", 0) or 0),
+            "context_tokens_est": int(llm.get("context_tokens_est", 0) or 0),
+            "output_tokens_est": int(llm.get("output_tokens_est", 0) or 0),
+            "calls": int(llm.get("calls", 0) or 0),
+        },
+        "stages": {
+            "vector_recall_seconds": round(float(timings.get("total", 0) or 0), 6),
+            "rerank_seconds": round(float(timings.get("rerank_seconds", 0) or 0), 6),
+            "context_assembly_seconds": round(float(timings.get("context_assembly_seconds", 0) or 0), 6),
+            "web_search_seconds": round(float(timings.get("web_search_seconds", 0) or 0), 6),
+            "llm_seconds": round(float(llm.get("latency_seconds", 0) or 0), 6),
+            "wall_clock_seconds": round(float(payload.get("elapsed_seconds", 0) or 0), 6),
+        },
+        "total_elapsed_seconds": round(float(payload.get("elapsed_seconds", 0) or 0), 6),
+        "result": {
+            "status": "ok",
+            "no_context": int(no_context or 0),
+            "no_context_reason": str(no_context_reason or ""),
+            "degraded_to_retrieval": False,
+            "used_context_docs": len(used_docs),
+        },
+    }
+
+
+def _write_rag_trace_record(record: dict[str, Any]) -> None:
+    try:
+        write_trace_record(record)
+    except Exception:
+        pass
 
 
 def get_retrieval_metrics_summary() -> dict[str, Any]:
@@ -1301,14 +1438,19 @@ def _normalize_messages(messages_raw: object) -> list[dict[str, str]]:
     for item in messages_raw:
         role = ""
         text = ""
+        trace_id = ""
         if isinstance(item, dict):
             role = str(item.get("role", "")).strip()
             text = str(item.get("text", "")).strip()
+            trace_id = str(item.get("trace_id", "")).strip()
         elif isinstance(item, (tuple, list)) and len(item) >= 2:
             role = str(item[0]).strip()
             text = str(item[1]).strip()
         if role and text:
-            result.append({"role": role, "text": text})
+            normalized: dict[str, str] = {"role": role, "text": text}
+            if trace_id:
+                normalized["trace_id"] = trace_id
+            result.append(normalized)
     return result
 
 
@@ -1973,6 +2115,10 @@ def delete_session(session_id: str) -> bool:
 
 
 def append_message(session_id: str, role: str, text: str) -> None:
+    append_message_with_trace(session_id, role, text, trace_id="")
+
+
+def append_message_with_trace(session_id: str, role: str, text: str, trace_id: str = "") -> None:
     sid = (session_id or "").strip()
     if not sid:
         return
@@ -1989,9 +2135,46 @@ def append_message(session_id: str, role: str, text: str) -> None:
                 "title_locked": False,
                 "messages": [],
             }
-        session.setdefault("messages", []).append({"role": role, "text": text})
+        row = {"role": role, "text": text}
+        normalized_trace_id = str(trace_id or "").strip()
+        if normalized_trace_id:
+            row["trace_id"] = normalized_trace_id
+        session.setdefault("messages", []).append(row)
         session["updated_at"] = datetime.now().isoformat(timespec="seconds")
         _save_session(session)
+
+
+def _post_stream_finalize_async(
+    *,
+    session_id: str,
+    answer: str,
+    question: str,
+    trace_id: str,
+    normalized_mode: str,
+    payload: dict[str, Any],
+    timings: dict[str, Any],
+) -> None:
+    def _run() -> None:
+        try:
+            if answer:
+                append_message_with_trace(session_id, "助手", answer, trace_id=trace_id)
+                schedule_memory_update(session_id, question, answer)
+
+            is_deepseek_call = normalized_mode in {"deepseek", "reasoner"}
+            web_count = int(payload.get("retrieved_web_count", 0) or 0)
+            web_from_cache = str(timings.get("web_search_status", "")) == "cache_hit"
+            _notify_nav_dashboard_quota(
+                web_search_delta=1 if (web_count > 0 and not web_from_cache) else 0,
+                deepseek_delta=1 if is_deepseek_call else 0,
+            )
+
+            title = suggest_local_session_title(question, max_len=15)
+            if title:
+                set_session_title_if_unlocked(session_id, title, lock=True)
+        except Exception:
+            return
+
+    threading.Thread(target=_run, daemon=True, name=f"rag-finalize-{session_id[:8]}").start()
 
 
 def set_session_title_if_unlocked(session_id: str, title: str, lock: bool = True) -> bool:
@@ -2020,6 +2203,7 @@ def set_session_title_if_unlocked(session_id: str, title: str, lock: bool = True
 def ask_rag(
     *,
     session_id: str,
+    trace_id: str = "",
     mode: str,
     question: str,
     api_url: str | None,
@@ -2036,6 +2220,7 @@ def ask_rag(
     q = (question or "").strip()
     if not q:
         raise ValueError("问题不能为空")
+    resolved_trace_id = _normalize_trace_id(trace_id)
 
     url = (api_url or "").strip() or DEFAULT_API_BASE_URL
     key = (api_key or "").strip() or DEFAULT_API_KEY
@@ -2068,11 +2253,13 @@ def ask_rag(
     if normalized_mode == "local" and not use_local_llm:
         # Pure local retrieval-only mode.
         payload = _ask_rag_local_without_api(q, effective_top_k, emb, normalized_search_mode)
+        payload["trace_id"] = resolved_trace_id
         if debug:
             _write_debug_record(
                 session_id,
                 {
                     "timestamp": datetime.now().isoformat(timespec="seconds"),
+                    "trace_id": resolved_trace_id,
                     "session_id": session_id,
                     "debug_enabled": True,
                     "source": "rag_service_local_only",
@@ -2107,6 +2294,7 @@ def ask_rag(
                 session_id,
                 {
                     "timestamp": datetime.now().isoformat(timespec="seconds"),
+                    "trace_id": resolved_trace_id,
                     "session_id": session_id,
                     "debug_enabled": True,
                     "source": "rag_service_preflight_fallback_stream",
@@ -2135,6 +2323,7 @@ def ask_rag(
                 session_id,
                 {
                     "timestamp": datetime.now().isoformat(timespec="seconds"),
+                    "trace_id": resolved_trace_id,
                     "session_id": session_id,
                     "debug_enabled": True,
                     "source": "rag_service_preflight_fallback",
@@ -2198,6 +2387,8 @@ def ask_rag(
             "true" if debug else "false",
             "--session-id",
             session_id,
+            "--trace-id",
+            resolved_trace_id,
             "--embedding-model",
             emb,
             "--api-url",
@@ -2281,6 +2472,7 @@ def ask_rag(
                             session_id,
                             {
                                 "timestamp": datetime.now().isoformat(timespec="seconds"),
+                                "trace_id": resolved_trace_id,
                                 "session_id": session_id,
                                 "debug_enabled": True,
                                 "source": "rag_service_subprocess_timeout_fallback",
@@ -2298,6 +2490,7 @@ def ask_rag(
                         session_id,
                         {
                             "timestamp": datetime.now().isoformat(timespec="seconds"),
+                            "trace_id": resolved_trace_id,
                             "session_id": session_id,
                             "debug_enabled": True,
                             "source": "rag_service_subprocess_timeout",
@@ -2345,6 +2538,7 @@ def ask_rag(
                     session_id,
                     {
                         "timestamp": datetime.now().isoformat(timespec="seconds"),
+                        "trace_id": resolved_trace_id,
                         "session_id": session_id,
                         "debug_enabled": True,
                         "source": "rag_service_subprocess_error",
@@ -2393,6 +2587,7 @@ def ask_rag(
                         session_id,
                         {
                             "timestamp": datetime.now().isoformat(timespec="seconds"),
+                            "trace_id": resolved_trace_id,
                             "session_id": session_id,
                             "debug_enabled": True,
                             "source": "rag_service_local_fallback",
@@ -2413,6 +2608,7 @@ def ask_rag(
             raise RuntimeError("未生成 RAG 输出")
 
         payload = json.loads(Path(tmp_path).read_text(encoding="utf-8"))
+        payload["trace_id"] = str(payload.get("trace_id") or resolved_trace_id)
         payload["embedding_model"] = emb
         payload["mode"] = normalized_mode
         payload["query_profile"] = query_profile
@@ -2432,12 +2628,31 @@ def ask_rag(
                 embed_cache_hit=1 if float(_timings_dict.get("embed_cache_hit") or 0) > 0 else 0,
                 web_cache_hit=1 if str(_timings_dict.get("web_search_status", "")) == "cache_hit" else 0,
                 no_context=_no_context,
+                no_context_reason="below_threshold" if _no_context else "",
+                trace_id=resolved_trace_id,
+                similarity_threshold=float(effective_similarity_threshold),
                 top1_score_before_rerank=float(_timings_dict["local_top1_score"]) if _timings_dict.get("local_top1_score") is not None else None,
-                top1_score_after_rerank=float(_timings_dict["local_top1_score_after_rerank"]) if _timings_dict.get("local_top1_score_after_rerank") is not None else None,
+                top1_score_after_rerank=float(_timings_dict["local_top1_vector_score_after_rerank"]) if _timings_dict.get("local_top1_vector_score_after_rerank") is not None else None,
+                top1_rerank_score_after_rerank=float(_timings_dict["local_top1_rerank_score_after_rerank"]) if _timings_dict.get("local_top1_rerank_score_after_rerank") is not None else None,
                 top1_identity_changed=int(_timings_dict["local_top1_identity_changed"]) if _timings_dict.get("local_top1_identity_changed") is not None else None,
                 top1_rank_shift=float(_timings_dict["local_top1_rank_shift"]) if _timings_dict.get("local_top1_rank_shift") is not None else None,
             )
-        if _no_context:
+        _write_rag_trace_record(
+            _build_rag_trace_record(
+                trace_id=resolved_trace_id,
+                session_id=session_id,
+                source="benchmark_rag" if benchmark_mode else "rag_qa",
+                mode=normalized_mode,
+                search_mode=normalized_search_mode,
+                query_profile=query_profile,
+                similarity_threshold=float(effective_similarity_threshold),
+                payload=payload,
+                timings=_timings_dict,
+                no_context=_no_context,
+                no_context_reason="below_threshold" if _no_context else "",
+            )
+        )
+        if _no_context and not benchmark_mode:
             try:
                 from cache_db import log_no_context_query
                 log_no_context_query(
@@ -2445,6 +2660,8 @@ def ask_rag(
                     source="rag_qa",
                     top1_score=float(_timings_dict.get("local_top1_score") or 0),
                     threshold=float(effective_similarity_threshold),
+                    trace_id=resolved_trace_id,
+                    reason="below_threshold",
                 )
             except Exception:
                 pass
@@ -2454,6 +2671,7 @@ def ask_rag(
                 session_id,
                 {
                     "timestamp": datetime.now().isoformat(timespec="seconds"),
+                    "trace_id": resolved_trace_id,
                     "session_id": session_id,
                     "debug_enabled": True,
                     "source": "rag_service",
@@ -2487,6 +2705,7 @@ def ask_rag(
 def ask_rag_stream(
     *,
     session_id: str,
+    trace_id: str = "",
     mode: str,
     question: str,
     api_url: str | None,
@@ -2504,6 +2723,7 @@ def ask_rag_stream(
     q = (question or "").strip()
     if not q:
         raise ValueError("问题不能为空")
+    resolved_trace_id = _normalize_trace_id(trace_id)
 
     url = (api_url or "").strip() or DEFAULT_API_BASE_URL
     key = (api_key or "").strip() or DEFAULT_API_KEY
@@ -2521,7 +2741,7 @@ def ask_rag_stream(
                 kind_label = "Web搜索" if exc["kind"] == "web_search" else "DeepSeek"
                 parts.append(f"{kind_label}（今日已用 {exc['current']}/{exc['limit']}）")
             msg = "今日 API 配额已达上限：" + "、".join(parts) + "。是否仍要继续调用？"
-            yield {"type": "quota_exceeded", "message": msg, "exceeded": exceeded}
+            yield {"type": "quota_exceeded", "trace_id": resolved_trace_id, "message": msg, "exceeded": exceeded}
             return
 
     memory_context = build_memory_context(session_id)
@@ -2549,13 +2769,15 @@ def ask_rag_stream(
     if normalized_mode == "local" and not use_local_llm:
         # Pure local retrieval-only mode.
         try:
-            yield {"type": "progress", "message": "正在检索并生成本地回答..."}
+            yield {"type": "progress", "trace_id": resolved_trace_id, "message": "正在检索并生成本地回答..."}
             payload = _ask_rag_local_without_api(q, top_k, emb, normalized_search_mode)
+            payload["trace_id"] = resolved_trace_id
             if debug:
                 _write_debug_record(
                     session_id,
                     {
                         "timestamp": datetime.now().isoformat(timespec="seconds"),
+                        "trace_id": resolved_trace_id,
                         "session_id": session_id,
                         "debug_enabled": True,
                         "source": "rag_service_stream_local_only",
@@ -2584,20 +2806,23 @@ def ask_rag_stream(
                 # Use larger chunks so headings/lists are less likely to be split mid-line.
                 chunks = [answer[i : i + 220] for i in range(0, len(answer), 220)]
                 for chunk in chunks:
-                    yield {"type": "chunk", "text": chunk}
-
-            if answer:
-                append_message(session_id, "助手", answer)
-
-            title = suggest_local_session_title(q, max_len=15)
-            if title:
-                set_session_title_if_unlocked(session_id, title, lock=True)
+                    yield {"type": "chunk", "trace_id": resolved_trace_id, "text": chunk}
 
             payload["session_id"] = session_id
-            yield {"type": "done", "payload": payload}
+            yield {"type": "done", "trace_id": resolved_trace_id, "payload": payload}
+            _post_stream_finalize_async(
+                session_id=session_id,
+                answer=answer,
+                question=q,
+                trace_id=resolved_trace_id,
+                normalized_mode=normalized_mode,
+                payload=payload,
+                timings={},
+            )
+            return
         except Exception as exc:
             error_message = _humanize_error_message(str(exc) or "本地检索失败")
-            yield {"type": "error", "message": error_message}
+            yield {"type": "error", "trace_id": resolved_trace_id, "message": error_message}
         return
 
     if use_local_llm:
@@ -2653,6 +2878,8 @@ def ask_rag_stream(
             "true" if debug else "false",
             "--session-id",
             session_id,
+            "--trace-id",
+            resolved_trace_id,
             "--embedding-model",
             emb,
             "--api-url",
@@ -2739,7 +2966,7 @@ def ask_rag_stream(
             if not should_flush:
                 return
             collected_chunks.append(pending_chunk)
-            yield {"type": "chunk", "text": pending_chunk}
+            yield {"type": "chunk", "trace_id": resolved_trace_id, "text": pending_chunk}
             pending_chunk = ""
             last_chunk_flush = time.monotonic()
 
@@ -2747,7 +2974,7 @@ def ask_rag_stream(
         last_progress_message = "正在启动 RAG 子进程..."
         last_progress_started_at = time.monotonic()
         subprocess_timeout_seconds = _resolve_ask_rag_subprocess_timeout_seconds()
-        yield {"type": "progress", "message": last_progress_message}
+        yield {"type": "progress", "trace_id": resolved_trace_id, "message": last_progress_message}
         start_wait = time.monotonic()
         while True:
             if subprocess_timeout_seconds > 0 and proc.poll() is None and time.monotonic() - start_wait > subprocess_timeout_seconds:
@@ -2768,6 +2995,7 @@ def ask_rag_stream(
                             session_id,
                             {
                                 "timestamp": datetime.now().isoformat(timespec="seconds"),
+                                "trace_id": resolved_trace_id,
                                 "session_id": session_id,
                                 "debug_enabled": True,
                                 "source": "rag_service_stream_subprocess_timeout_fallback",
@@ -2780,7 +3008,8 @@ def ask_rag_stream(
                                 "payload": fallback_payload,
                             },
                         )
-                    yield {"type": "done", "payload": fallback_payload}
+                    fallback_payload["trace_id"] = resolved_trace_id
+                    yield {"type": "done", "trace_id": resolved_trace_id, "payload": fallback_payload}
                     return
                 raise RuntimeError(
                     f"ask_rag.py 子进程超时（>{subprocess_timeout_seconds}s，最后阶段：{last_progress_message}），已终止。"
@@ -2791,7 +3020,7 @@ def ask_rag_stream(
                 for event in _flush_pending_chunk(force=False):
                     yield event
                 if proc.poll() is None and time.monotonic() - last_heartbeat >= 0.8:
-                    yield {"type": "progress", "message": _heartbeat_progress_message(last_progress_message, last_progress_started_at)}
+                    yield {"type": "progress", "trace_id": resolved_trace_id, "message": _heartbeat_progress_message(last_progress_message, last_progress_started_at)}
                     last_heartbeat = time.monotonic()
                 continue
 
@@ -2808,7 +3037,7 @@ def ask_rag_stream(
                 message = line[len("PROGRESS: ") :].strip()
                 last_progress_message = message or last_progress_message
                 last_progress_started_at = time.monotonic()
-                yield {"type": "progress", "message": message}
+                yield {"type": "progress", "trace_id": resolved_trace_id, "message": message}
                 last_heartbeat = time.monotonic()
             elif line.startswith("STREAM_CHUNK_JSON: "):
                 raw_payload = line[len("STREAM_CHUNK_JSON: ") :].strip()
@@ -2850,7 +3079,7 @@ def ask_rag_stream(
             _ABORTED_SESSIONS.discard(session_id)
 
         if was_aborted:
-            yield {"type": "aborted"}
+            yield {"type": "aborted", "trace_id": resolved_trace_id}
             return
 
         if code != 0:
@@ -2862,7 +3091,7 @@ def ask_rag_stream(
             )
             if should_fallback_local:
                 notice = _local_fallback_notice()
-                yield {"type": "progress", "message": "本地大模型不可用，正在降级为检索回答..."}
+                yield {"type": "progress", "trace_id": resolved_trace_id, "message": "本地大模型不可用，正在降级为检索回答..."}
                 fallback_payload = _safe_build_local_fallback_payload(
                     q,
                     top_k,
@@ -2880,11 +3109,13 @@ def ask_rag_stream(
                 fallback_payload["mode"] = normalized_mode
                 fallback_payload["embedding_model"] = emb
                 fallback_payload["session_id"] = session_id
+                fallback_payload["trace_id"] = resolved_trace_id
                 if debug:
                     _write_debug_record(
                         session_id,
                         {
                             "timestamp": datetime.now().isoformat(timespec="seconds"),
+                            "trace_id": resolved_trace_id,
                             "session_id": session_id,
                             "debug_enabled": True,
                             "source": "rag_service_stream_local_fallback",
@@ -2899,15 +3130,15 @@ def ask_rag_stream(
                 if fallback_answer:
                     fallback_chunks = [fallback_answer[i : i + 220] for i in range(0, len(fallback_answer), 220)]
                     for chunk in fallback_chunks:
-                        yield {"type": "chunk", "text": chunk}
-                    append_message(session_id, "助手", fallback_answer)
+                        yield {"type": "chunk", "trace_id": resolved_trace_id, "text": chunk}
+                    append_message_with_trace(session_id, "助手", fallback_answer, trace_id=resolved_trace_id)
                     schedule_memory_update(session_id, q, fallback_answer)
 
                 title = suggest_local_session_title(q, max_len=15)
                 if title:
                     set_session_title_if_unlocked(session_id, title, lock=True)
 
-                yield {"type": "done", "payload": fallback_payload}
+                yield {"type": "done", "trace_id": resolved_trace_id, "payload": fallback_payload}
                 return
             raise RuntimeError(error_text)
 
@@ -2915,6 +3146,7 @@ def ask_rag_stream(
             raise RuntimeError("未生成 RAG 输出")
 
         payload = json.loads(Path(tmp_path).read_text(encoding="utf-8"))
+        payload["trace_id"] = str(payload.get("trace_id") or resolved_trace_id)
         answer = str(payload.get("answer", "")).strip() or "".join(collected_chunks).strip()
         used_docs = payload.get("used_context_docs", [])
         docs = used_docs if isinstance(used_docs, list) else []
@@ -2924,7 +3156,7 @@ def ask_rag_stream(
             # Fallback when upstream buffers everything and emits no stream chunks.
             synthetic_chunks = [answer[i : i + 240] for i in range(0, len(answer), 240)]
             for chunk in synthetic_chunks:
-                yield {"type": "chunk", "text": chunk}
+                yield {"type": "chunk", "trace_id": resolved_trace_id, "text": chunk}
 
         payload["answer"] = answer
         payload["mode"] = normalized_mode
@@ -2947,12 +3179,31 @@ def ask_rag_stream(
                 embed_cache_hit=1 if float(_timings_dict.get("embed_cache_hit") or 0) > 0 else 0,
                 web_cache_hit=1 if str(_timings_dict.get("web_search_status", "")) == "cache_hit" else 0,
                 no_context=_no_context,
+                no_context_reason="below_threshold" if _no_context else "",
+                trace_id=resolved_trace_id,
+                similarity_threshold=float(effective_similarity_threshold),
                 top1_score_before_rerank=float(_timings_dict["local_top1_score"]) if _timings_dict.get("local_top1_score") is not None else None,
-                top1_score_after_rerank=float(_timings_dict["local_top1_score_after_rerank"]) if _timings_dict.get("local_top1_score_after_rerank") is not None else None,
+                top1_score_after_rerank=float(_timings_dict["local_top1_vector_score_after_rerank"]) if _timings_dict.get("local_top1_vector_score_after_rerank") is not None else None,
+                top1_rerank_score_after_rerank=float(_timings_dict["local_top1_rerank_score_after_rerank"]) if _timings_dict.get("local_top1_rerank_score_after_rerank") is not None else None,
                 top1_identity_changed=int(_timings_dict["local_top1_identity_changed"]) if _timings_dict.get("local_top1_identity_changed") is not None else None,
                 top1_rank_shift=float(_timings_dict["local_top1_rank_shift"]) if _timings_dict.get("local_top1_rank_shift") is not None else None,
             )
-        if float(_timings_dict.get("local_after_threshold", -1) or -1) == 0:
+        _write_rag_trace_record(
+            _build_rag_trace_record(
+                trace_id=resolved_trace_id,
+                session_id=session_id,
+                source="benchmark_rag" if benchmark_mode else "rag_qa_stream",
+                mode=normalized_mode,
+                search_mode=normalized_search_mode,
+                query_profile=query_profile,
+                similarity_threshold=float(effective_similarity_threshold),
+                payload=payload,
+                timings=_timings_dict,
+                no_context=_no_context,
+                no_context_reason="below_threshold" if _no_context else "",
+            )
+        )
+        if float(_timings_dict.get("local_after_threshold", -1) or -1) == 0 and not benchmark_mode:
             try:
                 from cache_db import log_no_context_query
                 log_no_context_query(
@@ -2960,6 +3211,8 @@ def ask_rag_stream(
                     source="rag_qa",
                     top1_score=float(_timings_dict.get("local_top1_score") or 0),
                     threshold=float(effective_similarity_threshold),
+                    trace_id=resolved_trace_id,
+                    reason="below_threshold",
                 )
             except Exception:
                 pass
@@ -2969,6 +3222,7 @@ def ask_rag_stream(
                 session_id,
                 {
                     "timestamp": datetime.now().isoformat(timespec="seconds"),
+                    "trace_id": resolved_trace_id,
                     "session_id": session_id,
                     "debug_enabled": True,
                     "source": "rag_service_stream",
@@ -2988,40 +3242,32 @@ def ask_rag_stream(
                 },
             )
 
-        if answer:
-            append_message(session_id, "助手", answer)
-            schedule_memory_update(session_id, q, answer)
-
-        # Notify nav_dashboard quota tracker (best-effort, non-blocking).
-        # Only count a real API call — do NOT count web cache hits.
-        is_deepseek_call = normalized_mode in {"deepseek", "reasoner"}
-        _web_count = int(payload.get("retrieved_web_count", 0) or 0)
-        _web_from_cache = str(_timings_dict.get("web_search_status", "")) == "cache_hit"
-        _notify_nav_dashboard_quota(
-            web_search_delta=1 if (_web_count > 0 and not _web_from_cache) else 0,
-            deepseek_delta=1 if is_deepseek_call else 0,
+        yield {"type": "done", "trace_id": resolved_trace_id, "payload": payload}
+        _post_stream_finalize_async(
+            session_id=session_id,
+            answer=answer,
+            question=q,
+            trace_id=resolved_trace_id,
+            normalized_mode=normalized_mode,
+            payload=payload,
+            timings=_timings_dict,
         )
-
-        title = suggest_local_session_title(q, max_len=15)
-        if title:
-            set_session_title_if_unlocked(session_id, title, lock=True)
-
-        yield {"type": "done", "payload": payload}
+        return
     except RAGTaskAborted:
         # Save any partial streamed content so it survives session reload.
         partial = "".join(collected_chunks).strip()
         if partial:
-            append_message(session_id, "助手", partial + "\n\n_[已中止]_")
-        yield {"type": "aborted"}
+            append_message_with_trace(session_id, "助手", partial + "\n\n_[已中止]_", trace_id=resolved_trace_id)
+        yield {"type": "aborted", "trace_id": resolved_trace_id}
     except Exception as exc:
         # Stream an error event to preserve any partial output already sent to client.
         error_message = _humanize_error_message(str(exc) or "未知错误")
         # Save partial streamed content so it survives session reload.
         partial = "".join(collected_chunks).strip()
         if partial:
-            append_message(session_id, "助手", partial + "\n\n---\n\n_[输出中断]_")
+            append_message_with_trace(session_id, "助手", partial + "\n\n---\n\n_[输出中断]_", trace_id=resolved_trace_id)
         append_message(session_id, "系统", f"RAG Q&A 失败：{error_message}")
-        yield {"type": "error", "message": error_message}
+        yield {"type": "error", "trace_id": resolved_trace_id, "message": error_message}
     finally:
         with _PROCESS_LOCK:
             _ACTIVE_PROCESSES.pop(session_id, None)

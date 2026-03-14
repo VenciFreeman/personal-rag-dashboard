@@ -9,11 +9,11 @@
   <link rel="icon" type="image/png" sizes="16x16" href="/static/favicon_logosc/favicon-16x16.png" />
   <link rel="shortcut icon" href="/static/favicon_logosc/favicon.ico" />
   <link rel="manifest" href="/static/favicon_logosc/site.webmanifest" />
-  <link rel="stylesheet" href="/static/app.css" />
+  <link rel="stylesheet" href="/static/app.css?v=20260314g" />
 </head>
 <body data-local-model="{{ local_model }}" data-deepseek-model="{{ deepseek_model }}" data-ai-summary-url="{{ ai_summary_url }}" data-library-url="{{ library_tracker_url }}">
   <header class="top">
-    <h1>Vincent's Dashboard</h1>
+    <h1>Vincent's Navigation Dashboard</h1>
   </header>
 
   <main class="shell">
@@ -133,6 +133,19 @@
           </table>
         </div>
 
+        <section class="dashboard-trace-panel panel-shell">
+          <div class="dashboard-log-head dashboard-task-center-head">
+            <span>Trace 查询</span>
+            <div class="dashboard-task-toolbar trace-lookup-toolbar">
+              <input id="dashboard-trace-input" type="text" autocomplete="off" spellcheck="false" placeholder="输入 trace_id，例如 trace_xxx" />
+              <button id="dashboard-trace-query-btn">查询</button>
+              <button id="dashboard-trace-open-btn" class="ghost" disabled>弹窗查看</button>
+            </div>
+          </div>
+          <div id="dashboard-trace-meta" class="dashboard-meta">输入 trace_id 查看阶段用时、路由和工具调用摘要</div>
+          <div id="dashboard-trace-result" class="trace-result-empty">暂无 trace 数据</div>
+        </section>
+
         <section class="dashboard-task-center panel-shell">
           <div class="dashboard-log-head dashboard-task-center-head">
             <span>任务中心</span>
@@ -188,7 +201,7 @@
               <option value="regression_v1" selected>regression_v1 / 基线回归样本池</option>
             </select>
           </label>
-          <div class="benchmark-section-label" style="margin-top:8px">每类 Query 条数（由下方自行决定）</div>
+          <div class="benchmark-section-label" style="margin-top:8px">每类 Query 条数</div>
           <div class="benchmark-count-row">
             <label><input type="radio" name="bm-count" value="3" checked /> 3</label>
             <label><input type="radio" name="bm-count" value="5" /> 5</label>
@@ -230,6 +243,17 @@
             </tbody>
           </table>
         </div>
+
+        <section class="panel-shell bm-case-trace-panel">
+          <div class="dashboard-log-head">
+            <span>当前最新单 Case Trace</span>
+            <button id="bm-case-trace-refresh" class="ghost" type="button">刷新当前最新</button>
+          </div>
+          <div id="bm-case-trace-meta" class="dashboard-meta">显示正在运行或最近一次 Benchmark 的最新 trace 详情</div>
+          <div id="bm-case-trace-list" class="bm-case-trace-list">
+            <div class="trace-result-empty">暂无 case trace 数据</div>
+          </div>
+        </section>
       </div>
     </section>
   </main>
@@ -273,6 +297,29 @@
     </div>
   </div>
 
+  <div id="feedback-modal" class="card-modal hidden" aria-hidden="true">
+    <div class="card-modal-backdrop" data-role="feedback-backdrop"></div>
+    <div class="card-modal-panel" role="dialog" aria-modal="true" aria-label="聊天反馈">
+      <div class="card-modal-head">
+        <h3>聊天反馈</h3>
+        <div class="dashboard-meta" id="feedback-modal-meta"></div>
+      </div>
+      <label>来源筛选
+        <select id="feedback-source">
+          <option value="all">全部</option>
+          <option value="agent_chat">LLM Agent</option>
+          <option value="rag_chat">RAG 问答</option>
+        </select>
+      </label>
+      <ul id="feedback-modal-list" class="warnings-list"></ul>
+      <div class="card-modal-actions">
+        <button id="feedback-export-btn" class="ghost">导出 JSON</button>
+        <button id="feedback-clear-btn">清空列表</button>
+        <button id="feedback-close-btn" class="ghost">关闭</button>
+      </div>
+    </div>
+  </div>
+
   <div id="runtime-data-modal" class="card-modal hidden" aria-hidden="true">
     <div class="card-modal-backdrop" data-role="runtime-data-backdrop"></div>
     <div class="card-modal-panel" role="dialog" aria-modal="true" aria-label="运行时数据与缓存">
@@ -285,6 +332,22 @@
         <button id="runtime-data-refresh-btn" class="ghost">刷新</button>
         <button id="runtime-data-clear-btn">清除勾选项</button>
         <button id="runtime-data-close-btn" class="ghost">关闭</button>
+      </div>
+    </div>
+  </div>
+
+  <div id="trace-modal" class="card-modal hidden" aria-hidden="true">
+    <div class="card-modal-backdrop" data-role="trace-backdrop"></div>
+    <div class="card-modal-panel" role="dialog" aria-modal="true" aria-label="Trace 详情">
+      <div class="card-modal-head">
+        <h3>Trace 详情</h3>
+        <div class="dashboard-meta" id="trace-modal-meta"></div>
+      </div>
+      <div id="trace-modal-content" class="trace-modal-content"></div>
+      <pre id="trace-modal-export" class="trace-export-box"></pre>
+      <div class="card-modal-actions">
+        <button id="trace-modal-export-btn">导出 TXT</button>
+        <button id="trace-modal-close-btn" class="ghost">关闭</button>
       </div>
     </div>
   </div>
@@ -348,6 +411,6 @@
     </div>
   </div>
 
-  <script src="/static/app.js"></script>
+  <script src="/static/app.js?v=20260314g"></script>
 </body>
 </html>

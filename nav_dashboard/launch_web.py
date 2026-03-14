@@ -19,6 +19,18 @@ import webbrowser
 from pathlib import Path
 
 
+def _mark_deploy_start() -> str:
+    deployed_at = time.strftime("%Y-%m-%dT%H:%M:%S", time.localtime())
+    os.environ["NAV_DASHBOARD_DEPLOYED_AT"] = deployed_at
+    try:
+        deploy_file = Path(__file__).resolve().parent.parent / "data" / "nav_dashboard_deploy.json"
+        deploy_file.parent.mkdir(parents=True, exist_ok=True)
+        deploy_file.write_text('{"deployed_at": "%s"}' % deployed_at, encoding="utf-8")
+    except Exception:
+        pass
+    return deployed_at
+
+
 def _load_workspace_env_local() -> None:
     """Load root env.local.ps1 and override stale inherited env vars for launcher use."""
     root = Path(__file__).resolve().parent.parent
@@ -68,19 +80,10 @@ def _maybe_reexec_into_venv() -> None:
 
 _maybe_reexec_into_venv()
 _load_workspace_env_local()
+_mark_deploy_start()
 
 from web.config import HOST, PORT
 from web.main import run
-
-
-def _is_server_healthy(port: int) -> bool:
-    url = f"http://127.0.0.1:{port}/healthz"
-    opener = urllib.request.build_opener(urllib.request.ProxyHandler({}))
-    try:
-        with opener.open(url, timeout=1.2) as resp:
-            return resp.status == 200
-    except Exception:
-        return False
 
 
 def _list_listening_pids_on_port(port: int) -> set[int]:
@@ -204,10 +207,6 @@ def _wait_server_then_open_browser(host: str, port: int) -> None:
 
 
 def main() -> None:
-    if _is_server_healthy(PORT):
-        _wait_server_then_open_browser(HOST, PORT)
-        return
-
     _free_port_if_occupied(PORT)
     opener = threading.Thread(target=_wait_server_then_open_browser, args=(HOST, PORT), daemon=True)
     opener.start()

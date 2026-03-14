@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import ast
 import json
 import os
 import re
@@ -7,17 +8,40 @@ from pathlib import Path
 from typing import Any
 
 GRAPH_FILE_NAME = "library_knowledge_graph.json"
+GRAPH_SCHEMA_VERSION = 3
 MAX_ITEM_CONCEPTS = 8
 MAX_RELATED_PER_ITEM = 16
+MAX_CONCEPT_LEN = 24
+MAX_NOTE_LABEL_LEN = 72
 
-METADATA_FIELDS = [
-    "media_type",
-    "author",
-    "nationality",
-    "category",
-    "publisher",
-    "channel",
-]
+STRUCTURED_RELATIONS = (
+    {"field": "author", "rel": "author", "node_type": "entity", "multi": True},
+    {"field": "publisher", "rel": "publisher", "node_type": "entity", "multi": True},
+    {"field": "channel", "rel": "channel", "node_type": "entity", "multi": False},
+    {"field": "nationality", "rel": "country", "node_type": "concept", "multi": True},
+    {"field": "category", "rel": "genre", "node_type": "concept", "multi": True},
+)
+CONSTRAINT_FIELDS = {"author", "publisher", "channel", "nationality", "category"}
+NOTE_HINT_RE = re.compile(r"[。！？!?；;]|(?:，|,).{6,}|(?:^|\s)(?:我|自己|觉得|感觉|喜欢|讨厌|一般|不错|出彩|后来|不过|还是)")
+NOTE_MARKER_TERMS = (
+    "觉得",
+    "感觉",
+    "喜欢",
+    "讨厌",
+    "一般",
+    "不错",
+    "出彩",
+    "后来",
+    "不过",
+    "还是",
+    "小时候",
+    "第一次",
+    "第一遍",
+    "回看",
+    "读下来",
+    "看下来",
+    "玩下来",
+)
 
 
 def _safe_read_json(path: Path, default: Any) -> Any:
@@ -31,13 +55,36 @@ def _safe_read_json(path: Path, default: Any) -> Any:
 
 def _safe_write_json(path: Path, payload: Any) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
+    tmp_path = path.with_suffix(path.suffix + ".tmp")
+    tmp_path.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
+    tmp_path.replace(path)
 
 
 def _split_tags(raw: Any) -> list[str]:
+    if isinstance(raw, (list, tuple, set)):
+        out: list[str] = []
+        seen: set[str] = set()
+        for value in raw:
+            for token in _split_tags(value):
+                key = token.casefold()
+                if key in seen:
+                    continue
+                seen.add(key)
+                out.append(token)
+        return out
+
     text = str(raw or "").strip()
     if not text:
         return []
+
+    if text[:1] in {"[", "(", "{"} and text[-1:] in {"]", ")", "}"}:
+        try:
+            parsed = ast.literal_eval(text)
+        except Exception:
+            parsed = None
+        if isinstance(parsed, (list, tuple, set)):
+            return _split_tags(parsed)
+
     parts = [x.strip() for x in re.split(r"[;；，,、\n]+", text) if x.strip()]
     out: list[str] = []
     seen: set[str] = set()
@@ -52,6 +99,28 @@ def _split_tags(raw: Any) -> list[str]:
 
 def _node_key(node_type: str, value: str) -> str:
     return f"{node_type}:{value}".strip()
+
+
+def _note_node_key(item_id: str, field: str) -> str:
+    return f"note:{item_id}:{field}".strip()
+
+
+def _truncate_note_label(text: str, limit: int = MAX_NOTE_LABEL_LEN) -> str:
+    normalized = re.sub(r"\s+", " ", str(text or "")).strip()
+    if len(normalized) <= limit:
+        return normalized
+    return normalized[: max(8, limit - 1)].rstrip() + "…"
+
+
+def _looks_like_note_text(text: str) -> bool:
+    normalized = re.sub(r"\s+", " ", str(text or "")).strip()
+    if not normalized:
+        return False
+    if len(normalized) > MAX_CONCEPT_LEN:
+        return True
+    if len(normalized) >= 8 and any(marker in normalized for marker in NOTE_MARKER_TERMS):
+        return True
+    return bool(NOTE_HINT_RE.search(normalized))
 
 
 def _extract_json_object(raw: str) -> dict[str, Any] | None:
@@ -83,8 +152,10 @@ def _normalize_concepts(values: list[str]) -> list[str]:
         text = re.sub(r"\s+", " ", str(value or "")).strip().strip('"\'` ')
         if len(text) < 2:
             continue
-        if len(text) > 40:
-            text = text[:40]
+        if _looks_like_note_text(text):
+            continue
+        if len(text) > MAX_CONCEPT_LEN:
+            text = text[:MAX_CONCEPT_LEN]
         key = text.casefold()
         if key in seen:
             continue
@@ -96,11 +167,7 @@ def _normalize_concepts(values: list[str]) -> list[str]:
 def _heuristic_concepts(item: dict[str, Any]) -> list[str]:
     source: list[str] = []
     source.extend(_split_tags(item.get("category")))
-    source.extend(_split_tags(item.get("author")))
-    source.extend(_split_tags(item.get("publisher")))
     source.extend(_split_tags(item.get("nationality")))
-    source.extend(_split_tags(item.get("title")))
-    source.extend(_split_tags(item.get("review")))
     return _normalize_concepts(source)[:MAX_ITEM_CONCEPTS]
 
 
@@ -120,17 +187,17 @@ def _llm_extract_concepts(item: dict[str, Any]) -> tuple[list[str], list[tuple[s
 
     payload = {
         "title": item.get("title"),
-        "author": item.get("author"),
         "nationality": item.get("nationality"),
         "category": item.get("category"),
-        "publisher": item.get("publisher"),
-        "channel": item.get("channel"),
         "review": item.get("review"),
     }
 
     system_text = (
         "你是知识图谱抽取器。"
-        "从输入条目抽取概念节点和 related 边。"
+        "从输入条目抽取少量抽象主题概念和 concept-concept 的 related 边。"
+        "concept 只能是简短主题词或类型词，例如奇幻、成长、校园、悬疑。"
+        "严禁输出作品标题、人名、出版社/平台名、完整评论句子、带主观评价的长短语。"
+        "如果没有合适主题，可返回空数组。"
         "只返回JSON: {\"concepts\":[...],\"related\":[[\"A\",\"B\"]]}。"
     )
 
@@ -171,11 +238,58 @@ def _load_graph(graph_dir: Path) -> dict[str, Any]:
     data = _safe_read_json(path, default={})
     if not isinstance(data, dict):
         data = {}
-    data.setdefault("version", 1)
+    data.setdefault("version", GRAPH_SCHEMA_VERSION)
     data.setdefault("nodes", {})
     data.setdefault("edges", [])
     data.setdefault("processed_items", [])
+    if _graph_needs_reset(data):
+        return initialize_empty_graph(graph_dir)
     return data
+
+
+def graph_requires_full_rebuild(graph_dir: Path) -> bool:
+    path = graph_dir / GRAPH_FILE_NAME
+    data = _safe_read_json(path, default={})
+    if not isinstance(data, dict) or not data:
+        return True
+    data.setdefault("version", GRAPH_SCHEMA_VERSION)
+    data.setdefault("nodes", {})
+    data.setdefault("edges", [])
+    data.setdefault("processed_items", [])
+    return _graph_needs_reset(data)
+
+
+def _graph_needs_reset(data: dict[str, Any]) -> bool:
+    version = int(data.get("version") or 0)
+    if version != GRAPH_SCHEMA_VERSION:
+        return True
+
+    nodes = data.get("nodes", {}) if isinstance(data.get("nodes"), dict) else {}
+    edges = data.get("edges", []) if isinstance(data.get("edges"), list) else []
+    for node in nodes.values():
+        if not isinstance(node, dict):
+            continue
+        node_type = str(node.get("type") or "").strip()
+        if node_type in {"meta", "tag"}:
+            return True
+    for edge in edges:
+        if not isinstance(edge, dict):
+            continue
+        rel = str(edge.get("rel") or "").strip()
+        if rel.startswith("has_") or rel in {"has_tag", "about"}:
+            return True
+    return False
+
+
+def initialize_empty_graph(graph_dir: Path) -> dict[str, Any]:
+    graph = {
+        "version": GRAPH_SCHEMA_VERSION,
+        "nodes": {},
+        "edges": [],
+        "processed_items": [],
+    }
+    _save_graph(graph_dir, graph)
+    return graph
 
 
 def _save_graph(graph_dir: Path, data: dict[str, Any]) -> None:
@@ -192,37 +306,164 @@ def sync_library_graph(
     items: list[dict[str, Any]],
     target_item_ids: set[str] | None = None,
     only_missing: bool = True,
+    progress_callback=None,
+    save_every_items: int = 25,
 ) -> dict[str, Any]:
     graph = _load_graph(graph_dir)
     nodes = graph.get("nodes", {}) if isinstance(graph.get("nodes"), dict) else {}
     edges = graph.get("edges", []) if isinstance(graph.get("edges"), list) else []
     processed = set(str(x) for x in graph.get("processed_items", []) if str(x).strip())
 
-    edge_set = set()
+    edge_set: set[str] = set()
+    edge_map: dict[str, dict[str, Any]] = {}
+    normalized_edges: list[dict[str, Any]] = []
     for edge in edges:
         if not isinstance(edge, dict):
             continue
-        edge_set.add(_edge_key(str(edge.get("src", "")), str(edge.get("rel", "")), str(edge.get("dst", ""))))
+        src = str(edge.get("src", "")).strip()
+        rel = str(edge.get("rel", "")).strip()
+        dst = str(edge.get("dst", "")).strip()
+        if not (src and rel and dst):
+            continue
+        attrs = edge.get("attrs") if isinstance(edge.get("attrs"), dict) else {}
+        normalized = {"src": src, "rel": rel, "dst": dst, "attrs": dict(attrs)}
+        key = _edge_key(src, rel, dst)
+        if key in edge_map:
+            existing_attrs = edge_map[key].setdefault("attrs", {})
+            existing_ids = [str(x).strip() for x in existing_attrs.get("item_ids", []) if str(x).strip()]
+            more_ids = [str(x).strip() for x in normalized["attrs"].get("item_ids", []) if str(x).strip()]
+            for value in more_ids:
+                if value not in existing_ids:
+                    existing_ids.append(value)
+            if existing_ids:
+                existing_attrs["item_ids"] = existing_ids
+            continue
+        edge_set.add(key)
+        edge_map[key] = normalized
+        normalized_edges.append(normalized)
+    edges = normalized_edges
 
     added_items = 0
     added_nodes = 0
     added_edges = 0
+    save_every = max(1, int(save_every_items or 25))
+
+    def publish_progress(*, force: bool = False) -> None:
+        if not force and added_items <= 0:
+            return
+        graph["nodes"] = nodes
+        graph["edges"] = edges
+        graph["processed_items"] = sorted(processed)
+        _save_graph(graph_dir, graph)
+        if callable(progress_callback):
+            progress_callback(
+                {
+                    "items_added": added_items,
+                    "nodes_total": len(nodes),
+                    "edges_total": len(edges),
+                    "processed_item_count": len(processed),
+                }
+            )
 
     def upsert_node(node_id: str, node_type: str, label: str, attrs: dict[str, Any] | None = None) -> None:
         nonlocal added_nodes
         if node_id in nodes:
+            existing = nodes[node_id] if isinstance(nodes[node_id], dict) else {"id": node_id}
+            existing["id"] = node_id
+            existing["type"] = node_type
+            existing["label"] = label
+            existing["attrs"] = attrs or {}
+            nodes[node_id] = existing
             return
         nodes[node_id] = {"id": node_id, "type": node_type, "label": label, "attrs": attrs or {}}
         added_nodes += 1
 
-    def add_edge(src: str, rel: str, dst: str, attrs: dict[str, Any] | None = None) -> None:
+    def add_edge(src: str, rel: str, dst: str, attrs: dict[str, Any] | None = None, support_item_id: str | None = None) -> None:
         nonlocal added_edges
         key = _edge_key(src, rel, dst)
+        payload = dict(attrs or {})
+        if support_item_id:
+            payload["item_ids"] = [str(support_item_id).strip()]
         if key in edge_set:
+            existing = edge_map.get(key)
+            if not existing:
+                return
+            existing_attrs = existing.setdefault("attrs", {})
+            existing_ids = [str(x).strip() for x in existing_attrs.get("item_ids", []) if str(x).strip()]
+            more_ids = [str(x).strip() for x in payload.get("item_ids", []) if str(x).strip()]
+            for value in more_ids:
+                if value not in existing_ids:
+                    existing_ids.append(value)
+            if existing_ids:
+                existing_attrs["item_ids"] = existing_ids
+            for name, value in payload.items():
+                if name == "item_ids":
+                    continue
+                if name not in existing_attrs:
+                    existing_attrs[name] = value
             return
         edge_set.add(key)
-        edges.append({"src": src, "rel": rel, "dst": dst, "attrs": attrs or {}})
+        edge = {"src": src, "rel": rel, "dst": dst, "attrs": payload}
+        edge_map[key] = edge
+        edges.append(edge)
         added_edges += 1
+
+    def rebuild_target_item_graph(item_id: str) -> None:
+        item_node = _node_key("item", item_id)
+        note_nodes = {_note_node_key(item_id, "review")}
+        kept_edges: list[dict[str, Any]] = []
+        kept_edge_map: dict[str, dict[str, Any]] = {}
+        kept_edge_set: set[str] = set()
+
+        for edge in edges:
+            if not isinstance(edge, dict):
+                continue
+            src = str(edge.get("src", "")).strip()
+            rel = str(edge.get("rel", "")).strip()
+            dst = str(edge.get("dst", "")).strip()
+            if not (src and rel and dst):
+                continue
+            attrs = edge.get("attrs") if isinstance(edge.get("attrs"), dict) else {}
+            support_ids = [str(x).strip() for x in attrs.get("item_ids", []) if str(x).strip()]
+
+            drop_edge = src == item_node or dst == item_node or src in note_nodes or dst in note_nodes
+            if not drop_edge and item_id in support_ids:
+                remaining_ids = [value for value in support_ids if value != item_id]
+                if remaining_ids:
+                    attrs = dict(attrs)
+                    attrs["item_ids"] = remaining_ids
+                else:
+                    drop_edge = True
+
+            if drop_edge:
+                continue
+
+            normalized = {"src": src, "rel": rel, "dst": dst, "attrs": dict(attrs)}
+            key = _edge_key(src, rel, dst)
+            kept_edges.append(normalized)
+            kept_edge_map[key] = normalized
+            kept_edge_set.add(key)
+
+        edges[:] = kept_edges
+        edge_map.clear()
+        edge_map.update(kept_edge_map)
+        edge_set.clear()
+        edge_set.update(kept_edge_set)
+        processed.discard(item_node)
+        for note_node in note_nodes:
+            nodes.pop(note_node, None)
+
+        referenced_nodes: set[str] = set()
+        for edge in edges:
+            referenced_nodes.add(str(edge.get("src", "")).strip())
+            referenced_nodes.add(str(edge.get("dst", "")).strip())
+        removable = [
+            node_id
+            for node_id, node in nodes.items()
+            if node_id not in referenced_nodes and str((node or {}).get("type") or "") != "item"
+        ]
+        for node_id in removable:
+            nodes.pop(node_id, None)
 
     for item in items:
         item_id = str(item.get("id") or "").strip()
@@ -231,65 +472,88 @@ def sync_library_graph(
         if target_item_ids and item_id not in target_item_ids:
             continue
         item_node = _node_key("item", item_id)
+        if target_item_ids and item_id in target_item_ids:
+            rebuild_target_item_graph(item_id)
         if only_missing and item_node in processed:
             continue
 
         title = str(item.get("title") or item_id).strip()
         upsert_node(item_node, "item", title, {"item_id": item_id, "media_type": item.get("media_type")})
 
-        # Metadata nodes as constrained, finite graph anchors.
-        for field in METADATA_FIELDS:
-            values = _split_tags(item.get(field)) if field in {"author", "nationality", "category", "publisher"} else [str(item.get(field) or "").strip()]
+        concept_ids: list[str] = []
+        concept_label_to_id: dict[str, str] = {}
+
+        for spec in STRUCTURED_RELATIONS:
+            field = str(spec["field"])
+            rel = str(spec["rel"])
+            node_type = str(spec["node_type"])
+            values = _split_tags(item.get(field)) if bool(spec.get("multi")) else [str(item.get(field) or "").strip()]
             for value in values:
                 if not value:
                     continue
-                meta_id = _node_key("meta", f"{field}:{value}")
-                upsert_node(meta_id, "meta", value, {"field": field})
-                add_edge(item_node, f"has_{field}", meta_id)
+                node_id = _node_key(node_type, value)
+                upsert_node(node_id, node_type, value, {"field": field, "role": rel})
+                add_edge(item_node, rel, node_id, {"field": field}, support_item_id=item_id)
+                if node_type == "concept":
+                    concept_ids.append(node_id)
+                    concept_label_to_id.setdefault(value.casefold(), node_id)
 
-        tags = _split_tags(item.get("category"))
-        for tag in tags:
-            tag_id = _node_key("tag", tag)
-            upsert_node(tag_id, "tag", tag)
-            add_edge(item_node, "has_tag", tag_id)
+        review = str(item.get("review") or "").strip()
+        if review:
+            note_id = _note_node_key(item_id, "review")
+            upsert_node(
+                note_id,
+                "note",
+                _truncate_note_label(review),
+                {"field": "review", "item_id": item_id, "text": review},
+            )
+            add_edge(item_node, "review", note_id, {"field": "review"}, support_item_id=item_id)
 
         llm_concepts, llm_related = _llm_extract_concepts(item)
         concepts = _normalize_concepts((llm_concepts or []) + _heuristic_concepts(item))[:MAX_ITEM_CONCEPTS]
-        concept_ids: list[str] = []
         for concept in concepts:
-            cid = _node_key("concept", concept)
+            cid = concept_label_to_id.get(concept.casefold()) or _node_key("concept", concept)
             concept_ids.append(cid)
-            upsert_node(cid, "concept", concept)
-            add_edge(item_node, "about", cid)
+            concept_label_to_id.setdefault(concept.casefold(), cid)
+            upsert_node(cid, "concept", concept, {"field": "theme", "role": "theme"})
+            add_edge(item_node, "theme", cid, {"source": "llm_or_heuristic"}, support_item_id=item_id)
+
+        deduped_concept_ids: list[str] = []
+        seen_concepts: set[str] = set()
+        for cid in concept_ids:
+            if cid in seen_concepts:
+                continue
+            seen_concepts.add(cid)
+            deduped_concept_ids.append(cid)
+        concept_ids = deduped_concept_ids
 
         relation_count = 0
         for a_raw, b_raw in llm_related:
             if relation_count >= MAX_RELATED_PER_ITEM:
                 break
-            a = _node_key("concept", a_raw)
-            b = _node_key("concept", b_raw)
+            a = concept_label_to_id.get(str(a_raw or "").strip().casefold())
+            b = concept_label_to_id.get(str(b_raw or "").strip().casefold())
             if a == b:
                 continue
-            if a not in concept_ids or b not in concept_ids:
+            if not a or not b or a not in concept_ids or b not in concept_ids:
                 continue
-            add_edge(a, "related", b)
-            add_edge(b, "related", a)
+            add_edge(a, "related", b, support_item_id=item_id)
+            add_edge(b, "related", a, support_item_id=item_id)
             relation_count += 2
 
         if not llm_related:
             for i, src in enumerate(concept_ids):
                 for j in range(i + 1, min(i + 3, len(concept_ids))):
                     dst = concept_ids[j]
-                    add_edge(src, "related", dst)
-                    add_edge(dst, "related", src)
+                    add_edge(src, "related", dst, support_item_id=item_id)
+                    add_edge(dst, "related", src, support_item_id=item_id)
 
         processed.add(item_node)
         added_items += 1
+        if added_items % save_every == 0:
+            publish_progress()
 
-    graph["nodes"] = nodes
-    graph["edges"] = edges
-    graph["processed_items"] = sorted(processed)
-    _save_graph(graph_dir, graph)
+    publish_progress(force=True)
 
     return {
         "items_added": added_items,
@@ -319,11 +583,11 @@ def expand_library_query(*, graph_dir: Path, query: str, max_expand: int = 6) ->
             continue
 
         node_type = str(node.get("type") or "")
-        if node_type == "meta":
-            field = str((node.get("attrs") or {}).get("field") or "").strip()
-            if field:
-                constraints.setdefault(field, set()).add(label)
-        elif node_type == "concept":
+        attrs = node.get("attrs") or {}
+        field = str(attrs.get("field") or "").strip()
+        if node_type in {"entity", "concept"} and field in CONSTRAINT_FIELDS:
+            constraints.setdefault(field, set()).add(label)
+        if node_type == "concept":
             seed_concepts.add(node_id)
 
     expanded: list[str] = []

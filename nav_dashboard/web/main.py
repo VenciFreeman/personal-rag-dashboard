@@ -53,10 +53,17 @@ from web.services import agent_service, dashboard_jobs
 
 APP_DIR = Path(__file__).resolve().parent
 PROJECT_ROOT = APP_DIR.parent.parent
+if str(PROJECT_ROOT) not in sys.path:
+    sys.path.insert(0, str(PROJECT_ROOT))
+
+from core_service.chat_feedback_store import append_feedback, clear_feedback, list_feedback
+from core_service.trace_store import get_trace_record, render_trace_export
+
 CUSTOM_CARDS_FILE = PROJECT_ROOT / "data" / "custom_cards.json"
 CUSTOM_CARDS_MAX = 8
 CUSTOM_CARD_UPLOAD_DIR = APP_DIR / "static" / "custom_cards"
 NO_CONTEXT_LOG_PATH = PROJECT_ROOT / "ai_conversations_summary" / "data" / "cache" / "no_context_queries.jsonl"
+DEPLOY_INFO_FILE = PROJECT_ROOT / "data" / "nav_dashboard_deploy.json"
 ALLOWED_IMAGE_EXTS = {".png", ".jpg", ".jpeg", ".webp", ".gif"}
 CONTENT_TYPE_TO_EXT = {
     "image/jpeg": ".jpg",
@@ -71,8 +78,32 @@ SOURCE_LABELS = {
     "rag_qa_stream": "RAG 问答（流式）",
     "benchmark_rag": "Benchmark / RAG",
     "benchmark_agent": "Benchmark / Agent",
+    "agent_chat": "LLM Agent",
+    "rag_chat": "RAG 问答",
 }
 templates = Jinja2Templates(directory=str(APP_DIR / "templates"))
+
+
+def _is_benchmark_source(source: str) -> bool:
+    return str(source or "").strip().lower().startswith("benchmark")
+
+
+def _is_benchmark_trace_id(trace_id: str) -> bool:
+    return str(trace_id or "").strip().lower().startswith("benchmark_")
+
+
+def _load_deploy_time() -> str:
+    env_value = str(os.getenv("NAV_DASHBOARD_DEPLOYED_AT", "")).strip()
+    if env_value:
+        return env_value
+    try:
+        payload = json.loads(DEPLOY_INFO_FILE.read_text(encoding="utf-8")) if DEPLOY_INFO_FILE.exists() else {}
+        value = str(payload.get("deployed_at") or "").strip() if isinstance(payload, dict) else ""
+        if value:
+            return value
+    except Exception:
+        pass
+    return datetime.now().isoformat(timespec="seconds")
 
 
 class CustomCardPayload(BaseModel):
@@ -88,6 +119,18 @@ class UsageAdjustPayload(BaseModel):
 
 class RuntimeDataCleanupPayload(BaseModel):
     keys: list[str]
+
+
+class FeedbackPayload(BaseModel):
+    source: str = "unknown"
+    question: str = ""
+    answer: str = ""
+    trace_id: str = ""
+    session_id: str = ""
+    model: str = ""
+    search_mode: str = ""
+    query_type: str = ""
+    metadata: dict[str, Any] = {}
 
 
 def _default_custom_cards() -> list[dict[str, str]]:
@@ -215,7 +258,7 @@ def _trigger_custom_card_compression() -> None:
 app = FastAPI(title="Nav Dashboard", version="0.1.0")
 
 # Captured once at process start; stays constant until the next deployment.
-_DEPLOY_TIME: str = datetime.now().isoformat(timespec="seconds")
+_DEPLOY_TIME: str = _load_deploy_time()
 
 app.add_middleware(
     CORSMiddleware,
@@ -264,7 +307,7 @@ def _runtime_data_targets() -> list[dict[str, Any]]:
         {
             "key": "benchmark_history_current",
             "label": "Benchmark 历史",
-            "description": "Dashboard 当前基准测试结果，仅保留最近 4 次。",
+            "description": "Dashboard 当前基准测试结果，仅保留最近 5 次。",
             "paths": [PROJECT_ROOT / "nav_dashboard" / "data" / "benchmark" / "results.json"],
             "mode": "reset_benchmark_history",
         },
@@ -301,6 +344,23 @@ def _runtime_data_targets() -> list[dict[str, Any]]:
             "label": "Agent 统计",
             "description": "Agent rolling metrics 文件，Dashboard 只取最近 20 条。",
             "paths": [PROJECT_ROOT / "nav_dashboard" / "data" / "agent_metrics.json"],
+            "mode": "delete_paths",
+        },
+        {
+            "key": "chat_feedback",
+            "label": "聊天反馈",
+            "description": "用户手动标记的 Agent / RAG 回答反馈。",
+            "paths": [PROJECT_ROOT / "nav_dashboard" / "data" / "chat_feedback.json"],
+            "mode": "delete_paths",
+        },
+        {
+            "key": "trace_records",
+            "label": "Trace 查询记录",
+            "description": "Dashboard trace_id 查询使用的轻量追踪摘要。",
+            "paths": [
+                PROJECT_ROOT / "nav_dashboard" / "data" / "trace_records.jsonl",
+                PROJECT_ROOT / "nav_dashboard" / "data" / "trace_records.json",
+            ],
             "mode": "delete_paths",
         },
         {
@@ -801,10 +861,16 @@ def _load_missing_queries(days: int = 30, limit: int = 200, source: str = "") ->
         if not query:
             continue
         row_source = str(row.get("source", "unknown") or "unknown").strip()
+        if _is_benchmark_source(row_source):
+            continue
+        trace_id = str(row.get("trace_id", "") or "").strip()
+        if _is_benchmark_trace_id(trace_id):
+            continue
         if source_filter and source_filter not in {"all", "*"} and row_source.lower() != source_filter:
             continue
         top1_score = row.get("top1_score")
         threshold = row.get("threshold")
+        reason = str(row.get("reason", "") or "").strip()
         out.append(
             {
                 "ts": ts,
@@ -813,6 +879,8 @@ def _load_missing_queries(days: int = 30, limit: int = 200, source: str = "") ->
                 "query": query,
                 "top1_score": float(top1_score) if isinstance(top1_score, (int, float)) else None,
                 "threshold": float(threshold) if isinstance(threshold, (int, float)) else None,
+                "trace_id": trace_id,
+                "reason": reason,
             }
         )
 
@@ -827,6 +895,20 @@ def _load_retrieval_latency_summary() -> dict[str, Any]:
     all_records = [row for row in rows if isinstance(row, dict)]
     # Exclude benchmark-tagged records from dashboard rolling stats
     records = [r for r in all_records if not str(r.get("source", "")).startswith("benchmark")][-20:]
+
+    def _row_no_context(row: dict[str, Any]) -> int:
+        if int(row.get("no_context", 0) or 0) > 0:
+            return 1
+        if str(row.get("no_context_reason", "") or "").strip():
+            return 1
+        top1_after = row.get("top1_score_after_rerank")
+        threshold = row.get("similarity_threshold")
+        try:
+            if top1_after is not None and threshold is not None and float(top1_after) < float(threshold):
+                return 1
+        except Exception:
+            pass
+        return 0
 
     # Stage field names must match what record_retrieval_metrics() and app.js expect.
     # Records store flat fields (not nested under "timings").
@@ -874,17 +956,25 @@ def _load_retrieval_latency_summary() -> dict[str, Any]:
     n = len(records)
     embed_hits = sum(1 for r in records if float(r.get("embed_cache_hit", 0) or 0) > 0)
     web_hits = sum(1 for r in records if float(r.get("web_cache_hit", 0) or 0) > 0)
-    no_ctx = sum(1 for r in records if float(r.get("no_context", 0) or 0) > 0)
+    no_ctx = sum(_row_no_context(r) for r in records)
     rewrite_hits = sum(1 for r in records if float(r.get("query_rewrite_seconds", 0) or 0) > 0)
 
-    # Rerank quality: average top1 cosine score before rerank and delta (after - before)
-    before_scores = [float(r["top1_score_before_rerank"]) for r in records if r.get("top1_score_before_rerank") is not None]
-    after_scores = [float(r["top1_score_after_rerank"]) for r in records if r.get("top1_score_after_rerank") is not None]
-    deltas = [
-        float(r["top1_score_after_rerank"]) - float(r["top1_score_before_rerank"])
-        for r in records
-        if r.get("top1_score_before_rerank") is not None and r.get("top1_score_after_rerank") is not None
-    ]
+    # Only use rows with explicit vector-space after-rerank score semantics.
+    rerank_pairs = []
+    for row in records:
+        before = row.get("top1_score_before_rerank")
+        after = row.get("top1_score_after_rerank")
+        if before is None or after is None:
+            continue
+        if row.get("top1_rerank_score_after_rerank") is None:
+            continue
+        try:
+            rerank_pairs.append((float(before), float(after)))
+        except Exception:
+            continue
+    before_scores = [before for before, _after in rerank_pairs]
+    after_scores = [after for _before, after in rerank_pairs]
+    deltas = [after - before for before, after in rerank_pairs]
     rank_shifts = [
         float(r["top1_rank_shift"])
         for r in records
@@ -932,7 +1022,7 @@ def _load_retrieval_latency_summary() -> dict[str, Any]:
         by_profile[profile] = {
             "count": len(prows),
             "stages": {k: _timing_stats(v) for k, v in pstage.items()},
-            "no_context_rate": round(sum(1 for r in prows if float(r.get("no_context", 0) or 0) > 0) / len(prows), 4),
+            "no_context_rate": round(sum(_row_no_context(r) for r in prows) / len(prows), 4),
             "embed_cache_hit_rate": round(sum(1 for r in prows if float(r.get("embed_cache_hit", 0) or 0) > 0) / len(prows), 4),
             "web_cache_hit_rate": round(sum(1 for r in prows if float(r.get("web_cache_hit", 0) or 0) > 0) / len(prows), 4),
             "rewrite_seconds": _timing_stats([float(r.get("query_rewrite_seconds", 0) or 0) for r in prows if float(r.get("query_rewrite_seconds", 0) or 0) >= 0]),
@@ -948,7 +1038,7 @@ def _load_retrieval_latency_summary() -> dict[str, Any]:
             "count": len(mrows),
             "elapsed": _timing_stats([float(r.get("elapsed_seconds", 0) or 0) for r in mrows if float(r.get("elapsed_seconds", 0) or 0) >= 0]),
             "total": _timing_stats([float(r.get("total", 0) or 0) for r in mrows if float(r.get("total", 0) or 0) >= 0]),
-            "no_context_rate": round(sum(1 for r in mrows if float(r.get("no_context", 0) or 0) > 0) / len(mrows), 4),
+            "no_context_rate": round(sum(_row_no_context(r) for r in mrows) / len(mrows), 4),
             "embed_cache_hit_rate": round(sum(1 for r in mrows if float(r.get("embed_cache_hit", 0) or 0) > 0) / len(mrows), 4),
             "web_cache_hit_rate": round(sum(1 for r in mrows if float(r.get("web_cache_hit", 0) or 0) > 0) / len(mrows), 4),
             "query_rewrite_rate": round(sum(1 for r in mrows if float(r.get("query_rewrite_seconds", 0) or 0) > 0) / len(mrows), 4),
@@ -974,6 +1064,24 @@ def _load_agent_metrics_summary() -> dict[str, Any]:
     payload = _safe_load_json(path, default={})
     rows = [r for r in (payload.get("records") or []) if isinstance(r, dict)]
     rows = rows[-20:]
+
+    def _row_no_context(row: dict[str, Any]) -> int:
+        if int(row.get("no_context", 0) or 0) > 0:
+            return 1
+        if str(row.get("no_context_reason", "") or "").strip():
+            return 1
+        query_type = str(row.get("query_type", "") or "").strip().upper()
+        if int(row.get("rag_used", 0) or 0) <= 0 and query_type in {"TECH_QUERY", "MIXED_QUERY"}:
+            return 1
+        top1 = row.get("doc_top1_score")
+        threshold = row.get("doc_score_threshold")
+        try:
+            if top1 is not None and threshold is not None and float(top1) < float(threshold):
+                return 1
+        except Exception:
+            pass
+        return 0
+
     n = len(rows)
     if not n:
         return {
@@ -990,9 +1098,9 @@ def _load_agent_metrics_summary() -> dict[str, Any]:
     rag_hits = sum(1 for r in rows if int(r.get("rag_used", 0) or 0))
     media_hits = sum(1 for r in rows if int(r.get("media_used", 0) or 0))
     web_hits = sum(1 for r in rows if int(r.get("web_used", 0) or 0))
-    no_ctx = sum(1 for r in rows if int(r.get("no_context", 0) or 0))
+    no_ctx = sum(_row_no_context(r) for r in rows)
 
-    # Rerank quality delta (agent uses vector+keyword fusion — same scale 0-1)
+    # Rerank quality delta (same score scale before/after for each chain)
     doc_before = [float(r["doc_top1_score_before_rerank"]) for r in rows if r.get("doc_top1_score_before_rerank") is not None]
     doc_after = [float(r["doc_top1_score"]) for r in rows if r.get("doc_top1_score") is not None]
     doc_deltas = [
@@ -1034,7 +1142,7 @@ def _load_agent_metrics_summary() -> dict[str, Any]:
             "vector_recall": _timing_stats(vec_vals),
             "rerank": _timing_stats(rer_vals),
             "wall_clock": _timing_stats([float(r.get("wall_clock_seconds", 0) or 0) for r in prows]),
-            "no_context_rate": round(sum(1 for r in prows if int(r.get("no_context", 0) or 0)) / len(prows), 4),
+            "no_context_rate": round(sum(_row_no_context(r) for r in prows) / len(prows), 4),
             "embed_cache_hit_rate": round(sum(1 for r in prows if int(r.get("embed_cache_hit", 0) or 0)) / len(prows), 4),
             "query_rewrite_rate": round(sum(1 for r in prows if int(r.get("query_rewrite_hit", 0) or 0)) / len(prows), 4),
             "web_cache_hit_rate": round(sum(1 for r in prows if int(r.get("web_cache_hit", 0) or 0)) / len(prows), 4),
@@ -1050,7 +1158,7 @@ def _load_agent_metrics_summary() -> dict[str, Any]:
             "count": len(mrows),
             "wall_clock": _timing_stats([float(r.get("wall_clock_seconds", 0) or 0) for r in mrows]),
             "vector_recall": _timing_stats([float(r.get("vector_recall_seconds", 0) or 0) for r in mrows]),
-            "no_context_rate": round(sum(1 for r in mrows if int(r.get("no_context", 0) or 0)) / len(mrows), 4),
+            "no_context_rate": round(sum(_row_no_context(r) for r in mrows) / len(mrows), 4),
             "embed_cache_hit_rate": round(sum(1 for r in mrows if int(r.get("embed_cache_hit", 0) or 0)) / len(mrows), 4),
             "query_rewrite_rate": round(sum(1 for r in mrows if int(r.get("query_rewrite_hit", 0) or 0)) / len(mrows), 4),
             "web_trigger_rate": round(sum(1 for r in mrows if int(r.get("web_used", 0) or 0)) / len(mrows), 4),
@@ -1065,7 +1173,7 @@ def _load_agent_metrics_summary() -> dict[str, Any]:
             "count": len(qrows),
             "wall_clock": _timing_stats([float(r.get("wall_clock_seconds", 0) or 0) for r in qrows]),
             "vector_recall": _timing_stats([float(r.get("vector_recall_seconds", 0) or 0) for r in qrows]),
-            "no_context_rate": round(sum(1 for r in qrows if int(r.get("no_context", 0) or 0)) / len(qrows), 4),
+            "no_context_rate": round(sum(_row_no_context(r) for r in qrows) / len(qrows), 4),
             "embed_cache_hit_rate": round(sum(1 for r in qrows if int(r.get("embed_cache_hit", 0) or 0)) / len(qrows), 4),
             "query_rewrite_rate": round(sum(1 for r in qrows if int(r.get("query_rewrite_hit", 0) or 0)) / len(qrows), 4),
             "rag_trigger_rate": round(sum(1 for r in qrows if int(r.get("rag_used", 0) or 0)) / len(qrows), 4),
@@ -1176,6 +1284,7 @@ def _build_overview() -> dict[str, Any]:
     lib_graph_quality = _library_graph_quality(lib_total, lib_vector_rows)
     rag_graph_nodes, rag_graph_edges = _rag_graph_counts()
     missing_queries = _load_missing_queries(days=30, limit=200)
+    feedback_items = list_feedback(limit=200)
     month_web, month_deepseek, quota_daily = _load_monthly_quota_counts()
     session_count, message_count = _agent_session_counts()
     rag_qa_sessions, rag_qa_messages = _rag_qa_session_counts()
@@ -1253,6 +1362,10 @@ def _build_overview() -> dict[str, Any]:
             "items": missing_queries,
             "sample_queries": [str(item.get("query", "")) for item in missing_queries[:3]],
         },
+        "chat_feedback": {
+            "count": len(feedback_items),
+            "items": feedback_items[:20],
+        },
         "agent_wall_clock": agent_metrics.get("wall_clock", {}),
         "runtime_data": runtime_data,
         "warnings": warnings,
@@ -1288,22 +1401,78 @@ def get_dashboard_missing_queries(days: int = 30, limit: int = 200, source: str 
 @app.get("/api/dashboard/missing-queries/export")
 def export_dashboard_missing_queries(days: int = 30, limit: int = 5000, source: str = "all") -> str:
     rows = _load_missing_queries(days=days, limit=limit, source=source)
-    header = "时间,来源,Top1分数,阈值,Query"
+    header = "时间,来源,Top1分数,阈值,Trace ID,原因,Query"
     lines = [header]
     for r in rows:
         query = str(r.get("query", "")).replace('"', '""')
+        trace_id = str(r.get("trace_id", "")).replace('"', '""')
+        reason = str(r.get("reason", "")).replace('"', '""')
         top1 = "" if r.get("top1_score") is None else str(r.get("top1_score"))
         threshold = "" if r.get("threshold") is None else str(r.get("threshold"))
         lines.append(
-            f'{str(r.get("ts", ""))},{str(r.get("source_label", ""))},{top1},{threshold},"{query}"'
+            f'{str(r.get("ts", ""))},{str(r.get("source_label", ""))},{top1},{threshold},"{trace_id}","{reason}","{query}"'
         )
     csv_body = "\ufeff" + "\r\n".join(lines)
     return Response(content=csv_body, media_type="text/csv; charset=utf-8")
 
 
+@app.get("/api/dashboard/feedback")
+def get_dashboard_feedback(limit: int = 200, source: str = "all") -> dict[str, Any]:
+    items = list_feedback(limit=limit, source=source)
+    return {"ok": True, "count": len(items), "source": str(source or "all"), "items": items}
+
+
+@app.get("/api/dashboard/feedback/export")
+def export_dashboard_feedback(limit: int = 5000, source: str = "all") -> Response:
+    items = list_feedback(limit=limit, source=source)
+    return Response(
+        content=json.dumps({"items": items}, ensure_ascii=False, indent=2),
+        media_type="application/json; charset=utf-8",
+    )
+
+
+@app.post("/api/dashboard/feedback")
+def post_dashboard_feedback(payload: FeedbackPayload) -> dict[str, Any]:
+    try:
+        item = append_feedback(payload.model_dump())
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    _invalidate_overview_cache()
+    return {"ok": True, "item": item}
+
+
+@app.delete("/api/dashboard/feedback")
+def clear_dashboard_feedback(source: str = "all") -> dict[str, Any]:
+    removed = clear_feedback(source=source)
+    _invalidate_overview_cache()
+    return {"ok": True, "removed": removed, "source": str(source or "all")}
+
+
 @app.get("/api/dashboard/runtime-data")
 def get_dashboard_runtime_data() -> dict[str, Any]:
     return {"ok": True, **_runtime_data_summary(include_items=True)}
+
+
+@app.get("/api/dashboard/trace")
+def get_dashboard_trace(trace_id: str) -> dict[str, Any]:
+    value = str(trace_id or "").strip()
+    if not value:
+        raise HTTPException(status_code=400, detail="trace_id is required")
+    record = get_trace_record(value)
+    if not record:
+        raise HTTPException(status_code=404, detail=f"未找到 trace_id={value} 对应的追踪记录")
+    return {"ok": True, "trace": record, "export_text": render_trace_export(record)}
+
+
+@app.get("/api/dashboard/trace/export")
+def export_dashboard_trace(trace_id: str) -> Response:
+    value = str(trace_id or "").strip()
+    if not value:
+        raise HTTPException(status_code=400, detail="trace_id is required")
+    record = get_trace_record(value)
+    if not record:
+        raise HTTPException(status_code=404, detail=f"未找到 trace_id={value} 对应的追踪记录")
+    return Response(content=render_trace_export(record), media_type="text/plain; charset=utf-8")
 
 
 @app.post("/api/dashboard/runtime-data/cleanup")
@@ -1337,7 +1506,8 @@ def clear_dashboard_missing_queries(source: str = "all") -> dict[str, Any]:
                         kept.append(raw)
                         continue
                     row_source = str(row.get("source", "unknown") or "unknown").strip().lower()
-                    if row_source != source_filter:
+                    trace_id = str(row.get("trace_id", "") or "").strip()
+                    if _is_benchmark_source(row_source) or _is_benchmark_trace_id(trace_id) or row_source != source_filter:
                         kept.append(raw)
                 NO_CONTEXT_LOG_PATH.write_text(("\n".join(kept) + ("\n" if kept else "")), encoding="utf-8")
     except Exception as exc:

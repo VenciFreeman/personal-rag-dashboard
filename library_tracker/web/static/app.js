@@ -80,7 +80,12 @@ const filterExpandState = {
   channel: false,
 };
 
+const CHIP_FILTER_FIELDS = ["media_type", "nationality", "category", "channel"];
+const SELECT_FILTER_FIELDS = ["year", "rating"];
+
 const filterState = {
+  year: null,
+  rating: null,
   media_type: null,
   nationality: null,
   category: null,
@@ -711,11 +716,19 @@ async function bootstrapStatsTab() {
 
 function selectedFilters() {
   return {
+    year: filterState.year ? [filterState.year] : [],
+    rating: filterState.rating ? [filterState.rating] : [],
     media_type: filterState.media_type ? [filterState.media_type] : [],
     nationality: filterState.nationality ? [filterState.nationality] : [],
     category: filterState.category ? [filterState.category] : [],
     channel: filterState.channel ? [filterState.channel] : [],
   };
+}
+
+function formatFilterSelectOption(field, value, count = null) {
+  const suffix = count == null ? "" : ` (${count})`;
+  if (field === "rating") return `${value} 分${suffix}`;
+  return `${value}${suffix}`;
 }
 
 function buildSqlPreview(query, mode) {
@@ -780,8 +793,52 @@ async function refreshFacetsAndFilters() {
 function renderFilters(meta, facets) {
   const map = (meta && meta.filters) || {};
   const hasFacets = !!(facets && Object.keys(facets).length);
-  for (const key of Object.keys(filterState)) {
+  for (const key of SELECT_FILTER_FIELDS) {
+    const select = document.getElementById(`filter-${key}-select`);
+    if (!select) continue;
+    const options = Array.isArray(map[key]) ? map[key] : [];
+    const selected = filterState[key] || "";
+    const facetCounts = (facets && facets[key]) || {};
+    const previousValue = select.value;
+    select.innerHTML = "";
+
+    const allOpt = document.createElement("option");
+    allOpt.value = "";
+    allOpt.textContent = key === "year" ? "全部年份" : "全部评分";
+    select.appendChild(allOpt);
+
+    for (const value of options) {
+      const count = hasFacets ? (facetCounts[value] || 0) : null;
+      const isSelected = selected === value;
+      if (hasFacets && !isSelected && Number(count || 0) <= 0) continue;
+      const opt = document.createElement("option");
+      opt.value = value;
+      opt.textContent = formatFilterSelectOption(key, value, count);
+      select.appendChild(opt);
+    }
+
+    select.value = selected;
+    if (select.value !== selected) {
+      filterState[key] = select.value || null;
+    }
+    if (!select.dataset.bound) {
+      select.addEventListener("change", () => {
+        filterState[key] = select.value || null;
+        refreshFacetsAndFilters().catch((err) => {
+          console.error(err);
+        });
+        triggerSearchFromFilter();
+      });
+      select.dataset.bound = "1";
+    }
+    if (!selected && previousValue && !select.value) {
+      select.value = "";
+    }
+  }
+
+  for (const key of CHIP_FILTER_FIELDS) {
     const box = document.getElementById(`filter-${key}`);
+    if (!box) continue;
     box.innerHTML = "";
     const options = map[key] || [];
     const selected = filterState[key];

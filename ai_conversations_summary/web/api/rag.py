@@ -2,10 +2,11 @@ from __future__ import annotations
 
 import json
 
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, HTTPException, Request
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, Field
 
+from core_service.chat_feedback_store import append_feedback
 from web.services import rag_service
 from web.services.rag_service import RAGTaskAborted
 
@@ -15,6 +16,7 @@ router = APIRouter(prefix="/api/rag", tags=["rag"])
 class AskPayload(BaseModel):
     question: str = Field(min_length=1)
     session_id: str = ""
+    trace_id: str = ""
     mode: str = "local"
     api_url: str = ""
     api_key: str = ""
@@ -35,6 +37,16 @@ class SessionCreatePayload(BaseModel):
 
 class AbortPayload(BaseModel):
     session_id: str = Field(min_length=1)
+
+
+class FeedbackPayload(BaseModel):
+    question: str = ""
+    answer: str = Field(min_length=1)
+    trace_id: str = ""
+    session_id: str = ""
+    model: str = ""
+    search_mode: str = ""
+    metadata: dict[str, object] = Field(default_factory=dict)
 
 
 @router.get("/config")
@@ -70,9 +82,10 @@ def delete_session(session_id: str) -> dict[str, bool]:
 
 
 @router.post("/ask")
-def post_ask(payload: AskPayload) -> dict[str, object]:
+def post_ask(payload: AskPayload, request: Request) -> dict[str, object]:
     is_benchmark = payload.benchmark_mode
     session_id = payload.session_id.strip()
+    request_trace_id = payload.trace_id or str(request.headers.get("X-Trace-Id", ""))
 
     if is_benchmark:
         # Benchmark mode: skip all session/memory operations so benchmark queries
@@ -83,11 +96,12 @@ def post_ask(payload: AskPayload) -> dict[str, object]:
         if not session_id:
             session = rag_service.create_session()
             session_id = str(session["id"])
-        rag_service.append_message(session_id, "用户", payload.question.strip())
+        rag_service.append_message_with_trace(session_id, "用户", payload.question.strip(), trace_id=request_trace_id)
 
     try:
         answer_payload = rag_service.ask_rag(
             session_id=session_id,
+            trace_id=request_trace_id,
             mode=payload.mode,
             question=payload.question,
             api_url=payload.api_url,
@@ -106,6 +120,7 @@ def post_ask(payload: AskPayload) -> dict[str, object]:
             rag_service.append_message(session_id, "系统", "已中止")
         return {
             "session_id": session_id,
+            "trace_id": request_trace_id,
             "aborted": True,
             "answer": "",
             "mode": (payload.mode or "local").strip().lower() or "local",
@@ -124,7 +139,7 @@ def post_ask(payload: AskPayload) -> dict[str, object]:
 
     if not is_benchmark:
         if answer:
-            rag_service.append_message(session_id, "助手", answer)
+            rag_service.append_message_with_trace(session_id, "助手", answer, trace_id=request_trace_id)
             rag_service.schedule_memory_update(session_id, payload.question, answer)
         title = rag_service.suggest_local_session_title(payload.question, max_len=15)
         if title:
@@ -137,18 +152,20 @@ def post_ask(payload: AskPayload) -> dict[str, object]:
 
 
 @router.post("/ask_stream")
-def post_ask_stream(payload: AskPayload) -> StreamingResponse:
+def post_ask_stream(payload: AskPayload, request: Request) -> StreamingResponse:
     session_id = payload.session_id.strip()
+    request_trace_id = payload.trace_id or str(request.headers.get("X-Trace-Id", ""))
     if not session_id:
         session = rag_service.create_session()
         session_id = str(session["id"])
 
-    rag_service.append_message(session_id, "用户", payload.question.strip())
+    rag_service.append_message_with_trace(session_id, "用户", payload.question.strip(), trace_id=request_trace_id)
 
     def event_stream():
         try:
             for event in rag_service.ask_rag_stream(
                 session_id=session_id,
+                trace_id=request_trace_id,
                 mode=payload.mode,
                 question=payload.question,
                 api_url=payload.api_url,
@@ -164,7 +181,7 @@ def post_ask_stream(payload: AskPayload) -> StreamingResponse:
                 payload_text = json.dumps(event, ensure_ascii=False)
                 yield f"data: {payload_text}\n\n"
         except Exception as exc:  # noqa: BLE001
-            err = json.dumps({"type": "error", "message": str(exc)}, ensure_ascii=False)
+            err = json.dumps({"type": "error", "trace_id": request_trace_id, "message": str(exc)}, ensure_ascii=False)
             yield f"data: {err}\n\n"
 
     return StreamingResponse(
@@ -182,3 +199,23 @@ def post_ask_stream(payload: AskPayload) -> StreamingResponse:
 def post_abort(payload: AbortPayload) -> dict[str, bool]:
     ok = rag_service.abort_session(payload.session_id)
     return {"ok": ok}
+
+
+@router.post("/feedback")
+def post_feedback(payload: FeedbackPayload) -> dict[str, object]:
+    try:
+        item = append_feedback(
+            {
+                "source": "rag_chat",
+                "question": payload.question,
+                "answer": payload.answer,
+                "trace_id": payload.trace_id,
+                "session_id": payload.session_id,
+                "model": payload.model,
+                "search_mode": payload.search_mode,
+                "metadata": payload.metadata,
+            }
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    return {"ok": True, "item": item}

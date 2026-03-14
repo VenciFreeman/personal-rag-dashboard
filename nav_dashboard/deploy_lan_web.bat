@@ -120,16 +120,16 @@ if defined PY_FOR_RUN (
 
     rem Silent mode: use Start-Process hidden with python.exe to avoid extra windows
     rem and keep uvicorn startup reliable on environments where pythonw -m uvicorn is unstable.
-    if not "%AI_SUMMARY_WEB_PORT%"=="" powershell -NoProfile -ExecutionPolicy Bypass -WindowStyle Hidden -Command "Start-Process -WindowStyle Hidden -FilePath '%PY_FOR_RUN_ABS%' -WorkingDirectory '%CD%\..\ai_conversations_summary' -ArgumentList '-m','uvicorn','web.main:app','--host','%AI_SUMMARY_WEB_HOST%','--port','%AI_SUMMARY_WEB_PORT%'"
+    if not "%AI_SUMMARY_WEB_PORT%"=="" powershell -NoProfile -ExecutionPolicy Bypass -WindowStyle Hidden -Command "$env:PERSONAL_AI_STACK_DISABLE_BROWSER_OPEN='1'; Start-Process -WindowStyle Hidden -FilePath '%PY_FOR_RUN_ABS%' -WorkingDirectory '%CD%\..\ai_conversations_summary' -ArgumentList 'launch_web.py'"
     if not "%LIBRARY_WEB_PORT%"=="" (
-        powershell -NoProfile -ExecutionPolicy Bypass -WindowStyle Hidden -Command "Start-Process -WindowStyle Hidden -FilePath '%PY_FOR_RUN_ABS%' -WorkingDirectory '%CD%\..\library_tracker' -ArgumentList '-m','uvicorn','web.main:app','--host','%LIBRARY_WEB_HOST%','--port','%LIBRARY_WEB_PORT%'"
+        powershell -NoProfile -ExecutionPolicy Bypass -WindowStyle Hidden -Command "$env:PERSONAL_AI_STACK_DISABLE_BROWSER_OPEN='1'; Start-Process -WindowStyle Hidden -FilePath '%PY_FOR_RUN_ABS%' -WorkingDirectory '%CD%\..\library_tracker' -ArgumentList 'launch_web.py'"
     )
-    powershell -NoProfile -ExecutionPolicy Bypass -WindowStyle Hidden -Command "Start-Process -WindowStyle Hidden -FilePath '%PY_FOR_RUN_ABS%' -WorkingDirectory '%CD%' -ArgumentList 'launch_web.py'"
+    powershell -NoProfile -ExecutionPolicy Bypass -WindowStyle Hidden -Command "$env:PERSONAL_AI_STACK_DISABLE_BROWSER_OPEN='0'; Start-Process -WindowStyle Hidden -FilePath '%PY_FOR_RUN_ABS%' -WorkingDirectory '%CD%' -ArgumentList 'launch_web.py'"
     echo [Nav Dashboard] Started services in hidden mode.
     exit /b 0
 
-    if not "%AI_SUMMARY_WEB_PORT%"=="" start "AI Summary Service" /min /d "..\ai_conversations_summary" "%PY_FOR_RUN%" -m uvicorn web.main:app --host %AI_SUMMARY_WEB_HOST% --port %AI_SUMMARY_WEB_PORT%
-    if not "%LIBRARY_WEB_PORT%"=="" start "Library Tracker Service" /min /d "..\library_tracker" "%PY_FOR_RUN%" -m uvicorn web.main:app --host %LIBRARY_WEB_HOST% --port %LIBRARY_WEB_PORT%
+    if not "%AI_SUMMARY_WEB_PORT%"=="" start "AI Summary Service" /min /d "..\ai_conversations_summary" "%PY_FOR_RUN%" "launch_web.py"
+    if not "%LIBRARY_WEB_PORT%"=="" start "Library Tracker Service" /min /d "..\library_tracker" "%PY_FOR_RUN%" "launch_web.py"
 
     echo [Nav Dashboard] Started AI Summary and Library Tracker in background.
     echo [Nav Dashboard] Opening only Nav Dashboard in browser...
@@ -139,8 +139,8 @@ if defined PY_FOR_RUN (
 
 where py >nul 2>nul
 if %errorlevel%==0 (
-    start "AI Summary Service" /min /d "..\ai_conversations_summary" py -3 -m uvicorn web.main:app --host %AI_SUMMARY_WEB_HOST% --port %AI_SUMMARY_WEB_PORT%
-    start "Library Tracker Service" /min /d "..\library_tracker" py -3 -m uvicorn web.main:app --host %LIBRARY_WEB_HOST% --port %LIBRARY_WEB_PORT%
+    start "AI Summary Service" /min /d "..\ai_conversations_summary" py -3 "launch_web.py"
+    start "Library Tracker Service" /min /d "..\library_tracker" py -3 "launch_web.py"
 
     echo [Nav Dashboard] Started AI Summary and Library Tracker in background.
     echo [Nav Dashboard] Opening only Nav Dashboard in browser...

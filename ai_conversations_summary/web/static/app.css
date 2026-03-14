@@ -273,9 +273,10 @@ button:disabled { opacity: 0.6; cursor: not-allowed; }
   color: #d7d7c9;
 }
 .tree-row {
-  display: flex;
+  display: grid;
+  grid-template-columns: 14px minmax(0, 1fr);
   align-items: center;
-  gap: 6px;
+  column-gap: 6px;
   cursor: pointer;
   border-radius: 4px;
   padding: 2px 4px;
@@ -285,11 +286,15 @@ button:disabled { opacity: 0.6; cursor: not-allowed; }
 .tree-caret {
   width: 14px;
   display: inline-block;
+  text-align: center;
   color: #a8ad98;
+  font-family: Consolas, "Cascadia Mono", "Courier New", monospace;
+  font-variant-ligatures: none;
 }
 .tree-row.file .tree-caret { visibility: hidden; }
 .tree li:hover { color: #a6e22e; }
 .tree-label {
+  display: block;
   min-width: 0;
   overflow: hidden;
   text-overflow: ellipsis;
@@ -493,6 +498,42 @@ button:disabled { opacity: 0.6; cursor: not-allowed; }
 .msg.processing .content {
   color: #d3d7c5;
   font-style: italic;
+}
+.msg-meta {
+  color: #9ea38f;
+  font-size: 12px;
+  margin: 2px 0 6px;
+  font-family: Consolas, "Cascadia Mono", "Courier New", monospace;
+  word-break: break-all;
+}
+.msg.trace-meta {
+  padding-top: 6px;
+  padding-bottom: 6px;
+}
+.msg.trace-meta .trace-meta-content {
+  color: #9ea38f;
+  font-size: 12px;
+  font-family: Consolas, "Cascadia Mono", "Courier New", monospace;
+  word-break: break-all;
+}
+.msg-actions {
+  display: flex;
+  justify-content: flex-start;
+  gap: 8px;
+  margin-top: 8px;
+}
+.msg-action-btn {
+  background: transparent;
+  border: 1px solid #4a4b42;
+  color: #b7b7a4;
+  padding: 4px 10px;
+  border-radius: 999px;
+  font-size: 12px;
+  font-weight: 600;
+}
+.msg-action-btn.is-done {
+  border-color: #5d8077;
+  color: #bfe0d7;
 }
 .loading-overlay {
   position: fixed;

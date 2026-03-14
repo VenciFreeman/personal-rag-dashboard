@@ -37,6 +37,7 @@ router = APIRouter(prefix="/api/agent", tags=["agent"])
 class ChatPayload(BaseModel):
     question: str = Field(min_length=1)
     session_id: str = ""
+    trace_id: str = ""
     history: list[dict[str, str]] = Field(default_factory=list)
     backend: str = "local"
     search_mode: str = "local_only"
@@ -74,6 +75,7 @@ def post_chat(payload: ChatPayload, request: Request) -> dict[str, Any]:
         return agent_service.run_agent_round(
             question=payload.question,
             session_id=payload.session_id,
+            trace_id=payload.trace_id or str(request.headers.get("X-Trace-Id", "")),
             history=payload.history,
             backend=payload.backend,
             search_mode=payload.search_mode,
@@ -116,6 +118,7 @@ def post_chat_stream(payload: ChatPayload, request: Request) -> StreamingRespons
             for event in agent_service.run_agent_round_stream(
                 question=payload.question,
                 session_id=payload.session_id,
+                trace_id=payload.trace_id or str(request.headers.get("X-Trace-Id", "")),
                 history=payload.history,
                 backend=payload.backend,
                 search_mode=payload.search_mode,

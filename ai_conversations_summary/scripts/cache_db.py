@@ -285,6 +285,8 @@ def log_no_context_query(
     source: str,
     top1_score: float | None = None,
     threshold: float | None = None,
+    trace_id: str = "",
+    reason: str = "",
 ) -> None:
     """Append a no-context record to no_context_queries.jsonl.
 
@@ -300,6 +302,12 @@ def log_no_context_query(
         "top1_score": round(float(top1_score), 4) if top1_score is not None else None,
         "threshold": round(float(threshold), 4) if threshold is not None else None,
     }
+    normalized_trace_id = str(trace_id or "").strip()
+    if normalized_trace_id:
+        record["trace_id"] = normalized_trace_id
+    normalized_reason = str(reason or "").strip()
+    if normalized_reason:
+        record["reason"] = normalized_reason
     try:
         _ensure_cache_dir()
         with _NO_CONTEXT_LOCK:

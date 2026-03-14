@@ -2,14 +2,14 @@
 <html lang="zh-CN">
 <head>
   <meta charset="utf-8" />
-  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, viewport-fit=cover" />
   <title>Vincent's Library Tracker</title>
   <link rel="apple-touch-icon" sizes="180x180" href="/static/favicon_logosc/apple-touch-icon.png" />
   <link rel="icon" type="image/png" sizes="32x32" href="/static/favicon_logosc/favicon-32x32.png" />
   <link rel="icon" type="image/png" sizes="16x16" href="/static/favicon_logosc/favicon-16x16.png" />
   <link rel="shortcut icon" href="/static/favicon_logosc/favicon.ico" />
   <link rel="manifest" href="/static/favicon_logosc/site.webmanifest" />
-  <link rel="stylesheet" href="/static/app.css" />
+  <link rel="stylesheet" href="/static/app.css?v=20260314b" />
 </head>
 <body>
   <header class="top">
@@ -29,6 +29,18 @@
             <strong>筛选标签</strong>
           </div>
           <button id="btn-add" class="full">新增</button>
+          <div class="filter-group">
+            <label>Year</label>
+            <select id="filter-year-select" class="filter-select">
+              <option value="">全部年份</option>
+            </select>
+          </div>
+          <div class="filter-group">
+            <label>Rating</label>
+            <select id="filter-rating-select" class="filter-select">
+              <option value="">全部评分</option>
+            </select>
+          </div>
           <div class="filter-group">
             <label>Media Type</label>
             <div id="filter-media_type" class="chips"></div>
@@ -164,6 +176,6 @@
   </dialog>
 
   <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.3/dist/chart.umd.min.js"></script>
-  <script src="/static/app.js"></script>
+  <script src="/static/app.js?v=20260314b"></script>
 </body>
 </html>

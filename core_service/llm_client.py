@@ -112,13 +112,19 @@ def stream_chat_completion_text(
     timeout: int,
     messages: list[dict[str, str]],
     temperature: float = 0.2,
+    max_tokens: int | None = None,
 ) -> Iterator[str]:
     client = create_client(api_key=api_key, base_url=base_url, timeout=timeout)
+    kwargs: dict[str, Any] = {
+        "model": model,
+        "messages": messages,
+        "temperature": temperature,
+        "stream": True,
+    }
+    if max_tokens is not None:
+        kwargs["max_tokens"] = max_tokens
     response_stream = client.chat.completions.create(
-        model=model,
-        messages=messages,
-        temperature=temperature,
-        stream=True,
+        **kwargs,
     )
 
     for chunk in response_stream:

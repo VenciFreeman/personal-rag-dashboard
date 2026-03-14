@@ -49,16 +49,6 @@ from web.config import HOST, PORT
 from web.main import run
 
 
-def _is_server_healthy(port: int) -> bool:
-    url = f"http://127.0.0.1:{port}/healthz"
-    opener = urllib.request.build_opener(urllib.request.ProxyHandler({}))
-    try:
-        with opener.open(url, timeout=1.2) as resp:
-            return resp.status == 200
-    except Exception:
-        return False
-
-
 def _list_listening_pids_on_port(port: int) -> set[int]:
     """Return all PIDs listening on the given TCP port (Windows netstat)."""
     try:
@@ -180,10 +170,6 @@ def _wait_server_then_open_browser(host: str, port: int) -> None:
 
 
 def main() -> None:
-    if _is_server_healthy(PORT):
-        _wait_server_then_open_browser(HOST, PORT)
-        return
-
     _free_port_if_occupied(PORT)
     opener = threading.Thread(target=_wait_server_then_open_browser, args=(HOST, PORT), daemon=True)
     opener.start()

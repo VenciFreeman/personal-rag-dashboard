@@ -87,10 +87,12 @@ if str(_WORKSPACE_ROOT) not in sys.path:
 try:
     from core_service.config import get_settings
     from core_service.llm_client import chat_completion_with_retry
+    from core_service.trace_store import write_trace_record
 except Exception as exc:  # noqa: BLE001
     _LLM_IMPORT_ERROR = exc
     get_settings = None
     chat_completion_with_retry = None
+    write_trace_record = None
 
 # Optional knowledge graph support for query expansion
 _GRAPH_IMPORT_ERROR: Exception | None = None
@@ -192,6 +194,35 @@ SHORT_QUERY_LIMIT_DELTA = int(os.getenv("NAV_DASHBOARD_SHORT_TOOL_LIMIT_DELTA", 
 LONG_QUERY_LIMIT_DELTA = int(os.getenv("NAV_DASHBOARD_LONG_TOOL_LIMIT_DELTA", "-1") or "-1")
 _MEDIA_GRAPH_CACHE: dict[str, Any] = {"mtime": None, "degrees": {}}
 _MEDIA_COMPARE_SPLIT_RE = re.compile(r"\s*(?:和|与|以及|及|跟|vs\.?|VS\.?|/|／|、)\s*")
+_MEDIA_TITLE_MARKER_RE = re.compile(r"(?:《[^》]+》|「[^」]+」|『[^』]+』|“[^”]+”|\"[^\"]+\")")
+_MEDIA_INTENT_KEYWORDS = (
+    "电影",
+    "影片",
+    "影视",
+    "电视剧",
+    "剧集",
+    "动漫",
+    "动画",
+    "番",
+    "漫画",
+    "轻小说",
+    "小说",
+    "游戏",
+    "gal",
+    "visual novel",
+    "角色",
+    "主角",
+    "剧情",
+    "作者",
+    "导演",
+    "演员",
+    "配乐",
+    "结局",
+    "观后感",
+    "读后感",
+    "游玩体验",
+    "作品",
+)
 
 
 def _is_doc_graph_available() -> bool:
@@ -225,6 +256,17 @@ def _build_tool_prompt_lines(search_mode: str) -> str:
     if _is_doc_graph_available():
         lines.append(f"- {TOOL_EXPAND_DOC_QUERY}: 使用知识图谱扩展文档查询（可获取相关概念）")
     return "\n".join(lines)
+
+
+def _new_trace_id() -> str:
+    return f"trace_{uuid4().hex[:16]}"
+
+
+def _normalize_trace_id(trace_id: str = "") -> str:
+    value = re.sub(r"[^a-zA-Z0-9_.:-]", "", str(trace_id or "").strip())
+    if value:
+        return value[:80]
+    return _new_trace_id()
 
 
 def _approx_tokens(text: str) -> int:
@@ -322,6 +364,9 @@ def record_agent_metrics(
     media_used: int,
     web_used: int,
     no_context: int,
+    no_context_reason: str = "",
+    trace_id: str = "",
+    doc_score_threshold: float | None = None,
     doc_top1_score: float | None,
     doc_top1_score_before_rerank: float | None,
     doc_top1_identity_changed: int | None,
@@ -341,15 +386,18 @@ def record_agent_metrics(
         "media_used": int(media_used or 0),
         "web_used": int(web_used or 0),
         "no_context": int(no_context or 0),
+        "no_context_reason": str(no_context_reason or "").strip(),
+        "trace_id": str(trace_id or "").strip(),
+        "doc_score_threshold": round(float(doc_score_threshold), 4) if doc_score_threshold is not None else None,
         "doc_top1_score": round(float(doc_top1_score), 4) if doc_top1_score is not None else None,
         "doc_top1_score_before_rerank": round(float(doc_top1_score_before_rerank), 4) if doc_top1_score_before_rerank is not None else None,
         "doc_top1_identity_changed": int(doc_top1_identity_changed) if doc_top1_identity_changed is not None else None,
         "doc_top1_rank_shift": round(float(doc_top1_rank_shift), 4) if doc_top1_rank_shift is not None else None,
         "embed_cache_hit": int(embed_cache_hit or 0),
         "query_rewrite_hit": int(query_rewrite_hit or 0),
-        "vector_recall_seconds": round(float(vector_recall_seconds or 0), 4),
-        "rerank_seconds": round(float(rerank_seconds or 0), 4),
-        "wall_clock_seconds": round(float(wall_clock_seconds or 0), 4),
+        "vector_recall_seconds": round(float(vector_recall_seconds or 0), 6),
+        "rerank_seconds": round(float(rerank_seconds or 0), 6),
+        "wall_clock_seconds": round(float(wall_clock_seconds or 0), 6),
     }
     with _LOCK:
         rows = _load_agent_metrics()
@@ -413,13 +461,35 @@ class ToolExecution:
     data: Any
 
 
-def _http_json(method: str, url: str, payload: dict[str, Any] | None = None, timeout: float = 25.0) -> dict[str, Any]:
+def _resolve_agent_no_context(query_type: str, rag_used: int, doc_no_context: int) -> tuple[int, str]:
+    normalized_type = _normalize_query_type(query_type)
+    if int(doc_no_context or 0) > 0:
+        return 1, "below_threshold"
+    if int(rag_used or 0) <= 0 and normalized_type in {QUERY_TYPE_TECH, QUERY_TYPE_MIXED}:
+        return 1, "knowledge_route_without_rag"
+    return 0, ""
+
+
+def _http_json(
+    method: str,
+    url: str,
+    payload: dict[str, Any] | None = None,
+    timeout: float = 25.0,
+    headers: dict[str, str] | None = None,
+) -> dict[str, Any]:
     req_body = None
-    headers = {"Accept": "application/json"}
+    request_headers = {"Accept": "application/json"}
+    if isinstance(headers, dict):
+        for key, value in headers.items():
+            header_key = str(key or "").strip()
+            header_value = str(value or "").strip()
+            if header_key and header_value:
+                request_headers[header_key] = header_value
     if payload is not None:
-        req_body = json.dumps(payload, ensure_ascii=False).encode("utf-8")
-        headers["Content-Type"] = "application/json"
-    req = urlrequest.Request(url=url, data=req_body, headers=headers, method=method.upper())
+        clean_payload = dict(payload)
+        req_body = json.dumps(clean_payload, ensure_ascii=False).encode("utf-8")
+        request_headers["Content-Type"] = "application/json"
+    req = urlrequest.Request(url=url, data=req_body, headers=request_headers, method=method.upper())
     host = (urlparse.urlparse(url).hostname or "").lower()
     local_hosts = {"127.0.0.1", "localhost", "::1"}
     try:
@@ -613,7 +683,7 @@ def _normalize_session(raw: object) -> dict[str, Any] | None:
     created_at = str(raw.get("created_at", "")).strip() or _now_iso()
     updated_at = str(raw.get("updated_at", "")).strip() or created_at
     msgs_raw = raw.get("messages", [])
-    messages: list[dict[str, str]] = []
+    messages: list[dict[str, Any]] = []
     if isinstance(msgs_raw, list):
         for item in msgs_raw:
             if not isinstance(item, dict):
@@ -622,7 +692,11 @@ def _normalize_session(raw: object) -> dict[str, Any] | None:
             text = str(item.get("text", "")).strip()
             if not role or not text:
                 continue
-            messages.append({"role": role, "text": text})
+            trace_id = str(item.get("trace_id", "")).strip()
+            normalized_message: dict[str, Any] = {"role": role, "text": text}
+            if trace_id:
+                normalized_message["trace_id"] = trace_id
+            messages.append(normalized_message)
     return {
         "id": sid,
         "title": title,
@@ -747,7 +821,7 @@ def delete_session(session_id: str) -> bool:
         return True
 
 
-def append_message(session_id: str, role: str, text: str) -> None:
+def append_message(session_id: str, role: str, text: str, trace_id: str = "") -> None:
     sid = (session_id or "").strip()
     if not sid:
         return
@@ -763,7 +837,11 @@ def append_message(session_id: str, role: str, text: str) -> None:
                 "updated_at": now,
                 "messages": [],
             }
-        session.setdefault("messages", []).append({"role": role, "text": text})
+        message: dict[str, Any] = {"role": role, "text": text}
+        normalized_trace_id = str(trace_id or "").strip()
+        if normalized_trace_id:
+            message["trace_id"] = normalized_trace_id
+        session.setdefault("messages", []).append(message)
         session["updated_at"] = _now_iso()
         _save_session(session)
 
@@ -903,6 +981,26 @@ def _classifier_token_count(query: str) -> int:
     return len(re.findall(r"[a-z0-9_]+|[\u4e00-\u9fff]{2,}", text))
 
 
+def _has_media_title_marker(query: str) -> bool:
+    return bool(_MEDIA_TITLE_MARKER_RE.search(str(query or "")))
+
+
+def _has_media_intent_cues(query: str) -> bool:
+    text = str(query or "").strip().lower()
+    if not text:
+        return False
+    return any(keyword in text for keyword in _MEDIA_INTENT_KEYWORDS)
+
+
+def _is_compact_media_entity_list(entities: list[str]) -> bool:
+    clean_entities = [str(entity or "").strip() for entity in entities if str(entity or "").strip()]
+    if not clean_entities:
+        return False
+    if len(clean_entities) > 2:
+        return False
+    return all(len(entity) <= 24 for entity in clean_entities)
+
+
 def _media_graph_degrees() -> dict[str, int]:
     graph_path = _WORKSPACE_ROOT / "library_tracker" / "data" / "vector_db" / "library_knowledge_graph.json"
     if not graph_path.exists():
@@ -973,28 +1071,54 @@ def _classify_media_query_with_llm(query: str, quota_state: dict[str, Any]) -> d
 
 def _estimate_doc_similarity(query: str, query_profile: dict[str, Any]) -> dict[str, Any]:
     top_k = max(3, min(6, int(query_profile.get("doc_vector_top_n", DOC_VECTOR_TOP_N) or DOC_VECTOR_TOP_N)))
+    query_tokens = _classifier_token_count(query)
+    candidate_queries = [query]
+    rewrite_status = "skipped"
+    if query_tokens >= LONG_QUERY_MIN_TOKENS or len(str(query or "")) >= 48:
+        candidate_queries, rewrite_status = _rewrite_doc_queries(query)
+
     try:
-        payload = _http_json(
-            "GET",
-            f"{AI_SUMMARY_BASE}/api/preview/search/vector?" + urlparse.urlencode({"q": query, "top_k": top_k}),
-            timeout=20.0,
-        )
-        rows = payload.get("results", []) if isinstance(payload, dict) else []
-        valid_rows = [row for row in rows if isinstance(row, dict)]
-        tech_rows = [
-            row for row in valid_rows
-            if str(row.get("path", "")).strip().startswith(TECH_SPACE_PREFIXES)
-        ]
-        best_row = max(tech_rows, key=lambda row: _safe_score(row.get("score")), default={})
+        best_row: dict[str, Any] = {}
+        best_query = query
+        total_tech_rows = 0
+        for candidate_query in candidate_queries:
+            payload = _http_json(
+                "GET",
+                f"{AI_SUMMARY_BASE}/api/preview/search/vector?" + urlparse.urlencode({"q": candidate_query, "top_k": top_k}),
+                timeout=20.0,
+            )
+            rows = payload.get("results", []) if isinstance(payload, dict) else []
+            valid_rows = [row for row in rows if isinstance(row, dict)]
+            tech_rows = [
+                row for row in valid_rows
+                if str(row.get("path", "")).strip().startswith(TECH_SPACE_PREFIXES)
+            ]
+            total_tech_rows += len(tech_rows)
+            candidate_best = max(tech_rows, key=lambda row: _safe_score(row.get("score")), default={})
+            if _safe_score(candidate_best.get("score")) > _safe_score(best_row.get("score")):
+                best_row = candidate_best
+                best_query = candidate_query
+
         top_score = _safe_score(best_row.get("score"))
         return {
             "score": round(top_score, 6),
             "top_path": str(best_row.get("path", "")).strip(),
-            "count": len(tech_rows),
+            "count": total_tech_rows,
+            "matched_query": best_query,
+            "queries": candidate_queries,
+            "rewrite_status": rewrite_status,
             "status": "ok",
         }
     except Exception as exc:  # noqa: BLE001
-        return {"score": 0.0, "top_path": "", "count": 0, "status": f"error:{exc}"}
+        return {
+            "score": 0.0,
+            "top_path": "",
+            "count": 0,
+            "matched_query": query,
+            "queries": candidate_queries,
+            "rewrite_status": rewrite_status,
+            "status": f"error:{exc}",
+        }
 
 
 def _classify_query_type(query: str, quota_state: dict[str, Any], query_profile: dict[str, Any]) -> dict[str, Any]:
@@ -1006,19 +1130,45 @@ def _classify_query_type(query: str, quota_state: dict[str, Any], query_profile:
     classifier_label = str(llm_media.get("label") or CLASSIFIER_LABEL_OTHER)
     media_specific = bool(extracted_entity)
     query_tokens = _classifier_token_count(query)
+    profile_name = str(query_profile.get("profile", "") or "").strip().lower()
+    profile_token_count = int(query_profile.get("token_count", query_tokens) or query_tokens)
+    media_title_marked = _has_media_title_marker(query)
+    media_intent_cues = _has_media_intent_cues(query)
+    short_media_surface = (
+        query_tokens <= 8
+        and profile_token_count <= 10
+        and profile_name != "long"
+    )
+    media_entity_confident = media_specific and (
+        media_title_marked
+        or media_intent_cues
+        or (short_media_surface and _is_compact_media_entity_list(media_entities))
+    )
+    weak_tech_threshold = max(0.18, TECH_QUERY_DOC_SIM_THRESHOLD - 0.10)
+    weak_tech_signal = tech_score >= weak_tech_threshold
     disable_media_search = (
         query_tokens > 12
-        and not media_specific
-        and classifier_label != CLASSIFIER_LABEL_MEDIA
+        and not media_entity_confident
+        and not media_intent_cues
     )
+    media_signal = media_entity_confident or (
+        classifier_label == CLASSIFIER_LABEL_MEDIA
+        and (media_intent_cues or short_media_surface)
+        and not disable_media_search
+    )
+    strong_tech_signal = tech_score >= TECH_QUERY_DOC_SIM_THRESHOLD or classifier_label == CLASSIFIER_LABEL_TECH
 
-    if media_specific:
+    if media_signal and strong_tech_signal:
+        query_type = QUERY_TYPE_MIXED
+    elif media_entity_confident:
         query_type = QUERY_TYPE_MEDIA
     elif tech_score >= TECH_QUERY_DOC_SIM_THRESHOLD:
         query_type = QUERY_TYPE_TECH
+    elif weak_tech_signal and not media_intent_cues:
+        query_type = QUERY_TYPE_TECH
     elif classifier_label == CLASSIFIER_LABEL_TECH:
         query_type = QUERY_TYPE_TECH
-    elif classifier_label == CLASSIFIER_LABEL_MEDIA and not disable_media_search:
+    elif classifier_label == CLASSIFIER_LABEL_MEDIA and (media_entity_confident or media_intent_cues) and not disable_media_search:
         query_type = QUERY_TYPE_MEDIA
     else:
         query_type = QUERY_TYPE_GENERAL
@@ -1028,13 +1178,74 @@ def _classify_query_type(query: str, quota_state: dict[str, Any], query_profile:
         "media_entity": extracted_entity,
         "media_entities": media_entities,
         "media_specific": media_specific,
+        "media_entity_confident": media_entity_confident,
+        "media_title_marked": media_title_marked,
+        "media_intent_cues": media_intent_cues,
         "llm_media": llm_media,
         "doc_similarity": doc_similarity,
         "tech_score": round(tech_score, 6),
         "tech_threshold": TECH_QUERY_DOC_SIM_THRESHOLD,
+        "weak_tech_threshold": weak_tech_threshold,
+        "weak_tech_signal": weak_tech_signal,
         "query_tokens": query_tokens,
+        "profile_token_count": profile_token_count,
+        "short_media_surface": short_media_surface,
         "disable_media_search": disable_media_search,
+        "media_signal": media_signal,
+        "strong_tech_signal": strong_tech_signal,
     }
+
+
+def _build_router_decision_path(
+    query_classification: dict[str, Any],
+    search_mode: str,
+    planned_tools: list[PlannedToolCall],
+    tool_results: list[ToolExecution],
+) -> tuple[str, list[str]]:
+    path: list[str] = []
+    query_type = str(query_classification.get("query_type", QUERY_TYPE_GENERAL) or QUERY_TYPE_GENERAL)
+    classifier_label = str(query_classification.get("llm_media", {}).get("label", "") or "")
+    doc_similarity = float(query_classification.get("doc_similarity", {}).get("score", 0.0) or 0.0)
+    weak_tech_threshold = float(query_classification.get("weak_tech_threshold", 0.0) or 0.0)
+
+    if bool(query_classification.get("media_entity_confident")):
+        path.append("media_entity")
+    elif bool(query_classification.get("media_signal")):
+        path.append("media_intent")
+
+    if doc_similarity >= TECH_QUERY_DOC_SIM_THRESHOLD:
+        path.append("embedding_similarity_strong")
+    elif weak_tech_threshold > 0 and doc_similarity >= weak_tech_threshold:
+        path.append("embedding_similarity_weak")
+
+    if classifier_label == CLASSIFIER_LABEL_TECH:
+        path.append("llm_classifier_tech")
+    elif classifier_label == CLASSIFIER_LABEL_MEDIA:
+        path.append("llm_classifier_media")
+
+    normalized_mode = _normalize_search_mode(search_mode)
+    if normalized_mode == "hybrid" and any(call.name == TOOL_SEARCH_WEB for call in planned_tools):
+        path.append("hybrid_web_fallback")
+    elif normalized_mode == "local_only":
+        path.append("local_only")
+
+    if query_type == QUERY_TYPE_MIXED:
+        path.append("mixed_multi_tool")
+        category = "mixed_multi_tool"
+    elif "embedding_similarity_strong" in path or "llm_classifier_tech" in path:
+        category = "tech_rag"
+    elif "media_entity" in path or "llm_classifier_media" in path:
+        category = "media_lookup"
+    elif "hybrid_web_fallback" in path:
+        category = "web_fallback"
+    else:
+        category = "default_doc_rag"
+
+    executed_tools = [item for item in tool_results if str(item.status or "").strip().lower() != "skipped"]
+    if len(executed_tools) > 1:
+        path.append("multi_tool_executed")
+
+    return category, path
 
 
 def _build_tool_plan_from_query_type(question: str, query_type: str, search_mode: str) -> list[PlannedToolCall]:
@@ -1403,7 +1614,7 @@ def _rerank_merged_doc_rows(rows: list[dict[str, Any]], keyword_scores: dict[str
     return reranked
 
 
-def _tool_query_document_rag(query: str, query_profile: dict[str, Any]) -> ToolExecution:
+def _tool_query_document_rag(query: str, query_profile: dict[str, Any], trace_id: str = "") -> ToolExecution:
     import time as _time
     doc_vector_top_n = max(4, int(query_profile.get("doc_vector_top_n", DOC_VECTOR_TOP_N) or DOC_VECTOR_TOP_N))
     rewrite_queries, rewrite_status = _rewrite_doc_queries(query)
@@ -1418,6 +1629,7 @@ def _tool_query_document_rag(query: str, query_profile: dict[str, Any]) -> ToolE
                 "GET",
                 f"{AI_SUMMARY_BASE}/api/preview/search/vector?"
                 + urlparse.urlencode({"q": rewritten_query, "top_k": max(6, int(doc_vector_top_n))}),
+                headers={"X-Trace-Id": trace_id, "X-Trace-Stage": "agent.doc.vector_preview"},
             )
             vec_rows = vec.get("results", []) if isinstance(vec, dict) else []
             vector_batches.append((rewritten_query, [row for row in vec_rows if isinstance(row, dict)]))
@@ -1471,6 +1683,8 @@ def _tool_query_document_rag(query: str, query_profile: dict[str, Any]) -> ToolE
         status="ok",
         summary=summary,
         data={
+            "trace_id": trace_id,
+            "trace_stage": "agent.tool.query_document_rag",
             "results": reranked_rows[: max(8, int(doc_vector_top_n))],
             "query_profile": query_profile,
             "query_rewrite": {
@@ -1486,8 +1700,8 @@ def _tool_query_document_rag(query: str, query_profile: dict[str, Any]) -> ToolE
                 "vector_weight": 0.85,
                 "keyword_weight": 0.15,
             },
-            "vector_recall_seconds": round(_vector_recall_seconds, 4),
-            "rerank_seconds": round(_rerank_seconds, 4),
+            "vector_recall_seconds": round(_vector_recall_seconds, 6),
+            "rerank_seconds": round(_rerank_seconds, 6),
             "doc_top1_score": round(_top1_score, 4) if _top1_score is not None else None,
             "doc_top1_score_before_rerank": round(_top1_score_before, 4) if _top1_score_before is not None else None,
             "doc_top1_identity_changed": _top1_identity_changed,
@@ -1621,7 +1835,7 @@ def _media_title_match_boost_any(title: str, entities: list[str]) -> float:
     return max((_media_title_match_boost(title, entity) for entity in entities), default=0.0)
 
 
-def _tool_query_media_record(query: str, query_profile: dict[str, Any]) -> ToolExecution:
+def _tool_query_media_record(query: str, query_profile: dict[str, Any], trace_id: str = "") -> ToolExecution:
     rewritten_query = _rewrite_media_query(query)
     media_entities = _extract_media_entities(query)
     extracted_entity = media_entities[0] if media_entities else ""
@@ -1669,7 +1883,13 @@ def _tool_query_media_record(query: str, query_profile: dict[str, Any]) -> ToolE
         payload = _http_json(
             "POST",
             f"{LIBRARY_TRACKER_BASE}/api/library/search",
-            payload={"query": q_item, "mode": "keyword", "limit": 8, "filters": filters},
+            payload={
+                "query": q_item,
+                "mode": "keyword",
+                "limit": 8,
+                "filters": filters,
+            },
+            headers={"X-Trace-Id": trace_id, "X-Trace-Stage": "agent.media.keyword"},
         )
         current = payload.get("results", []) if isinstance(payload, dict) else []
         for row in current:
@@ -1684,7 +1904,13 @@ def _tool_query_media_record(query: str, query_profile: dict[str, Any]) -> ToolE
         vec_payload = _http_json(
             "POST",
             f"{LIBRARY_TRACKER_BASE}/api/library/search",
-            payload={"query": q_item, "mode": "vector", "limit": 8, "filters": filters},
+            payload={
+                "query": q_item,
+                "mode": "vector",
+                "limit": 8,
+                "filters": filters,
+            },
+            headers={"X-Trace-Id": trace_id, "X-Trace-Stage": "agent.media.vector"},
         )
         current = vec_payload.get("results", []) if isinstance(vec_payload, dict) else []
         for row in current:
@@ -1785,6 +2011,8 @@ def _tool_query_media_record(query: str, query_profile: dict[str, Any]) -> ToolE
         status="ok",
         summary=f"命中 {len(compact)} 条媒体记录（entities={len(media_entities) or 1}, mode={used_mode}, query={used_query}）",
         data={
+            "trace_id": trace_id,
+            "trace_stage": "agent.tool.query_media_record",
             "results": compact,
             "query_profile": query_profile,
             "media_entities": media_entities,
@@ -1798,10 +2026,15 @@ def _tool_query_media_record(query: str, query_profile: dict[str, Any]) -> ToolE
     )
 
 
-def _tool_search_web(query: str) -> ToolExecution:
+def _tool_search_web(query: str, trace_id: str = "") -> ToolExecution:
     key = (TAVILY_API_KEY or "").strip()
     if not key:
-        return ToolExecution(tool=TOOL_SEARCH_WEB, status="empty", summary="未配置 TAVILY_API_KEY", data={"results": [], "cache_hit": False})
+        return ToolExecution(
+            tool=TOOL_SEARCH_WEB,
+            status="empty",
+            summary="未配置 TAVILY_API_KEY",
+            data={"trace_id": trace_id, "trace_stage": "agent.tool.search_web", "results": [], "cache_hit": False},
+        )
 
     # Check web search cache before making an API call.
     if _get_web_cache is not None:
@@ -1816,7 +2049,7 @@ def _tool_search_web(query: str) -> ToolExecution:
                     tool=TOOL_SEARCH_WEB,
                     status="ok",
                     summary=f"命中 {len(compact)} 条网页结果（缓存）",
-                    data={"results": compact, "cache_hit": True},
+                    data={"trace_id": trace_id, "trace_stage": "agent.tool.search_web", "results": compact, "cache_hit": True},
                 )
         except Exception:
             pass
@@ -1849,7 +2082,12 @@ def _tool_search_web(query: str) -> ToolExecution:
             _get_web_cache().set(query, 5, compact)
         except Exception:
             pass
-    return ToolExecution(tool=TOOL_SEARCH_WEB, status="ok", summary=f"命中 {len(compact)} 条网页结果", data={"results": compact, "cache_hit": False})
+    return ToolExecution(
+        tool=TOOL_SEARCH_WEB,
+        status="ok",
+        summary=f"命中 {len(compact)} 条网页结果",
+        data={"trace_id": trace_id, "trace_stage": "agent.tool.search_web", "results": compact, "cache_hit": False},
+    )
 
 
 def _tool_expand_document_query(query: str) -> ToolExecution:
@@ -1950,21 +2188,30 @@ def _tool_expand_media_query(query: str) -> ToolExecution:
         )
 
 
-def _execute_tool(call: PlannedToolCall, query_profile: dict[str, Any]) -> ToolExecution:
+def _execute_tool(call: PlannedToolCall, query_profile: dict[str, Any], trace_id: str) -> ToolExecution:
+    import time as _time
+
+    _tool_t0 = _time.perf_counter()
     try:
         if call.name == TOOL_QUERY_DOC_RAG:
-            return _tool_query_document_rag(call.query, query_profile)
-        if call.name == TOOL_QUERY_MEDIA:
-            return _tool_query_media_record(call.query, query_profile)
-        if call.name == TOOL_SEARCH_WEB:
-            return _tool_search_web(call.query)
-        if call.name == TOOL_EXPAND_DOC_QUERY:
-            return _tool_expand_document_query(call.query)
-        if call.name == TOOL_EXPAND_MEDIA_QUERY:
-            return _tool_expand_media_query(call.query)
-        return ToolExecution(tool=call.name, status="skipped", summary="未知工具", data={})
+            result = _tool_query_document_rag(call.query, query_profile, trace_id)
+        elif call.name == TOOL_QUERY_MEDIA:
+            result = _tool_query_media_record(call.query, query_profile, trace_id)
+        elif call.name == TOOL_SEARCH_WEB:
+            result = _tool_search_web(call.query, trace_id)
+        elif call.name == TOOL_EXPAND_DOC_QUERY:
+            result = _tool_expand_document_query(call.query)
+        elif call.name == TOOL_EXPAND_MEDIA_QUERY:
+            result = _tool_expand_media_query(call.query)
+        else:
+            result = ToolExecution(tool=call.name, status="skipped", summary="未知工具", data={})
+        latency_ms = round((_time.perf_counter() - _tool_t0) * 1000, 1)
+        data = dict(result.data) if isinstance(result.data, dict) else {}
+        data.setdefault("latency_ms", latency_ms)
+        return ToolExecution(tool=result.tool, status=result.status, summary=result.summary, data=data)
     except Exception as exc:  # noqa: BLE001
-        return ToolExecution(tool=call.name, status="error", summary=str(exc), data={"results": []})
+        latency_ms = round((_time.perf_counter() - _tool_t0) * 1000, 1)
+        return ToolExecution(tool=call.name, status="error", summary=str(exc), data={"results": [], "latency_ms": latency_ms})
 
 
 def _plan_tool_calls(
@@ -2033,7 +2280,9 @@ def _summarize_answer(
     backend: str,
     search_mode: str,
     quota_state: dict[str, Any],
+    trace_id: str,
     debug_sink: dict[str, Any] | None = None,
+    llm_stats_sink: dict[str, Any] | None = None,
 ) -> str:
     context_parts = ["工具返回结果："]
     for result in tool_results:
@@ -2063,14 +2312,28 @@ def _summarize_answer(
         prompt_blocks.extend(["", memory_context])
     prompt_blocks.extend(["", *context_parts])
     user_prompt = "\n".join(prompt_blocks)
+    context_tokens_est = _approx_tokens("\n".join(context_parts))
+    input_tokens_est = _approx_tokens(system_prompt) + _approx_tokens(user_prompt)
+    prompt_tokens_est = max(0, input_tokens_est - context_tokens_est)
     if debug_sink is not None:
         debug_sink["llm_request"] = {
+            "trace_id": trace_id,
+            "trace_stage": "agent.llm.summarize",
             "backend": backend,
             "system_prompt": system_prompt,
             "user_prompt": user_prompt,
             "memory_tokens_est": _approx_tokens(memory_context),
-            "input_tokens_est": _approx_tokens(system_prompt) + _approx_tokens(user_prompt),
+            "input_tokens_est": input_tokens_est,
+            "prompt_tokens_est": prompt_tokens_est,
+            "context_tokens_est": context_tokens_est,
         }
+    if llm_stats_sink is not None:
+        llm_stats_sink["backend"] = backend
+        llm_stats_sink["input_tokens_est"] = input_tokens_est
+        llm_stats_sink["prompt_tokens_est"] = prompt_tokens_est
+        llm_stats_sink["context_tokens_est"] = context_tokens_est
+        llm_stats_sink["memory_tokens_est"] = _approx_tokens(memory_context)
+        llm_stats_sink["calls"] = 1
     answer = _llm_chat(
         messages=[
             {"role": "system", "content": system_prompt},
@@ -2080,6 +2343,11 @@ def _summarize_answer(
         quota_state=quota_state,
     )
     if normalized_search_mode == "local_only" and not has_web_tool and re.search(r"联网搜索|网络搜索|进行网络搜索|经过搜索", answer):
+        if llm_stats_sink is not None:
+            llm_stats_sink["calls"] = int(llm_stats_sink.get("calls", 1) or 1) + 1
+            llm_stats_sink["input_tokens_est"] = int(llm_stats_sink.get("input_tokens_est", 0) or 0) + input_tokens_est
+            llm_stats_sink["prompt_tokens_est"] = int(llm_stats_sink.get("prompt_tokens_est", 0) or 0) + prompt_tokens_est
+            llm_stats_sink["context_tokens_est"] = int(llm_stats_sink.get("context_tokens_est", 0) or 0) + context_tokens_est
         answer = _llm_chat(
             messages=[
                 {
@@ -2092,8 +2360,147 @@ def _summarize_answer(
             quota_state=quota_state,
         )
     if debug_sink is not None:
-        debug_sink["llm_response"] = {"output_tokens_est": _approx_tokens(answer)}
+        debug_sink["llm_response"] = {
+            "trace_id": trace_id,
+            "trace_stage": "agent.llm.summarize",
+            "output_tokens_est": _approx_tokens(answer),
+        }
+    if llm_stats_sink is not None:
+        llm_stats_sink["output_tokens_est"] = _approx_tokens(answer)
     return answer
+
+
+def _build_agent_trace_record(
+    *,
+    trace_id: str,
+    session_id: str,
+    backend: str,
+    search_mode: str,
+    benchmark_mode: bool,
+    stream_mode: bool,
+    query_profile: dict[str, Any],
+    query_classification: dict[str, Any],
+    planned_tools: list[PlannedToolCall],
+    tool_results: list[ToolExecution],
+    doc_data: dict[str, Any],
+    timings: dict[str, Any],
+    llm_stats: dict[str, Any],
+    degraded_to_retrieval: bool,
+    degrade_reason: str,
+    wall_clock_seconds: float,
+    planning_seconds: float,
+    tool_execution_seconds: float,
+    llm_seconds: float,
+) -> dict[str, Any]:
+    _, llm_model, _, _ = _get_llm_profile(backend)
+    decision_category, decision_path = _build_router_decision_path(
+        query_classification=query_classification,
+        search_mode=search_mode,
+        planned_tools=planned_tools,
+        tool_results=tool_results,
+    )
+    vector_batches = list(doc_data.get("vector_batches") or [])
+    vector_candidates = sum(
+        len(batch.get("results") or [])
+        for batch in vector_batches
+        if isinstance(batch, dict)
+    )
+    executed_tool_depth = sum(1 for item in tool_results if str(item.status or "").strip().lower() != "skipped")
+    router = {
+        "selected_tool": planned_tools[0].name if planned_tools else "",
+        "planned_tools": [call.name for call in planned_tools],
+        "decision_category": decision_category,
+        "decision_path": decision_path,
+        "planned_tool_depth": len(planned_tools),
+        "executed_tool_depth": executed_tool_depth,
+        "classifier_label": str(query_classification.get("llm_media", {}).get("label", "") or ""),
+        "doc_similarity": query_classification.get("doc_similarity", {}).get("score"),
+        "media_entity_confident": bool(query_classification.get("media_entity_confident")),
+        "entity_hit_count": len(list(query_classification.get("media_entities") or [])),
+        "short_media_surface": bool(query_classification.get("short_media_surface")),
+    }
+    retrieval = {
+        "vector_hits": len(list(doc_data.get("results") or [])),
+        "vector_candidates": vector_candidates,
+        "similarity_threshold": timings.get("doc_score_threshold"),
+        "top1_score_before_rerank": doc_data.get("doc_top1_score_before_rerank"),
+        "top1_score_after_rerank": doc_data.get("doc_top1_score"),
+        "query_rewrite_status": str(doc_data.get("query_rewrite", {}).get("status", "") or ""),
+        "query_rewrite_count": len(list(doc_data.get("query_rewrite", {}).get("queries") or [])),
+        "graph_expansion_batches": 0,
+    }
+    ranking = {
+        "method": str(doc_data.get("rerank", {}).get("method", "") or ""),
+        "rerank_k": len(list(doc_data.get("results") or [])),
+        "top1_identity_changed": doc_data.get("doc_top1_identity_changed"),
+        "top1_rank_shift": doc_data.get("doc_top1_rank_shift"),
+    }
+    tools = []
+    for item in tool_results:
+        data = item.data if isinstance(item.data, dict) else {}
+        results = data.get("results") if isinstance(data.get("results"), list) else []
+        tools.append(
+            {
+                "name": item.tool,
+                "status": item.status,
+                "latency_ms": data.get("latency_ms"),
+                "result_count": len(results),
+                "cache_hit": bool(data.get("cache_hit")),
+                "trace_stage": str(data.get("trace_stage", "") or ""),
+            }
+        )
+    return {
+        "trace_id": trace_id,
+        "timestamp": _now_iso(),
+        "entrypoint": "agent",
+        "call_type": "benchmark_case" if benchmark_mode else ("chat_stream" if stream_mode else "chat"),
+        "session_id": session_id,
+        "search_mode": search_mode,
+        "query_type": str(query_classification.get("query_type", QUERY_TYPE_GENERAL) or QUERY_TYPE_GENERAL),
+        "query_profile": {
+            "profile": str(query_profile.get("profile", "medium") or "medium"),
+            "token_count": int(query_profile.get("token_count", 0) or 0),
+        },
+        "router": router,
+        "tools": tools,
+        "retrieval": retrieval,
+        "ranking": ranking,
+        "llm": {
+            "backend": backend,
+            "model": llm_model,
+            "latency_seconds": round(float(llm_seconds or 0), 6),
+            "input_tokens_est": int(llm_stats.get("input_tokens_est", 0) or 0),
+            "prompt_tokens_est": int(llm_stats.get("prompt_tokens_est", 0) or 0),
+            "context_tokens_est": int(llm_stats.get("context_tokens_est", 0) or 0),
+            "output_tokens_est": int(llm_stats.get("output_tokens_est", 0) or 0),
+            "calls": int(llm_stats.get("calls", 0) or 0),
+        },
+        "stages": {
+            "planning_seconds": round(float(planning_seconds or 0), 6),
+            "tool_execution_seconds": round(float(tool_execution_seconds or 0), 6),
+            "vector_recall_seconds": round(float(timings.get("vector_recall_seconds", 0) or 0), 6),
+            "rerank_seconds": round(float(timings.get("rerank_seconds", 0) or 0), 6),
+            "llm_seconds": round(float(llm_seconds or 0), 6),
+            "wall_clock_seconds": round(float(wall_clock_seconds or 0), 6),
+        },
+        "total_elapsed_seconds": round(float(wall_clock_seconds or 0), 6),
+        "result": {
+            "status": "ok",
+            "no_context": int(timings.get("no_context", 0) or 0),
+            "no_context_reason": str(timings.get("no_context_reason", "") or ""),
+            "degraded_to_retrieval": bool(degraded_to_retrieval),
+            "degrade_reason": str(degrade_reason or ""),
+        },
+    }
+
+
+def _write_agent_trace_record(record: dict[str, Any]) -> None:
+    if write_trace_record is None:
+        return
+    try:
+        write_trace_record(record)
+    except Exception:
+        pass
 
 
 def _fallback_retrieval_answer(question: str, tool_results: list[ToolExecution], reason: str = "") -> str:
@@ -2219,12 +2626,14 @@ def run_agent_round(
     debug: bool = False,
     request_base_url: str = "",
     benchmark_mode: bool = False,
+    trace_id: str = "",
 ) -> dict[str, Any]:
     import time as _wall_time
     _wall_t0 = _wall_time.perf_counter()
     q = (question or "").strip()
     if not q:
         raise ValueError("question is required")
+    resolved_trace_id = _normalize_trace_id(trace_id)
 
     hist = history or []
     session = None
@@ -2248,9 +2657,12 @@ def run_agent_round(
     normalized_search_mode = _normalize_search_mode(search_mode)
     query_profile = _resolve_query_profile(q)
     quota_state = _load_quota_state()
+    _plan_t0 = _wall_time.perf_counter()
     planned, query_classification = _plan_tool_calls(q, hist, backend, quota_state, normalized_search_mode)
+    _planning_seconds = _wall_time.perf_counter() - _plan_t0
     debug_trace: dict[str, Any] = {
         "timestamp": _now_iso(),
+        "trace_id": resolved_trace_id,
         "session_id": sid,
         "question": q,
         "search_mode": normalized_search_mode,
@@ -2266,6 +2678,7 @@ def run_agent_round(
     if exceeded and not confirm_over_quota and not deny_over_quota:
         return {
             "requires_confirmation": True,
+            "trace_id": resolved_trace_id,
             "session_id": sid,
             "confirmation_message": "已超过今日 API 配额，是否继续调用超额工具？",
             "exceeded": exceeded,
@@ -2288,10 +2701,12 @@ def run_agent_round(
         append_message(sid, "user", q)
 
     tool_results: list[ToolExecution] = []
+    _tool_exec_t0 = _wall_time.perf_counter()
     with ThreadPoolExecutor(max_workers=max(1, len(allowed_plan))) as pool:
-        future_map = {pool.submit(_execute_tool, call, query_profile): call for call in allowed_plan}
+        future_map = {pool.submit(_execute_tool, call, query_profile, resolved_trace_id): call for call in allowed_plan}
         for future in as_completed(future_map):
             tool_results.append(future.result())
+    _tool_execution_seconds = _wall_time.perf_counter() - _tool_exec_t0
 
     # Keep planner order in final report.
     order = {call.name: i for i, call in enumerate(allowed_plan)}
@@ -2316,16 +2731,18 @@ def run_agent_round(
     _doc_no_context = int(_doc_data.get("no_context", 0) or 0)
     _doc_embed_cache_hit = int(_doc_data.get("embed_cache_hit", 0) or 0)
     _doc_query_rewrite_hit = int(_doc_data.get("query_rewrite_hit", 0) or 0)
+    _doc_threshold = float(query_profile.get("doc_score_threshold", DOC_SCORE_THRESHOLD) or DOC_SCORE_THRESHOLD)
 
     # Log no-context queries to shared jsonl file.
-    if _doc_no_context and _log_no_context_query is not None:
+    if _doc_no_context and _log_no_context_query is not None and not benchmark_mode:
         try:
-            _doc_threshold = float(query_profile.get("doc_score_threshold", DOC_SCORE_THRESHOLD) or DOC_SCORE_THRESHOLD)
             _log_no_context_query(
                 q,
                 source="agent",
                 top1_score=float(_doc_top1_score) if _doc_top1_score is not None else None,
                 threshold=_doc_threshold,
+                trace_id=resolved_trace_id,
+                reason="below_threshold",
             )
         except Exception:
             pass
@@ -2355,6 +2772,24 @@ def run_agent_round(
     _rag_used = int(any(call.name == TOOL_QUERY_DOC_RAG for call in allowed_plan))
     _media_used = int(any(call.name == TOOL_QUERY_MEDIA for call in allowed_plan))
     _web_used = int(any(call.name == TOOL_SEARCH_WEB for call in allowed_plan))
+    _agent_no_context, _agent_no_context_reason = _resolve_agent_no_context(
+        str(query_classification.get("query_type", QUERY_TYPE_GENERAL) or QUERY_TYPE_GENERAL),
+        _rag_used,
+        _doc_no_context,
+    )
+
+    if _agent_no_context and not _doc_no_context and _log_no_context_query is not None and not benchmark_mode:
+        try:
+            _log_no_context_query(
+                q,
+                source="agent",
+                top1_score=float(_doc_top1_score) if _doc_top1_score is not None else None,
+                threshold=_doc_threshold,
+                trace_id=resolved_trace_id,
+                reason=_agent_no_context_reason,
+            )
+        except Exception:
+            pass
 
     if skipped_due_quota:
         for tool_name in skipped_due_quota:
@@ -2367,6 +2802,8 @@ def run_agent_round(
     memory_context = "" if benchmark_mode else build_memory_context(sid)
     debug_trace["memory_context"] = memory_context
     debug_trace["memory_tokens_est"] = _approx_tokens(memory_context)
+    _llm_stats: dict[str, Any] = {}
+    _llm_t0 = _wall_time.perf_counter()
     try:
         answer = _summarize_answer(
             question=q,
@@ -2376,7 +2813,9 @@ def run_agent_round(
             backend=backend,
             search_mode=normalized_search_mode,
             quota_state=quota_state,
+            trace_id=resolved_trace_id,
             debug_sink=debug_trace if debug else None,
+            llm_stats_sink=_llm_stats,
         )
     except Exception as exc:  # noqa: BLE001
         # If local model is unavailable, provide a retrieval-only fallback reply.
@@ -2384,8 +2823,10 @@ def run_agent_round(
             degraded_to_retrieval = True
             degrade_reason = str(exc)
             answer = _fallback_retrieval_answer(q, tool_results, reason=degrade_reason)
+            _llm_stats["output_tokens_est"] = _approx_tokens(answer)
         else:
             raise
+    _llm_seconds = _wall_time.perf_counter() - _llm_t0
 
     references_md = _build_references_markdown(tool_results, request_base_url=request_base_url)
     final_answer = answer
@@ -2393,7 +2834,7 @@ def run_agent_round(
         final_answer = f"{answer}{references_md}"
 
     if not benchmark_mode:
-        append_message(sid, "assistant", final_answer)
+        append_message(sid, "assistant", final_answer, trace_id=resolved_trace_id)
         _update_memory_for_session(sid)
     if debug:
         debug_trace["final_answer_tokens_est"] = _approx_tokens(final_answer)
@@ -2409,7 +2850,10 @@ def run_agent_round(
                 rag_used=_rag_used,
                 media_used=_media_used,
                 web_used=_web_used,
-                no_context=_doc_no_context,
+                no_context=_agent_no_context,
+                no_context_reason=_agent_no_context_reason,
+                trace_id=resolved_trace_id,
+                doc_score_threshold=_doc_threshold,
                 doc_top1_score=float(_doc_top1_score) if _doc_top1_score is not None else None,
                 doc_top1_score_before_rerank=float(_doc_top1_score_before_rerank) if _doc_top1_score_before_rerank is not None else None,
                 doc_top1_identity_changed=int(_doc_top1_identity_changed) if _doc_top1_identity_changed is not None else None,
@@ -2423,8 +2867,39 @@ def run_agent_round(
         except Exception:
             pass
 
+    _write_agent_trace_record(
+        _build_agent_trace_record(
+            trace_id=resolved_trace_id,
+            session_id=sid,
+            backend=backend,
+            search_mode=normalized_search_mode,
+            benchmark_mode=benchmark_mode,
+            stream_mode=False,
+            query_profile=query_profile,
+            query_classification=query_classification,
+            planned_tools=planned,
+            tool_results=tool_results,
+            doc_data=_doc_data,
+            timings={
+                "vector_recall_seconds": _doc_vector_recall_s,
+                "rerank_seconds": _doc_rerank_s,
+                "no_context": _agent_no_context,
+                "no_context_reason": _agent_no_context_reason,
+                "doc_score_threshold": _doc_threshold,
+            },
+            llm_stats=_llm_stats,
+            degraded_to_retrieval=degraded_to_retrieval,
+            degrade_reason=degrade_reason,
+            wall_clock_seconds=_wall_time.perf_counter() - _wall_t0,
+            planning_seconds=_planning_seconds,
+            tool_execution_seconds=_tool_execution_seconds,
+            llm_seconds=_llm_seconds,
+        )
+    )
+
     return {
         "requires_confirmation": False,
+        "trace_id": resolved_trace_id,
         "session_id": sid,
         "answer": final_answer,
         "backend": backend,
@@ -2442,7 +2917,9 @@ def run_agent_round(
         "timings": {
             "vector_recall_seconds": _doc_vector_recall_s,
             "rerank_seconds": _doc_rerank_s,
-            "no_context": _doc_no_context,
+            "no_context": _agent_no_context,
+            "no_context_reason": _agent_no_context_reason,
+            "doc_score_threshold": _doc_threshold,
             "web_cache_hit": _web_cache_hit,
         },
         "quota": {
@@ -2467,6 +2944,7 @@ def run_agent_round_stream(
     debug: bool = False,
     request_base_url: str = "",
     benchmark_mode: bool = False,
+    trace_id: str = "",
 ) -> Iterator[dict[str, Any]]:
     """Streaming variant of run_agent_round — yields SSE-ready dicts.
 
@@ -2485,6 +2963,7 @@ def run_agent_round_stream(
         if not q:
             yield {"type": "error", "message": "question is required"}
             return
+        resolved_trace_id = _normalize_trace_id(trace_id)
 
         hist = history or []
         session = None
@@ -2510,12 +2989,15 @@ def run_agent_round_stream(
         query_profile = _resolve_query_profile(q)
         quota_state = _load_quota_state()
 
-        yield {"type": "progress", "message": "正在规划工具调用..."}
+        yield {"type": "progress", "trace_id": resolved_trace_id, "message": "正在规划工具调用..."}
 
+        _plan_t0 = _wall_time.perf_counter()
         planned, query_classification = _plan_tool_calls(q, hist, backend, quota_state, normalized_search_mode)
+        _planning_seconds = _wall_time.perf_counter() - _plan_t0
 
         debug_trace: dict[str, Any] = {
             "timestamp": _now_iso(),
+            "trace_id": resolved_trace_id,
             "session_id": sid,
             "question": q,
             "search_mode": normalized_search_mode,
@@ -2527,12 +3009,13 @@ def run_agent_round_stream(
             "reranker": {"status": "not_applicable"},
         }
 
-        yield {"type": "progress", "message": f"查询分类：{query_classification.get('query_type', QUERY_TYPE_GENERAL)}"}
+        yield {"type": "progress", "trace_id": resolved_trace_id, "message": f"查询分类：{query_classification.get('query_type', QUERY_TYPE_GENERAL)}"}
 
         exceeded = _quota_exceeded(planned, backend, quota_state)
         if exceeded and not confirm_over_quota and not deny_over_quota:
             yield {
                 "type": "quota_exceeded",
+                "trace_id": resolved_trace_id,
                 "session_id": sid,
                 "message": "已超过今日 API 配额，是否继续调用超额工具？",
                 "exceeded": exceeded,
@@ -2553,25 +3036,28 @@ def run_agent_round_stream(
             allowed_plan = list(planned)
 
         tool_names_str = "、".join(c.name for c in allowed_plan) if allowed_plan else "无"
-        yield {"type": "progress", "message": f"计划调用工具：{tool_names_str}"}
+        yield {"type": "progress", "trace_id": resolved_trace_id, "message": f"计划调用工具：{tool_names_str}"}
 
         if not benchmark_mode:
             append_message(sid, "user", q)
 
-        yield {"type": "progress", "message": f"正在并行执行 {len(allowed_plan)} 个工具..."}
+        yield {"type": "progress", "trace_id": resolved_trace_id, "message": f"正在并行执行 {len(allowed_plan)} 个工具..."}
 
         tool_results: list[ToolExecution] = []
+        _tool_exec_t0 = _wall_time.perf_counter()
         with ThreadPoolExecutor(max_workers=max(1, len(allowed_plan))) as pool:
-            future_map = {pool.submit(_execute_tool, call, query_profile): call for call in allowed_plan}
+            future_map = {pool.submit(_execute_tool, call, query_profile, resolved_trace_id): call for call in allowed_plan}
             for future in as_completed(future_map):
                 result = future.result()
                 tool_results.append(result)
                 yield {
                     "type": "tool_done",
+                    "trace_id": resolved_trace_id,
                     "tool": result.tool,
                     "status": result.status,
                     "summary": result.summary,
                 }
+        _tool_execution_seconds = _wall_time.perf_counter() - _tool_exec_t0
 
         # Keep planner order in final report.
         order = {call.name: i for i, call in enumerate(allowed_plan)}
@@ -2595,15 +3081,17 @@ def run_agent_round_stream(
         _doc_no_context = int(_doc_data.get("no_context", 0) or 0)
         _doc_embed_cache_hit = int(_doc_data.get("embed_cache_hit", 0) or 0)
         _doc_query_rewrite_hit = int(_doc_data.get("query_rewrite_hit", 0) or 0)
+        _doc_threshold = float(query_profile.get("doc_score_threshold", DOC_SCORE_THRESHOLD) or DOC_SCORE_THRESHOLD)
 
-        if _doc_no_context and _log_no_context_query is not None:
+        if _doc_no_context and _log_no_context_query is not None and not benchmark_mode:
             try:
-                _doc_threshold = float(query_profile.get("doc_score_threshold", DOC_SCORE_THRESHOLD) or DOC_SCORE_THRESHOLD)
                 _log_no_context_query(
                     q,
                     source="agent",
                     top1_score=float(_doc_top1_score) if _doc_top1_score is not None else None,
                     threshold=_doc_threshold,
+                    trace_id=resolved_trace_id,
+                    reason="below_threshold",
                 )
             except Exception:
                 pass
@@ -2631,6 +3119,24 @@ def run_agent_round_stream(
         _rag_used = int(any(call.name == TOOL_QUERY_DOC_RAG for call in allowed_plan))
         _media_used = int(any(call.name == TOOL_QUERY_MEDIA for call in allowed_plan))
         _web_used = int(any(call.name == TOOL_SEARCH_WEB for call in allowed_plan))
+        _agent_no_context, _agent_no_context_reason = _resolve_agent_no_context(
+            str(query_classification.get("query_type", QUERY_TYPE_GENERAL) or QUERY_TYPE_GENERAL),
+            _rag_used,
+            _doc_no_context,
+        )
+
+        if _agent_no_context and not _doc_no_context and _log_no_context_query is not None and not benchmark_mode:
+            try:
+                _log_no_context_query(
+                    q,
+                    source="agent",
+                    top1_score=float(_doc_top1_score) if _doc_top1_score is not None else None,
+                    threshold=_doc_threshold,
+                    trace_id=resolved_trace_id,
+                    reason=_agent_no_context_reason,
+                )
+            except Exception:
+                pass
 
         if skipped_due_quota:
             for tool_name in skipped_due_quota:
@@ -2638,13 +3144,15 @@ def run_agent_round_stream(
                     ToolExecution(tool=tool_name, status="skipped", summary="超过每日配额且已拒绝调用", data={"results": []})
                 )
 
-        yield {"type": "progress", "message": "工具执行完毕，正在生成回答..."}
+        yield {"type": "progress", "trace_id": resolved_trace_id, "message": "工具执行完毕，正在生成回答..."}
 
         degraded_to_retrieval = False
         degrade_reason = ""
         memory_context = "" if benchmark_mode else build_memory_context(sid)
         debug_trace["memory_context"] = memory_context
         debug_trace["memory_tokens_est"] = _approx_tokens(memory_context)
+        _llm_stats: dict[str, Any] = {}
+        _llm_t0 = _wall_time.perf_counter()
         try:
             answer = _summarize_answer(
                 question=q,
@@ -2654,15 +3162,19 @@ def run_agent_round_stream(
                 backend=backend,
                 search_mode=normalized_search_mode,
                 quota_state=quota_state,
+                trace_id=resolved_trace_id,
                 debug_sink=debug_trace if debug else None,
+                llm_stats_sink=_llm_stats,
             )
         except Exception as exc:  # noqa: BLE001
             if (backend or "local").strip().lower() == "local":
                 degraded_to_retrieval = True
                 degrade_reason = str(exc)
                 answer = _fallback_retrieval_answer(q, tool_results, reason=degrade_reason)
+                _llm_stats["output_tokens_est"] = _approx_tokens(answer)
             else:
                 raise
+        _llm_seconds = _wall_time.perf_counter() - _llm_t0
 
         references_md = _build_references_markdown(tool_results, request_base_url=request_base_url)
         final_answer = answer
@@ -2670,7 +3182,7 @@ def run_agent_round_stream(
             final_answer = f"{answer}{references_md}"
 
         if not benchmark_mode:
-            append_message(sid, "assistant", final_answer)
+            append_message(sid, "assistant", final_answer, trace_id=resolved_trace_id)
             _update_memory_for_session(sid)
         if debug:
             debug_trace["final_answer_tokens_est"] = _approx_tokens(final_answer)
@@ -2685,7 +3197,10 @@ def run_agent_round_stream(
                     rag_used=_rag_used,
                     media_used=_media_used,
                     web_used=_web_used,
-                    no_context=_doc_no_context,
+                    no_context=_agent_no_context,
+                    no_context_reason=_agent_no_context_reason,
+                    trace_id=resolved_trace_id,
+                    doc_score_threshold=_doc_threshold,
                     doc_top1_score=float(_doc_top1_score) if _doc_top1_score is not None else None,
                     doc_top1_score_before_rerank=float(_doc_top1_score_before_rerank) if _doc_top1_score_before_rerank is not None else None,
                     doc_top1_identity_changed=int(_doc_top1_identity_changed) if _doc_top1_identity_changed is not None else None,
@@ -2699,10 +3214,42 @@ def run_agent_round_stream(
             except Exception:
                 pass
 
+        _write_agent_trace_record(
+            _build_agent_trace_record(
+                trace_id=resolved_trace_id,
+                session_id=sid,
+                backend=backend,
+                search_mode=normalized_search_mode,
+                benchmark_mode=benchmark_mode,
+                stream_mode=True,
+                query_profile=query_profile,
+                query_classification=query_classification,
+                planned_tools=planned,
+                tool_results=tool_results,
+                doc_data=_doc_data,
+                timings={
+                    "vector_recall_seconds": _doc_vector_recall_s,
+                    "rerank_seconds": _doc_rerank_s,
+                    "no_context": _agent_no_context,
+                    "no_context_reason": _agent_no_context_reason,
+                    "doc_score_threshold": _doc_threshold,
+                },
+                llm_stats=_llm_stats,
+                degraded_to_retrieval=degraded_to_retrieval,
+                degrade_reason=degrade_reason,
+                wall_clock_seconds=_wall_time.perf_counter() - _wall_t0,
+                planning_seconds=_planning_seconds,
+                tool_execution_seconds=_tool_execution_seconds,
+                llm_seconds=_llm_seconds,
+            )
+        )
+
         yield {
             "type": "done",
+            "trace_id": resolved_trace_id,
             "payload": {
                 "requires_confirmation": False,
+                "trace_id": resolved_trace_id,
                 "session_id": sid,
                 "answer": final_answer,
                 "backend": backend,
@@ -2720,7 +3267,9 @@ def run_agent_round_stream(
                 "timings": {
                     "vector_recall_seconds": _doc_vector_recall_s,
                     "rerank_seconds": _doc_rerank_s,
-                    "no_context": _doc_no_context,
+                    "no_context": _agent_no_context,
+                    "no_context_reason": _agent_no_context_reason,
+                    "doc_score_threshold": _doc_threshold,
                     "web_cache_hit": _web_cache_hit,
                 },
                 "quota": {
@@ -2734,4 +3283,4 @@ def run_agent_round_stream(
         }
 
     except Exception as exc:  # noqa: BLE001
-        yield {"type": "error", "message": str(exc)}
+        yield {"type": "error", "trace_id": locals().get("resolved_trace_id", _normalize_trace_id(trace_id)), "message": str(exc)}
