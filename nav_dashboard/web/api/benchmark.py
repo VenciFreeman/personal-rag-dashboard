@@ -5,7 +5,7 @@
   POST /api/benchmark/run      — 运行基准测试，通过 SSE（Server-Sent Events）实时推送进度
                                   请求体：{ modules, query_count, run_id }
   DELETE /api/benchmark/run    — 中止当前进行中的测试（通过 run_id 标记取消标志位）
-  GET  /api/benchmark/history  — 获取最近 N 次测试结果（存储于 data/benchmark_results.json）
+    GET  /api/benchmark/history  — 获取最近 N 次测试结果（存储于 data/benchmark/results.json）
   DELETE /api/benchmark/history — 清空历史
 
 测试流程：
@@ -35,13 +35,14 @@ from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, Field
 
 from web.config import AI_SUMMARY_URL_OVERRIDE
+from web.services import dashboard_jobs
 
 router = APIRouter(prefix="/api/benchmark", tags=["benchmark"])
 
 APP_DIR = Path(__file__).resolve().parent.parent  # nav_dashboard/web/
 # Store benchmark data in its own subfolder, fully isolated from dashboard data
 BENCHMARK_FILE = APP_DIR.parent / "data" / "benchmark" / "results.json"
-BENCHMARK_HISTORY_MAX = 5
+BENCHMARK_HISTORY_MAX = 4
 
 # ─── Query pools (20 per length) ─────────────────────────────────────────────
 
@@ -120,6 +121,55 @@ QUERY_POOL: dict[str, list[str]] = {
     "long": LONG_QUERIES,
 }
 
+QUERY_CASE_SETS: dict[str, dict[str, list[str]]] = {
+    "smoke_v1": {
+        "short": SHORT_QUERIES[:10],
+        "medium": MEDIUM_QUERIES[:10],
+        "long": LONG_QUERIES[:10],
+    },
+    "regression_v1": QUERY_POOL,
+}
+
+CASE_SET_LABELS: dict[str, str] = {
+    "smoke_v1": "快速烟测样本池",
+    "regression_v1": "基线回归样本池",
+}
+
+CHAIN_SPECS: dict[str, dict[str, str]] = {
+    "rag": {"label": "RAG Q&A", "family": "rag", "search_mode": "local_only"},
+    "agent": {"label": "LLM Agent", "family": "agent", "search_mode": "local_only"},
+    "hybrid": {"label": "混合路由 Agent", "family": "agent", "search_mode": "hybrid"},
+}
+
+DEFAULT_ASSERTION_LIMITS: dict[str, dict[str, Any]] = {
+    "rag": {
+        "max_no_context_rate": 0.35,
+        "max_p95_wall_clock_s": {"short": 40.0, "medium": 45.0, "long": 50.0, "global": 50.0},
+        "max_p95_elapsed_s": {"short": 40.0, "medium": 45.0, "long": 50.0, "global": 50.0},
+    },
+    "agent": {
+        "max_no_context_rate": 0.45,
+        "max_p95_wall_clock_s": {"short": 45.0, "medium": 50.0, "long": 60.0, "global": 60.0},
+        "max_p95_elapsed_s": {"short": 45.0, "medium": 50.0, "long": 60.0, "global": 60.0},
+    },
+    "hybrid": {
+        "max_no_context_rate": 0.45,
+        "max_p95_wall_clock_s": {"short": 70.0, "medium": 80.0, "long": 95.0, "global": 95.0},
+        "max_p95_elapsed_s": {"short": 70.0, "medium": 80.0, "long": 95.0, "global": 95.0},
+    },
+}
+
+ASSERTION_LIMIT_OVERRIDES_BY_CASE_SET: dict[str, dict[str, dict[str, Any]]] = {
+    "regression_v1": {
+        # Full regression pool includes materially heavier prompts than the first 3-item subset
+        # used during early tuning, so its p95 tail needs its own baseline.
+        "rag": {
+            "max_p95_wall_clock_s": {"short": 55.0, "medium": 60.0, "long": 75.0, "global": 75.0},
+            "max_p95_elapsed_s": {"short": 55.0, "medium": 60.0, "long": 75.0, "global": 75.0},
+        },
+    },
+}
+
 # ─── URL resolution ───────────────────────────────────────────────────────────
 
 def _ai_summary_base() -> str:
@@ -174,12 +224,12 @@ def _run_rag_query(ai_base: str, question: str) -> dict[str, Any]:
     return {"wall_clock_s": wall_clock, "elapsed_s": elapsed, "error": error, "timings": timings, "no_context": no_context}
 
 
-def _run_agent_query(self_base: str, question: str) -> dict[str, Any]:
+def _run_agent_query(self_base: str, question: str, *, search_mode: str) -> dict[str, Any]:
     url = f"{self_base}/api/agent/chat"
     t0 = time.perf_counter()
     resp = _post_json(
         url,
-        {"question": question, "backend": "local", "search_mode": "local_only", "deny_over_quota": True, "benchmark_mode": True},
+        {"question": question, "backend": "local", "search_mode": search_mode, "deny_over_quota": True, "benchmark_mode": True},
         timeout=240,
     )
     wall_clock = round(time.perf_counter() - t0, 3)
@@ -188,10 +238,112 @@ def _run_agent_query(self_base: str, question: str) -> dict[str, Any]:
     no_context = int(timings.get("no_context", 0) or 0)
     return {
         "wall_clock_s": wall_clock,
+        "elapsed_s": wall_clock,
         "error": error,
         "timings": timings,
         "no_context": no_context,
     }
+
+
+def _resolve_case_queries(case_set_id: str, length: str, query_count: int) -> list[str]:
+    case_set = QUERY_CASE_SETS.get(case_set_id) or QUERY_CASE_SETS["regression_v1"]
+    pool = list(case_set.get(length) or QUERY_POOL.get(length) or [])
+    return pool[: min(query_count, len(pool))]
+
+
+def _resolve_assertion_limits(chain: str, case_set_id: str) -> dict[str, Any]:
+    base = dict(DEFAULT_ASSERTION_LIMITS.get(chain, DEFAULT_ASSERTION_LIMITS["agent"]))
+    override = (
+        ASSERTION_LIMIT_OVERRIDES_BY_CASE_SET.get(case_set_id, {}).get(chain, {})
+        if case_set_id
+        else {}
+    )
+    for key, value in override.items():
+        if isinstance(value, dict) and isinstance(base.get(key), dict):
+            merged = dict(base.get(key) or {})
+            merged.update(value)
+            base[key] = merged
+        else:
+            base[key] = value
+    return base
+
+
+def _evaluate_assertions(chain: str, length: str, aggregate: dict[str, Any], case_set_id: str = "") -> dict[str, Any]:
+    limits = _resolve_assertion_limits(chain, case_set_id)
+    checks: list[dict[str, Any]] = []
+    errors = int(aggregate.get("errors", 0) or 0)
+    count = int(aggregate.get("count", 0) or 0)
+    checks.append({
+        "name": "errors",
+        "actual": errors,
+        "expected": "0",
+        "passed": errors == 0,
+    })
+    if count > 0:
+        no_context_rate = float(aggregate.get("no_context_rate", 0) or 0)
+        max_no_context = float(limits.get("max_no_context_rate", 1.0) or 1.0)
+        checks.append({
+            "name": "no_context_rate",
+            "actual": round(no_context_rate, 4),
+            "expected": f"<= {max_no_context}",
+            "passed": no_context_rate <= max_no_context,
+        })
+        p95_wall = float(aggregate.get("p95_wall_clock_s", 0) or 0)
+        wall_limit = float((limits.get("max_p95_wall_clock_s", {}) or {}).get(length, 999999))
+        checks.append({
+            "name": "p95_wall_clock_s",
+            "actual": round(p95_wall, 4),
+            "expected": f"<= {wall_limit}",
+            "passed": p95_wall <= wall_limit,
+        })
+        p95_elapsed = float(aggregate.get("p95_elapsed_s", aggregate.get("p95_wall_clock_s", 0)) or 0)
+        elapsed_limit = float((limits.get("max_p95_elapsed_s", {}) or {}).get(length, 999999))
+        checks.append({
+            "name": "p95_elapsed_s",
+            "actual": round(p95_elapsed, 4),
+            "expected": f"<= {elapsed_limit}",
+            "passed": p95_elapsed <= elapsed_limit,
+        })
+    passed = all(bool(item.get("passed")) for item in checks)
+    return {"passed": passed, "checks": checks}
+
+
+def _attach_assertions(result: dict[str, Any], chains: list[str]) -> dict[str, Any]:
+    assertions: dict[str, Any] = {}
+    summary = {"passed": 0, "failed": 0}
+    config = result.get("config") if isinstance(result.get("config"), dict) else {}
+    case_set_id = str(config.get("case_set_id") or "").strip()
+    for chain in chains:
+        chain_payload = result.get(chain) if isinstance(result.get(chain), dict) else {}
+        if not isinstance(chain_payload, dict):
+            continue
+        by_length = chain_payload.get("by_length") if isinstance(chain_payload.get("by_length"), dict) else {}
+        chain_assertions = {
+            "by_length": {},
+            "global": _evaluate_assertions(
+                chain,
+                "global",
+                chain_payload.get("global") if isinstance(chain_payload.get("global"), dict) else {},
+                case_set_id=case_set_id,
+            ),
+        }
+        for length, aggregate in by_length.items():
+            if isinstance(aggregate, dict):
+                chain_assertions["by_length"][length] = _evaluate_assertions(
+                    chain,
+                    str(length),
+                    aggregate,
+                    case_set_id=case_set_id,
+                )
+        for value in list(chain_assertions["by_length"].values()) + [chain_assertions["global"]]:
+            if value.get("passed"):
+                summary["passed"] += 1
+            else:
+                summary["failed"] += 1
+        assertions[chain] = chain_assertions
+    result["assertions"] = assertions
+    result["assertion_summary"] = summary
+    return result
 
 
 # ─── Aggregation ──────────────────────────────────────────────────────────────
@@ -223,6 +375,9 @@ def _aggregate(records: list[dict[str, Any]]) -> dict[str, Any]:
     if any("elapsed_s" in r for r in valid):
         vals = [float(r.get("elapsed_s") or 0) for r in valid]
         out["avg_elapsed_s"] = round(sum(vals) / n, 3)
+        out["p50_elapsed_s"] = round(_percentile(vals, 50), 3)
+        out["p95_elapsed_s"] = round(_percentile(vals, 95), 3)
+        out["p99_elapsed_s"] = round(_percentile(vals, 99), 3)
 
     # No-context rate
     no_ctx = sum(1 for r in valid if int(r.get("no_context", 0) or 0))
@@ -245,13 +400,13 @@ def _aggregate(records: list[dict[str, Any]]) -> dict[str, Any]:
             vals_by_stage.setdefault(k, []).append(fv)
     for k, s in sums.items():
         c = cnts[k]
-        out[f"avg_{k}_s"] = round(s / c, 3) if c else 0.0
+        out[f"avg_{k}_s"] = round(s / c, 4) if c else 0.0
     # Percentiles for key timing stages
     for k, vlist in vals_by_stage.items():
         if len(vlist) >= 1:
-            out[f"p50_{k}_s"] = round(_percentile(vlist, 50), 3)
-            out[f"p95_{k}_s"] = round(_percentile(vlist, 95), 3)
-            out[f"p99_{k}_s"] = round(_percentile(vlist, 99), 3)
+            out[f"p50_{k}_s"] = round(_percentile(vlist, 50), 4)
+            out[f"p95_{k}_s"] = round(_percentile(vlist, 95), 4)
+            out[f"p99_{k}_s"] = round(_percentile(vlist, 99), 4)
     return out
 
 
@@ -262,7 +417,15 @@ def _load_history() -> list[dict[str, Any]]:
         return []
     try:
         raw = json.loads(BENCHMARK_FILE.read_text(encoding="utf-8"))
-        return list(raw.get("results", [])) if isinstance(raw, dict) else []
+        results = list(raw.get("results", [])) if isinstance(raw, dict) else []
+        normalized: list[dict[str, Any]] = []
+        for item in results[-BENCHMARK_HISTORY_MAX:]:
+            if not isinstance(item, dict):
+                continue
+            config = item.get("config") if isinstance(item.get("config"), dict) else {}
+            modules = [m for m in config.get("modules", []) if m in ("rag", "agent", "hybrid")]
+            normalized.append(_attach_assertions(item, modules) if modules else item)
+        return normalized
     except Exception:
         return []
 
@@ -279,20 +442,51 @@ def _save_result(result: dict[str, Any]) -> None:
 
 # ─── Benchmark generator (SSE source) ────────────────────────────────────────
 
-def _run_benchmark(modules: list[str], query_count: int, ai_base: str, self_base: str):
+def _build_result(chains: list[str], query_count: int, case_set_id: str, cases_by_length: dict[str, list[str]], rag_recs: dict[str, list[dict[str, Any]]], chain_records: dict[str, dict[str, list[dict[str, Any]]]]) -> dict[str, Any]:
     lengths = ["short", "medium", "long"]
-    total = len(modules) * 3 * query_count
+    result: dict[str, Any] = {
+        "id": str(uuid4())[:8],
+        "timestamp": datetime.now().isoformat(timespec="seconds"),
+        "config": {"modules": chains, "query_count_per_type": query_count, "case_set_id": case_set_id},
+        "cases": {length: list(cases_by_length.get(length) or []) for length in lengths},
+    }
+    if "rag" in chains:
+        all_rag = [r for length in lengths for r in rag_recs[length]]
+        result["rag"] = {
+            "by_length": {length: _aggregate(rag_recs[length]) for length in lengths},
+            "global": _aggregate(all_rag),
+        }
+    for chain in ("agent", "hybrid"):
+        if chain not in chains:
+            continue
+        per_length = chain_records.get(chain, {})
+        all_rows = [r for length in lengths for r in per_length.get(length, [])]
+        result[chain] = {
+            "by_length": {length: _aggregate(per_length.get(length, [])) for length in lengths},
+            "global": _aggregate(all_rows),
+        }
+    return _attach_assertions(result, chains)
+
+
+def _run_benchmark(chains: list[str], query_count: int, ai_base: str, self_base: str, case_set_id: str):
+    lengths = ["short", "medium", "long"]
+    total = len(chains) * 3 * query_count
     done = 0
     rag_recs: dict[str, list[dict[str, Any]]] = {l: [] for l in lengths}
-    agent_recs: dict[str, list[dict[str, Any]]] = {l: [] for l in lengths}
+    chain_records: dict[str, dict[str, list[dict[str, Any]]]] = {
+        chain: {length: [] for length in lengths}
+        for chain in chains
+        if chain in {"agent", "hybrid"}
+    }
+    cases_by_length: dict[str, list[str]] = {}
 
     yield {"type": "progress", "message": f"准备运行 {total} 项测试...", "current": 0, "total": total}
 
     for length in lengths:
-        pool = QUERY_POOL[length]
-        queries = pool[: min(query_count, len(pool))]
+        queries = _resolve_case_queries(case_set_id, length, query_count)
+        cases_by_length[length] = list(queries)
 
-        if "rag" in modules:
+        if "rag" in chains:
             for i, q in enumerate(queries):
                 label = q[:22] + ("..." if len(q) > 22 else "")
                 yield {
@@ -305,39 +499,72 @@ def _run_benchmark(modules: list[str], query_count: int, ai_base: str, self_base
                 rag_recs[length].append(rec)
                 done += 1
 
-        if "agent" in modules:
+        for chain in [c for c in chains if c in {"agent", "hybrid"}]:
+            chain_label = CHAIN_SPECS.get(chain, {}).get("label", chain)
+            search_mode = CHAIN_SPECS.get(chain, {}).get("search_mode", "local_only")
             for i, q in enumerate(queries):
                 label = q[:22] + ("..." if len(q) > 22 else "")
                 yield {
                     "type": "progress",
-                    "message": f"[Agent / {length}] {i + 1}/{len(queries)}: {label}",
+                    "message": f"[{chain_label} / {length}] {i + 1}/{len(queries)}: {label}",
                     "current": done,
                     "total": total,
                 }
-                rec = _run_agent_query(self_base, q)
-                agent_recs[length].append(rec)
+                rec = _run_agent_query(self_base, q, search_mode=search_mode)
+                chain_records.setdefault(chain, {}).setdefault(length, []).append(rec)
                 done += 1
 
-    result: dict[str, Any] = {
-        "id": str(uuid4())[:8],
-        "timestamp": datetime.now().isoformat(timespec="seconds"),
-        "config": {"modules": modules, "query_count_per_type": query_count},
-    }
-    if "rag" in modules:
-        all_rag = [r for l in lengths for r in rag_recs[l]]
-        result["rag"] = {
-            "by_length": {l: _aggregate(rag_recs[l]) for l in lengths},
-            "global": _aggregate(all_rag),
-        }
-    if "agent" in modules:
-        all_agent = [r for l in lengths for r in agent_recs[l]]
-        result["agent"] = {
-            "by_length": {l: _aggregate(agent_recs[l]) for l in lengths},
-            "global": _aggregate(all_agent),
-        }
+    result = _build_result(chains, query_count, case_set_id, cases_by_length, rag_recs, chain_records)
 
     _save_result(result)
     yield {"type": "result", "data": result, "current": total, "total": total}
+
+
+def _run_benchmark_job(chains: list[str], query_count: int, ai_base: str, self_base: str, case_set_id: str, report_progress, is_cancelled) -> dict[str, Any]:
+    lengths = ["short", "medium", "long"]
+    total = len(chains) * 3 * query_count
+    done = 0
+    rag_recs: dict[str, list[dict[str, Any]]] = {l: [] for l in lengths}
+    chain_records: dict[str, dict[str, list[dict[str, Any]]]] = {
+        chain: {length: [] for length in lengths}
+        for chain in chains
+        if chain in {"agent", "hybrid"}
+    }
+    cases_by_length: dict[str, list[str]] = {}
+    report_progress(message=f"准备运行 {total} 项测试...", current=0, total=total, log=f"准备运行 {total} 项测试")
+
+    for length in lengths:
+        queries = _resolve_case_queries(case_set_id, length, query_count)
+        cases_by_length[length] = list(queries)
+
+        if "rag" in chains:
+            for i, q in enumerate(queries):
+                if is_cancelled():
+                    report_progress(message="Benchmark 已取消", log="Benchmark 已取消")
+                    return {"cancelled": True}
+                label = q[:22] + ("..." if len(q) > 22 else "")
+                message = f"[RAG / {length}] {i + 1}/{len(queries)}: {label}"
+                report_progress(message=message, current=done, total=total, log=message)
+                rag_recs[length].append(_run_rag_query(ai_base, q))
+                done += 1
+
+        for chain in [c for c in chains if c in {"agent", "hybrid"}]:
+            chain_label = CHAIN_SPECS.get(chain, {}).get("label", chain)
+            search_mode = CHAIN_SPECS.get(chain, {}).get("search_mode", "local_only")
+            for i, q in enumerate(queries):
+                if is_cancelled():
+                    report_progress(message="Benchmark 已取消", log="Benchmark 已取消")
+                    return {"cancelled": True}
+                label = q[:22] + ("..." if len(q) > 22 else "")
+                message = f"[{chain_label} / {length}] {i + 1}/{len(queries)}: {label}"
+                report_progress(message=message, current=done, total=total, log=message)
+                chain_records.setdefault(chain, {}).setdefault(length, []).append(_run_agent_query(self_base, q, search_mode=search_mode))
+                done += 1
+
+    result = _build_result(chains, query_count, case_set_id, cases_by_length, rag_recs, chain_records)
+    _save_result(result)
+    report_progress(message="Benchmark 完成", current=total, total=total, result=result, log="Benchmark 完成")
+    return result
 
 
 # ─── Pydantic models ──────────────────────────────────────────────────────────
@@ -345,22 +572,26 @@ def _run_benchmark(modules: list[str], query_count: int, ai_base: str, self_base
 class RunPayload(BaseModel):
     modules: list[str] = Field(default_factory=lambda: ["rag"])
     query_count_per_type: int = Field(default=3, ge=1, le=20)
+    case_set_id: str = Field(default="regression_v1")
 
 
 # ─── Endpoints ────────────────────────────────────────────────────────────────
 
 @router.post("/run")
 def post_run(payload: RunPayload, request: Request) -> StreamingResponse:
-    modules = [m for m in payload.modules if m in ("rag", "agent")]
+    modules = [m for m in payload.modules if m in ("rag", "agent", "hybrid")]
     if not modules:
-        raise HTTPException(status_code=400, detail="请至少选择一个测试模块（rag 或 agent）")
+        raise HTTPException(status_code=400, detail="请至少选择一个测试模块（rag、agent 或 hybrid）")
     query_count = max(1, min(20, payload.query_count_per_type))
+    case_set_id = str(payload.case_set_id or "regression_v1").strip() or "regression_v1"
+    if case_set_id not in QUERY_CASE_SETS:
+        raise HTTPException(status_code=400, detail="未知回归测试集")
     ai_base = _ai_summary_base()
     self_base = str(request.base_url).rstrip("/")
 
     def event_stream():
         try:
-            for event in _run_benchmark(modules, query_count, ai_base, self_base):
+            for event in _run_benchmark(modules, query_count, ai_base, self_base, case_set_id):
                 yield f"data: {json.dumps(event, ensure_ascii=False)}\n\n"
         except Exception as exc:
             yield f"data: {json.dumps({'type': 'error', 'message': str(exc)}, ensure_ascii=False)}\n\n"
@@ -375,6 +606,58 @@ def post_run(payload: RunPayload, request: Request) -> StreamingResponse:
 @router.get("/history")
 def get_history() -> dict[str, Any]:
     return {"results": _load_history()}
+
+
+@router.get("/cases")
+def get_benchmark_case_sets() -> dict[str, Any]:
+    return {
+        "case_sets": [
+            {
+                "id": case_id,
+                "label": CASE_SET_LABELS.get(case_id, case_id),
+                "lengths": {length: len(queries) for length, queries in lengths.items()},
+                "max_query_count_per_type": min((len(queries) for queries in lengths.values()), default=0),
+            }
+            for case_id, lengths in QUERY_CASE_SETS.items()
+        ],
+        "chains": [{"id": chain, **spec} for chain, spec in CHAIN_SPECS.items()],
+    }
+
+
+@router.post("/jobs")
+def create_benchmark_job(payload: RunPayload, request: Request) -> dict[str, Any]:
+    modules = [m for m in payload.modules if m in ("rag", "agent", "hybrid")]
+    if not modules:
+        raise HTTPException(status_code=400, detail="请至少选择一个测试模块（rag、agent 或 hybrid）")
+    query_count = max(1, min(20, payload.query_count_per_type))
+    case_set_id = str(payload.case_set_id or "regression_v1").strip() or "regression_v1"
+    if case_set_id not in QUERY_CASE_SETS:
+        raise HTTPException(status_code=400, detail="未知回归测试集")
+    ai_base = _ai_summary_base()
+    self_base = str(request.base_url).rstrip("/")
+    job = dashboard_jobs.create_job(
+        job_type="benchmark",
+        label="性能基准测试",
+        metadata={"modules": modules, "query_count_per_type": query_count, "case_set_id": case_set_id},
+        target=lambda report_progress, is_cancelled: _run_benchmark_job(modules, query_count, ai_base, self_base, case_set_id, report_progress, is_cancelled),
+    )
+    return {"ok": True, "job": job}
+
+
+@router.get("/jobs/{job_id}")
+def get_benchmark_job(job_id: str) -> dict[str, Any]:
+    job = dashboard_jobs.get_job(job_id)
+    if not job or job.get("type") != "benchmark":
+        raise HTTPException(status_code=404, detail="Job not found")
+    return {"ok": True, "job": job}
+
+
+@router.post("/jobs/{job_id}/cancel")
+def cancel_benchmark_job(job_id: str) -> dict[str, Any]:
+    job = dashboard_jobs.request_cancel(job_id)
+    if not job or job.get("type") != "benchmark":
+        raise HTTPException(status_code=404, detail="Job not found")
+    return {"ok": True, "job": job}
 
 
 @router.delete("/history")

@@ -122,6 +122,34 @@
           </table>
         </div>
 
+        <div class="stats-table-wrap dashboard-table-wrap">
+          <table class="stats-table" id="dashboard-observability-table">
+            <tbody>
+              <tr>
+                <td>分层观测</td>
+                <td>等待加载...</td>
+              </tr>
+            </tbody>
+          </table>
+        </div>
+
+        <section class="dashboard-task-center panel-shell">
+          <div class="dashboard-log-head dashboard-task-center-head">
+            <span>任务中心</span>
+            <div class="dashboard-task-toolbar">
+              <label class="dashboard-job-filter-label" for="dashboard-jobs-filter">任务筛选</label>
+              <select id="dashboard-jobs-filter" class="bm-testset-select">
+                <option value="active" selected>只看运行中</option>
+                <option value="all">看全部</option>
+              </select>
+              <button id="dashboard-jobs-refresh" class="ghost">刷新任务</button>
+            </div>
+          </div>
+          <div id="dashboard-jobs-list" class="dashboard-job-list">
+            <div class="dashboard-job-empty">等待加载任务...</div>
+          </div>
+        </section>
+
         <section class="dashboard-log-panel">
           <div class="dashboard-log-head">启动一致性检查日志</div>
           <pre id="dashboard-startup-logs" class="dashboard-log-window">等待加载...</pre>
@@ -149,8 +177,18 @@
               <input type="checkbox" id="bm-agent" />
               LLM Agent
             </label>
+            <label class="benchmark-checkbox-label">
+              <input type="checkbox" id="bm-hybrid" />
+              混合路由 Agent
+            </label>
           </div>
-          <div class="benchmark-section-label" style="margin-top:8px">每类Query条数（短/中/长）</div>
+          <label class="benchmark-inline-field">测试样本池
+            <select id="bm-case-set-select" class="bm-testset-select">
+              <option value="smoke_v1">smoke_v1 / 快速烟测样本池</option>
+              <option value="regression_v1" selected>regression_v1 / 基线回归样本池</option>
+            </select>
+          </label>
+          <div class="benchmark-section-label" style="margin-top:8px">每类 Query 条数（由下方自行决定）</div>
           <div class="benchmark-count-row">
             <label><input type="radio" name="bm-count" value="3" checked /> 3</label>
             <label><input type="radio" name="bm-count" value="5" /> 5</label>
@@ -179,13 +217,16 @@
             <option value="agent/short">Agent / 短查询</option>
             <option value="agent/medium">Agent / 中查询</option>
             <option value="agent/long">Agent / 长查询</option>
+            <option value="hybrid/short">Hybrid / 短查询</option>
+            <option value="hybrid/medium">Hybrid / 中查询</option>
+            <option value="hybrid/long">Hybrid / 长查询</option>
           </select>
         </div>
 
         <div class="stats-table-wrap">
           <table class="stats-table" id="bm-history-table">
             <tbody>
-              <tr><td colspan="6" style="text-align:center;color:#7a7f6f">运行测试后查看历史对比数据</td></tr>
+              <tr><td colspan="5" style="text-align:center;color:#7a7f6f">运行测试后查看历史对比数据</td></tr>
             </tbody>
           </table>
         </div>
@@ -210,17 +251,17 @@
 
   <div id="missing-queries-modal" class="card-modal hidden" aria-hidden="true">
     <div class="card-modal-backdrop" data-role="missing-queries-backdrop"></div>
-    <div class="card-modal-panel" role="dialog" aria-modal="true" aria-label="Missing Queries 最近30天">
+    <div class="card-modal-panel" role="dialog" aria-modal="true" aria-label="最近30天未命中查询">
       <div class="card-modal-head">
-        <h3>Missing Queries 最近30天</h3>
+        <h3>最近30天未命中查询</h3>
         <div class="dashboard-meta" id="missing-queries-modal-meta"></div>
       </div>
       <label>来源筛选
         <select id="missing-queries-source">
           <option value="all">全部</option>
-          <option value="agent">agent</option>
-          <option value="rag_qa">rag_qa</option>
-          <option value="rag_qa_stream">rag_qa_stream</option>
+          <option value="agent">LLM Agent</option>
+          <option value="rag_qa">RAG 问答</option>
+          <option value="rag_qa_stream">RAG 问答（流式）</option>
         </select>
       </label>
       <ul id="missing-queries-modal-list" class="warnings-list"></ul>
@@ -228,6 +269,22 @@
         <button id="missing-queries-export-btn" class="ghost">导出 CSV</button>
         <button id="missing-queries-clear-btn">清除列表</button>
         <button id="missing-queries-close-btn" class="ghost">关闭</button>
+      </div>
+    </div>
+  </div>
+
+  <div id="runtime-data-modal" class="card-modal hidden" aria-hidden="true">
+    <div class="card-modal-backdrop" data-role="runtime-data-backdrop"></div>
+    <div class="card-modal-panel" role="dialog" aria-modal="true" aria-label="运行时数据与缓存">
+      <div class="card-modal-head">
+        <h3>运行时数据与缓存</h3>
+        <div class="dashboard-meta" id="runtime-data-modal-meta"></div>
+      </div>
+      <ul id="runtime-data-modal-list" class="warnings-list"></ul>
+      <div class="card-modal-actions">
+        <button id="runtime-data-refresh-btn" class="ghost">刷新</button>
+        <button id="runtime-data-clear-btn">清除勾选项</button>
+        <button id="runtime-data-close-btn" class="ghost">关闭</button>
       </div>
     </div>
   </div>

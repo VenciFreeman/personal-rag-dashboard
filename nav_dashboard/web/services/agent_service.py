@@ -191,6 +191,7 @@ LONG_QUERY_DOC_VECTOR_TOP_N_DELTA = int(os.getenv("NAV_DASHBOARD_LONG_DOC_VECTOR
 SHORT_QUERY_LIMIT_DELTA = int(os.getenv("NAV_DASHBOARD_SHORT_TOOL_LIMIT_DELTA", "1") or "1")
 LONG_QUERY_LIMIT_DELTA = int(os.getenv("NAV_DASHBOARD_LONG_TOOL_LIMIT_DELTA", "-1") or "-1")
 _MEDIA_GRAPH_CACHE: dict[str, Any] = {"mtime": None, "degrees": {}}
+_MEDIA_COMPARE_SPLIT_RE = re.compile(r"\s*(?:和|与|以及|及|跟|vs\.?|VS\.?|/|／|、)\s*")
 
 
 def _is_doc_graph_available() -> bool:
@@ -315,6 +316,8 @@ def _save_agent_metrics(rows: list[dict[str, Any]]) -> None:
 def record_agent_metrics(
     *,
     query_profile: str,
+    search_mode: str,
+    query_type: str,
     rag_used: int,
     media_used: int,
     web_used: int,
@@ -323,6 +326,8 @@ def record_agent_metrics(
     doc_top1_score_before_rerank: float | None,
     doc_top1_identity_changed: int | None,
     doc_top1_rank_shift: float | None,
+    embed_cache_hit: int,
+    query_rewrite_hit: int,
     vector_recall_seconds: float,
     rerank_seconds: float,
     wall_clock_seconds: float = 0.0,
@@ -330,6 +335,8 @@ def record_agent_metrics(
     row: dict[str, Any] = {
         "ts": datetime.now().isoformat(timespec="seconds"),
         "query_profile": str(query_profile or "medium"),
+        "search_mode": str(search_mode or "local_only"),
+        "query_type": str(query_type or "general"),
         "rag_used": int(rag_used or 0),
         "media_used": int(media_used or 0),
         "web_used": int(web_used or 0),
@@ -338,6 +345,8 @@ def record_agent_metrics(
         "doc_top1_score_before_rerank": round(float(doc_top1_score_before_rerank), 4) if doc_top1_score_before_rerank is not None else None,
         "doc_top1_identity_changed": int(doc_top1_identity_changed) if doc_top1_identity_changed is not None else None,
         "doc_top1_rank_shift": round(float(doc_top1_rank_shift), 4) if doc_top1_rank_shift is not None else None,
+        "embed_cache_hit": int(embed_cache_hit or 0),
+        "query_rewrite_hit": int(query_rewrite_hit or 0),
         "vector_recall_seconds": round(float(vector_recall_seconds or 0), 4),
         "rerank_seconds": round(float(rerank_seconds or 0), 4),
         "wall_clock_seconds": round(float(wall_clock_seconds or 0), 4),
@@ -989,7 +998,8 @@ def _estimate_doc_similarity(query: str, query_profile: dict[str, Any]) -> dict[
 
 
 def _classify_query_type(query: str, quota_state: dict[str, Any], query_profile: dict[str, Any]) -> dict[str, Any]:
-    extracted_entity = _extract_media_entity(query)
+    media_entities = _extract_media_entities(query)
+    extracted_entity = media_entities[0] if media_entities else ""
     llm_media = _classify_media_query_with_llm(query, quota_state)
     doc_similarity = _estimate_doc_similarity(query, query_profile)
     tech_score = float(doc_similarity.get("score", 0.0) or 0.0)
@@ -1016,6 +1026,7 @@ def _classify_query_type(query: str, quota_state: dict[str, Any], query_profile:
     return {
         "query_type": query_type,
         "media_entity": extracted_entity,
+        "media_entities": media_entities,
         "media_specific": media_specific,
         "llm_media": llm_media,
         "doc_similarity": doc_similarity,
@@ -1398,6 +1409,7 @@ def _tool_query_document_rag(query: str, query_profile: dict[str, Any]) -> ToolE
     rewrite_queries, rewrite_status = _rewrite_doc_queries(query)
     vector_batches: list[tuple[str, list[dict[str, Any]]]] = []
     warnings: list[str] = []
+    embed_cache_hit = 0
 
     _t_vec0 = _time.perf_counter()
     for rewritten_query in rewrite_queries:
@@ -1409,6 +1421,8 @@ def _tool_query_document_rag(query: str, query_profile: dict[str, Any]) -> ToolE
             )
             vec_rows = vec.get("results", []) if isinstance(vec, dict) else []
             vector_batches.append((rewritten_query, [row for row in vec_rows if isinstance(row, dict)]))
+            if isinstance(vec, dict) and float(vec.get("embed_cache_hit", 0) or 0) > 0:
+                embed_cache_hit = 1
         except Exception as exc:  # noqa: BLE001
             warnings.append(f"向量检索不可用({rewritten_query}): {exc}")
     _vector_recall_seconds = _time.perf_counter() - _t_vec0
@@ -1450,6 +1464,8 @@ def _tool_query_document_rag(query: str, query_profile: dict[str, Any]) -> ToolE
     if warnings:
         summary += f"（部分降级: {'; '.join(warnings)}）"
 
+    query_rewrite_hit = int(str(rewrite_status or "").strip().lower() == "ok")
+
     return ToolExecution(
         tool=TOOL_QUERY_DOC_RAG,
         status="ok",
@@ -1462,6 +1478,8 @@ def _tool_query_document_rag(query: str, query_profile: dict[str, Any]) -> ToolE
                 "queries": rewrite_queries,
                 "status": rewrite_status,
             },
+            "embed_cache_hit": embed_cache_hit,
+            "query_rewrite_hit": query_rewrite_hit,
             "vector_batches": vector_debug,
             "rerank": {
                 "method": "vector+keyword_fusion",
@@ -1499,31 +1517,71 @@ def _rewrite_media_query(query: str) -> str:
     return raw
 
 
-def _extract_media_entity(query: str) -> str:
+def _split_media_entities(raw: str) -> list[str]:
+    text = str(raw or "").strip()
+    if not text:
+        return []
+
+    text = re.sub(r"(?:以及)?(?:两者|二者)的?(?:对比|比较|区别|差异).*$", "", text)
+    text = re.sub(r"的?(?:评价|看法|评分|感受|印象|想法).*$", "", text)
+    text = text.strip(" ，。！？?；;:：\"'“”‘’（）()")
+    if not text:
+        return []
+
+    parts = _MEDIA_COMPARE_SPLIT_RE.split(text)
+    dedup: list[str] = []
+    seen: set[str] = set()
+    for part in parts:
+        value = str(part or "").strip(" ，。！？?；;:：\"'“”‘’（）()")
+        if not value:
+            continue
+        key = value.lower()
+        if key in seen:
+            continue
+        seen.add(key)
+        dedup.append(value)
+    return dedup
+
+
+def _extract_media_entities(query: str) -> list[str]:
     raw = (query or "").strip()
     if not raw:
-        return ""
+        return []
 
     normalized = raw
     for prefix in ["在我的数据库里", "我的数据库里", "在数据库里", "请问", "帮我", "我想知道", "想问下"]:
         if normalized.startswith(prefix):
             normalized = normalized[len(prefix) :].strip(" ，。！？?；;:")
 
-    # Typical phrasing: 我对XXX的评价怎么样
-    match = re.search(r"(?:我)?对(?P<title>.+?)的?(?:评价|看法|评分|感受|印象|想法)", normalized)
+    match = re.search(r"(?:我)?对(?P<title>.+?)(?:的)?(?:评价|看法|评分|感受|印象|想法)", normalized)
     if match:
-        title = str(match.group("title") or "").strip(" ，。！？?；;:\"'“”‘’（）()")
-        if title:
-            return title
+        entities = _split_media_entities(match.group("title"))
+        if entities:
+            return entities
 
-    # Title-centric phrasing: XXX 的主角介绍/评价/剧情/角色分析...
+    match = re.search(r"^(?P<title>.+?)(?:的)?(?:对比|比较|区别|差异)", normalized)
+    if match:
+        entities = _split_media_entities(match.group("title"))
+        if entities:
+            return entities
+
     match = re.search(r"^(?P<title>.+?)的(?:各个)?(?:主角|角色|剧情|介绍|评价|看法|分析|总结)", normalized)
     if match:
-        title = str(match.group("title") or "").strip(" ，。！？?；;:\"'“”‘’（）()")
-        if title:
-            return title
+        entities = _split_media_entities(match.group("title"))
+        if entities:
+            return entities
 
-    return ""
+    if any(token in normalized for token in ["对比", "比较", "区别", "差异", "评价", "看法", "评分"]):
+        entities = _split_media_entities(normalized)
+        if len(entities) >= 2:
+            return entities
+
+    return []
+
+
+def _extract_media_entity(query: str) -> str:
+    entities = _extract_media_entities(query)
+    return entities[0] if entities else ""
 
 
 def _normalize_media_title_for_match(text: str) -> str:
@@ -1557,9 +1615,16 @@ def _media_title_match_boost(title: str, entity: str) -> float:
     return boost
 
 
+def _media_title_match_boost_any(title: str, entities: list[str]) -> float:
+    if not entities:
+        return 0.0
+    return max((_media_title_match_boost(title, entity) for entity in entities), default=0.0)
+
+
 def _tool_query_media_record(query: str, query_profile: dict[str, Any]) -> ToolExecution:
     rewritten_query = _rewrite_media_query(query)
-    extracted_entity = _extract_media_entity(query)
+    media_entities = _extract_media_entities(query)
+    extracted_entity = media_entities[0] if media_entities else ""
 
     graph_tool = _tool_expand_media_query(query) if _is_media_graph_available() else ToolExecution(
         tool=TOOL_EXPAND_MEDIA_QUERY,
@@ -1581,10 +1646,23 @@ def _tool_query_media_record(query: str, query_profile: dict[str, Any]) -> ToolE
     }
 
     keyword_queries: list[str] = []
-    if extracted_entity:
+    for entity in media_entities:
+        if entity not in keyword_queries:
+            keyword_queries.append(entity)
+        entity_review_query = f"{entity} 评价"
+        if entity_review_query not in keyword_queries:
+            keyword_queries.append(entity_review_query)
+    if extracted_entity and extracted_entity not in keyword_queries:
         keyword_queries.append(extracted_entity)
     if rewritten_query and rewritten_query not in keyword_queries:
         keyword_queries.append(rewritten_query)
+
+    vector_queries: list[str] = []
+    for entity in media_entities:
+        if entity and entity not in vector_queries:
+            vector_queries.append(entity)
+    if not vector_queries and vector_query:
+        vector_queries.append(vector_query)
 
     keyword_rows: list[dict[str, Any]] = []
     for q_item in keyword_queries:
@@ -1594,16 +1672,27 @@ def _tool_query_media_record(query: str, query_profile: dict[str, Any]) -> ToolE
             payload={"query": q_item, "mode": "keyword", "limit": 8, "filters": filters},
         )
         current = payload.get("results", []) if isinstance(payload, dict) else []
-        if current:
-            keyword_rows = [row for row in current if isinstance(row, dict)]
-            break
+        for row in current:
+            if not isinstance(row, dict):
+                continue
+            cloned = dict(row)
+            cloned["matched_query"] = q_item
+            keyword_rows.append(cloned)
 
-    vec_payload = _http_json(
-        "POST",
-        f"{LIBRARY_TRACKER_BASE}/api/library/search",
-        payload={"query": vector_query, "mode": "vector", "limit": 8, "filters": filters},
-    )
-    vector_rows = [row for row in (vec_payload.get("results", []) if isinstance(vec_payload, dict) else []) if isinstance(row, dict)]
+    vector_rows: list[dict[str, Any]] = []
+    for q_item in vector_queries:
+        vec_payload = _http_json(
+            "POST",
+            f"{LIBRARY_TRACKER_BASE}/api/library/search",
+            payload={"query": q_item, "mode": "vector", "limit": 8, "filters": filters},
+        )
+        current = vec_payload.get("results", []) if isinstance(vec_payload, dict) else []
+        for row in current:
+            if not isinstance(row, dict):
+                continue
+            cloned = dict(row)
+            cloned["matched_query"] = q_item
+            vector_rows.append(cloned)
     graph_degrees = _media_graph_degrees()
 
     merged: dict[str, dict[str, Any]] = {}
@@ -1625,7 +1714,7 @@ def _tool_query_media_record(query: str, query_profile: dict[str, Any]) -> ToolE
         keyword_score = _safe_score(item.get("score"))
         current = merged.get(key)
         if current is None:
-            if vector_rows and not extracted_entity:
+            if vector_rows and not media_entities and not extracted_entity:
                 continue
             merged[key] = {
                 **dict(item),
@@ -1660,7 +1749,8 @@ def _tool_query_media_record(query: str, query_profile: dict[str, Any]) -> ToolE
         graph_prior_raw = math.log(graph_degrees.get(item_id, 0) + 1.0)
         keyword_norm = (keyword_score / max_keyword_score) if max_keyword_score > 0 else 0.0
         graph_prior = (graph_prior_raw / max_graph_prior) if max_graph_prior > 0 else 0.0
-        title_boost = _media_title_match_boost(title, extracted_entity or rewritten_query or query)
+        title_targets = media_entities or [extracted_entity or rewritten_query or query]
+        title_boost = _media_title_match_boost_any(title, title_targets)
         score = (0.85 * semantic_score) + (0.10 * keyword_norm) + (0.05 * graph_prior) + title_boost
         compact.append(
             {
@@ -1679,12 +1769,13 @@ def _tool_query_media_record(query: str, query_profile: dict[str, Any]) -> ToolE
                 "title_boost": round(title_boost, 6),
                 "url": item.get("url"),
                 "retrieval_mode": str(item.get("retrieval_mode") or used_mode),
-                "retrieval_query": vector_query,
+                "retrieval_query": str(item.get("matched_query") or vector_query),
+                "matched_entities": media_entities,
                 "review": (str(item.get("review", ""))[:140] + "...") if str(item.get("review", "")) else "",
             }
         )
     compact.sort(key=lambda x: _safe_score(x.get("score")), reverse=True)
-    used_query = f"vector:{vector_query}"
+    used_query = f"vector:{' || '.join(vector_queries or [vector_query])}"
     if keyword_queries:
         used_query += f" | keyword:{' || '.join(keyword_queries)}"
     if filters:
@@ -1692,10 +1783,11 @@ def _tool_query_media_record(query: str, query_profile: dict[str, Any]) -> ToolE
     return ToolExecution(
         tool=TOOL_QUERY_MEDIA,
         status="ok",
-        summary=f"命中 {len(compact)} 条媒体记录（mode={used_mode}, query={used_query}）",
+        summary=f"命中 {len(compact)} 条媒体记录（entities={len(media_entities) or 1}, mode={used_mode}, query={used_query}）",
         data={
             "results": compact,
             "query_profile": query_profile,
+            "media_entities": media_entities,
             "graph_expansion": {
                 "status": graph_tool.status,
                 "summary": graph_tool.summary,
@@ -1939,6 +2031,7 @@ def _summarize_answer(
     memory_context: str,
     tool_results: list[ToolExecution],
     backend: str,
+    search_mode: str,
     quota_state: dict[str, Any],
     debug_sink: dict[str, Any] | None = None,
 ) -> str:
@@ -1953,6 +2046,8 @@ def _summarize_answer(
         if content:
             hist_lines.append(f"{role}: {content}")
 
+    normalized_search_mode = _normalize_search_mode(search_mode)
+    has_web_tool = any(result.tool == TOOL_SEARCH_WEB for result in tool_results)
     system_prompt = (
         "你是个人助理。请综合工具结果回答用户问题。"
         "如果某个工具失败/为空，明确说明并尽量用其它工具补足。"
@@ -1960,6 +2055,8 @@ def _summarize_answer(
         "只允许使用工具结果中的事实；如果工具未给出证据必须明确说不确定。"
         "遇到同名/近似作品时优先按标题精确匹配（例如含数字续作）。"
     )
+    if normalized_search_mode == "local_only" or not has_web_tool:
+        system_prompt += "本轮未执行联网搜索，严禁写出“联网搜索”“网络搜索”“进行网络搜索”“经过搜索”等表述，也不要假装调用过外部 API。"
 
     prompt_blocks = hist_lines + [f"当前问题: {question}"]
     if memory_context:
@@ -1982,6 +2079,18 @@ def _summarize_answer(
         backend=backend,
         quota_state=quota_state,
     )
+    if normalized_search_mode == "local_only" and not has_web_tool and re.search(r"联网搜索|网络搜索|进行网络搜索|经过搜索", answer):
+        answer = _llm_chat(
+            messages=[
+                {
+                    "role": "system",
+                    "content": system_prompt + "你刚才错误声称做了联网搜索。现在请仅基于当前工具结果重写答案，不要提到网络或搜索引擎。",
+                },
+                {"role": "user", "content": user_prompt},
+            ],
+            backend=backend,
+            quota_state=quota_state,
+        )
     if debug_sink is not None:
         debug_sink["llm_response"] = {"output_tokens_est": _approx_tokens(answer)}
     return answer
@@ -2205,6 +2314,8 @@ def run_agent_round(
     _doc_top1_identity_changed = _doc_data.get("doc_top1_identity_changed")
     _doc_top1_rank_shift = _doc_data.get("doc_top1_rank_shift")
     _doc_no_context = int(_doc_data.get("no_context", 0) or 0)
+    _doc_embed_cache_hit = int(_doc_data.get("embed_cache_hit", 0) or 0)
+    _doc_query_rewrite_hit = int(_doc_data.get("query_rewrite_hit", 0) or 0)
 
     # Log no-context queries to shared jsonl file.
     if _doc_no_context and _log_no_context_query is not None:
@@ -2263,6 +2374,7 @@ def run_agent_round(
             memory_context=memory_context,
             tool_results=tool_results,
             backend=backend,
+            search_mode=normalized_search_mode,
             quota_state=quota_state,
             debug_sink=debug_trace if debug else None,
         )
@@ -2292,6 +2404,8 @@ def run_agent_round(
         try:
             record_agent_metrics(
                 query_profile=str(query_profile.get("profile", "medium") or "medium"),
+                search_mode=normalized_search_mode,
+                query_type=str(query_classification.get("query_type", "general") or "general"),
                 rag_used=_rag_used,
                 media_used=_media_used,
                 web_used=_web_used,
@@ -2300,6 +2414,8 @@ def run_agent_round(
                 doc_top1_score_before_rerank=float(_doc_top1_score_before_rerank) if _doc_top1_score_before_rerank is not None else None,
                 doc_top1_identity_changed=int(_doc_top1_identity_changed) if _doc_top1_identity_changed is not None else None,
                 doc_top1_rank_shift=float(_doc_top1_rank_shift) if _doc_top1_rank_shift is not None else None,
+                embed_cache_hit=_doc_embed_cache_hit,
+                query_rewrite_hit=_doc_query_rewrite_hit,
                 vector_recall_seconds=_doc_vector_recall_s,
                 rerank_seconds=_doc_rerank_s,
                 wall_clock_seconds=_wall_time.perf_counter() - _wall_t0,
@@ -2477,6 +2593,8 @@ def run_agent_round_stream(
         _doc_top1_identity_changed = _doc_data.get("doc_top1_identity_changed")
         _doc_top1_rank_shift = _doc_data.get("doc_top1_rank_shift")
         _doc_no_context = int(_doc_data.get("no_context", 0) or 0)
+        _doc_embed_cache_hit = int(_doc_data.get("embed_cache_hit", 0) or 0)
+        _doc_query_rewrite_hit = int(_doc_data.get("query_rewrite_hit", 0) or 0)
 
         if _doc_no_context and _log_no_context_query is not None:
             try:
@@ -2534,6 +2652,7 @@ def run_agent_round_stream(
                 memory_context=memory_context,
                 tool_results=tool_results,
                 backend=backend,
+                search_mode=normalized_search_mode,
                 quota_state=quota_state,
                 debug_sink=debug_trace if debug else None,
             )
@@ -2561,6 +2680,8 @@ def run_agent_round_stream(
             try:
                 record_agent_metrics(
                     query_profile=str(query_profile.get("profile", "medium") or "medium"),
+                    search_mode=normalized_search_mode,
+                    query_type=str(query_classification.get("query_type", "general") or "general"),
                     rag_used=_rag_used,
                     media_used=_media_used,
                     web_used=_web_used,
@@ -2569,6 +2690,8 @@ def run_agent_round_stream(
                     doc_top1_score_before_rerank=float(_doc_top1_score_before_rerank) if _doc_top1_score_before_rerank is not None else None,
                     doc_top1_identity_changed=int(_doc_top1_identity_changed) if _doc_top1_identity_changed is not None else None,
                     doc_top1_rank_shift=float(_doc_top1_rank_shift) if _doc_top1_rank_shift is not None else None,
+                    embed_cache_hit=_doc_embed_cache_hit,
+                    query_rewrite_hit=_doc_query_rewrite_hit,
                     vector_recall_seconds=_doc_vector_recall_s,
                     rerank_seconds=_doc_rerank_s,
                     wall_clock_seconds=_wall_time.perf_counter() - _wall_t0,

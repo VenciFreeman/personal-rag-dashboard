@@ -27,7 +27,11 @@ const dashboardGeneratedAt = document.getElementById("dashboard-generated-at");
 const dashboardDeployTime = document.getElementById("dashboard-deploy-time");
 const dashboardRefreshBtn = document.getElementById("dashboard-refresh");
 const dashboardLatencyTable = document.getElementById("dashboard-latency-table");
+const dashboardObservabilityTable = document.getElementById("dashboard-observability-table");
 const dashboardStartupLogs = document.getElementById("dashboard-startup-logs");
+const dashboardJobsList = document.getElementById("dashboard-jobs-list");
+const dashboardJobsRefreshBtn = document.getElementById("dashboard-jobs-refresh");
+const dashboardJobsFilter = document.getElementById("dashboard-jobs-filter");
 const warningsModal = document.getElementById("warnings-modal");
 const warningsModalList = document.getElementById("warnings-modal-list");
 const warningsModalTimestamp = document.getElementById("warnings-modal-timestamp");
@@ -40,6 +44,12 @@ const missingQueriesSourceSelect = document.getElementById("missing-queries-sour
 const missingQueriesExportBtn = document.getElementById("missing-queries-export-btn");
 const missingQueriesClearBtn = document.getElementById("missing-queries-clear-btn");
 const missingQueriesCloseBtn = document.getElementById("missing-queries-close-btn");
+const runtimeDataModal = document.getElementById("runtime-data-modal");
+const runtimeDataModalList = document.getElementById("runtime-data-modal-list");
+const runtimeDataModalMeta = document.getElementById("runtime-data-modal-meta");
+const runtimeDataRefreshBtn = document.getElementById("runtime-data-refresh-btn");
+const runtimeDataClearBtn = document.getElementById("runtime-data-clear-btn");
+const runtimeDataCloseBtn = document.getElementById("runtime-data-close-btn");
 const customCardModal = document.getElementById("custom-card-modal");
 const customCardModalTitle = document.getElementById("custom-card-modal-title");
 const customCardNameInput = document.getElementById("custom-card-name");
@@ -70,6 +80,8 @@ let currentWarningsTimestamp = "";
 let dismissedWarnings = new Set();
 let currentMissingQueries = [];
 let currentMissingQueriesSource = "all";
+let currentRuntimeDataItems = [];
+let currentRuntimeDataSummary = {};
 
 // Startup polling
 let lastStartupStatus = "";
@@ -81,6 +93,22 @@ const CROP_VSIZE = 200;
 
 // Usage modal: last known values for prefill
 let lastApiUsage = {};
+let currentTaskJobs = [];
+let selectedTaskJobId = "";
+let taskCenterPollInterval = null;
+let dashboardJobsView = "active";
+
+if (dashboardJobsFilter?.value) {
+  dashboardJobsView = String(dashboardJobsFilter.value || "active");
+}
+
+const SOURCE_LABELS = {
+  all: "全部",
+  agent: "LLM Agent",
+  rag_qa: "RAG 问答",
+  rag_qa_stream: "RAG 问答（流式）",
+  unknown: "未知来源",
+};
 
 function escapeHtml(text) {
   return String(text || "")
@@ -89,9 +117,121 @@ function escapeHtml(text) {
     .replaceAll(">", "&gt;");
 }
 
+function basenameFromPath(path) {
+  const raw = String(path || "").trim().replace(/\\/g, "/");
+  if (!raw) return "";
+  const parts = raw.split("/").filter(Boolean);
+  return parts.length ? parts[parts.length - 1] : raw;
+}
+
+function sleep(ms) {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+function formatAssertionBadge(passed, label) {
+  const cls = passed ? "status-completed" : "status-failed";
+  const prefix = passed ? "通过" : "失败";
+  return `<span class="dashboard-job-badge ${cls}">${prefix} ${escapeHtml(String(label || ""))}</span>`;
+}
+
+function summarizeAssertionScope(scope) {
+  const checks = Array.isArray(scope?.checks) ? scope.checks : [];
+  if (!checks.length) return `<span style='color:#5a5f50'>—</span>`;
+  const passed = checks.filter((item) => item?.passed).length;
+  const failed = checks.length - passed;
+  return `${formatAssertionBadge(failed === 0, `${passed}/${checks.length}`)}${failed > 0 ? ` <span style="color:#d9a6a6">失败 ${failed}</span>` : ""}`;
+}
+
+function summarizeAssertionFailures(scope) {
+  const checks = Array.isArray(scope?.checks) ? scope.checks : [];
+  const failed = checks.filter((item) => !item?.passed);
+  if (!failed.length) return `<span style="color:#8fb08d">全部通过</span>`;
+  return failed.map((item) => escapeHtml(String(item?.name || "unknown"))).join(" / ");
+}
+
+function jobTypeLabel(type) {
+  const labels = {
+    benchmark: "Benchmark",
+    rag_sync: "RAG 同步",
+    library_graph_rebuild: "Library Graph",
+    runtime_cleanup: "运行时清理",
+  };
+  return labels[String(type || "")] || String(type || "未知任务");
+}
+
+function jobStatusLabel(status) {
+  const labels = {
+    queued: "排队中",
+    running: "运行中",
+    completed: "已完成",
+    failed: "失败",
+    cancelled: "已取消",
+  };
+  return labels[String(status || "")] || String(status || "未知");
+}
+
+function renderTaskCenter() {
+  if (!dashboardJobsList) return;
+  if (!currentTaskJobs.length) {
+    dashboardJobsList.innerHTML = '<div class="dashboard-job-empty">当前暂无后台任务</div>';
+    return;
+  }
+  const selected = currentTaskJobs.find((job) => String(job.id) === String(selectedTaskJobId)) || currentTaskJobs[0];
+  selectedTaskJobId = String(selected?.id || "");
+  dashboardJobsList.innerHTML = currentTaskJobs.map((job) => {
+    const selectedCls = String(job.id) === selectedTaskJobId ? " is-selected" : "";
+    const status = String(job.status || "queued");
+    const runningCls = status === "running" ? " is-running" : status === "failed" ? " is-failed" : status === "cancelled" ? " is-cancelled" : "";
+    const summary = String(job.message || "等待开始");
+    const moduleMeta = Array.isArray(job?.metadata?.modules) ? job.metadata.modules.join("+") : "";
+    const createdAt = String(job.created_at || "");
+    const logs = Array.isArray(job.logs) && job.logs.length
+      ? job.logs.join("\n")
+      : (job.error ? `ERROR: ${job.error}` : "暂无日志");
+    const canCancel = ["queued", "running"].includes(status);
+    const expanded = String(job.id) === selectedTaskJobId
+      ? `<div class="dashboard-job-expanded">
+          <div class="dashboard-meta">${escapeHtml(jobTypeLabel(job.type))} | ${escapeHtml(jobStatusLabel(status))} | 创建 ${escapeHtml(createdAt || "-")}</div>
+          <pre class="dashboard-job-log-window">${escapeHtml(logs)}</pre>
+          <div class="card-modal-actions dashboard-job-actions">
+            <button class="ghost" data-job-cancel-id="${escapeHtml(String(job.id || ""))}"${canCancel ? "" : " disabled"}>取消任务</button>
+          </div>
+        </div>`
+      : "";
+    return `<div class="dashboard-job-card${selectedCls}${runningCls}" data-job-id="${escapeHtml(String(job.id || ""))}">
+      <div class="dashboard-job-title">
+        <strong>${escapeHtml(job.label || jobTypeLabel(job.type))}</strong>
+        <span class="dashboard-job-badge status-${escapeHtml(status)}">${escapeHtml(jobStatusLabel(status))}</span>
+      </div>
+      <div class="dashboard-job-meta-line">${escapeHtml(jobTypeLabel(job.type))}${moduleMeta ? ` | ${escapeHtml(moduleMeta)}` : ""}</div>
+      <div class="dashboard-job-meta-line">${escapeHtml(summary)}</div>
+      <div class="dashboard-job-meta-line">${escapeHtml(createdAt)}</div>
+      ${expanded}
+    </div>`;
+  }).join("\n");
+}
+
+async function refreshTaskCenter() {
+  const onlyActive = dashboardJobsView !== "all";
+  const payload = await apiGet(`/api/dashboard/jobs?only_active=${onlyActive ? "true" : "false"}`);
+  currentTaskJobs = Array.isArray(payload?.jobs) ? payload.jobs : [];
+  renderTaskCenter();
+}
+
+function startTaskCenterPolling() {
+  if (taskCenterPollInterval) clearInterval(taskCenterPollInterval);
+  taskCenterPollInterval = setInterval(() => {
+    refreshTaskCenter().catch(() => {});
+  }, 4000);
+}
+
 // ─── Long-press helpers ───────────────────────────────────────────────────────
 
 const LONG_PRESS_MS = 600;
+
+function setLongPressSelectionLock(locked) {
+  document.body?.classList.toggle("long-press-selection-lock", !!locked);
+}
 
 /**
  * Bind a long-press handler to a container element using event delegation.
@@ -102,12 +242,19 @@ const LONG_PRESS_MS = 600;
 function bindLongPress(el, callback) {
   let timer = null;
   let startX = 0, startY = 0;
-  const cancel = () => { if (timer) { clearTimeout(timer); timer = null; } };
+  const cancel = () => {
+    if (timer) {
+      clearTimeout(timer);
+      timer = null;
+    }
+    setLongPressSelectionLock(false);
+  };
   el.addEventListener("pointerdown", (e) => {
     if (!(e.target instanceof Element)) return;
     startX = e.clientX; startY = e.clientY;
     const target = e.target;
     cancel();
+    if (e.pointerType !== "mouse") setLongPressSelectionLock(true);
     timer = setTimeout(() => { timer = null; callback(target); }, LONG_PRESS_MS);
   });
   el.addEventListener("pointermove", (e) => {
@@ -127,11 +274,18 @@ function bindLongPressElement(el, longFn, tapFn) {
   let timer = null;
   let didLongPress = false;
   let startX = 0, startY = 0;
-  const cancel = () => { if (timer) { clearTimeout(timer); timer = null; } };
+  const cancel = () => {
+    if (timer) {
+      clearTimeout(timer);
+      timer = null;
+    }
+    setLongPressSelectionLock(false);
+  };
   el.addEventListener("pointerdown", (e) => {
     startX = e.clientX; startY = e.clientY;
     didLongPress = false;
     cancel();
+    if (e.pointerType !== "mouse") setLongPressSelectionLock(true);
     timer = setTimeout(() => { timer = null; didLongPress = true; longFn(); }, LONG_PRESS_MS);
   });
   el.addEventListener("pointermove", (e) => {
@@ -352,6 +506,20 @@ function formatNum(value) {
   return new Intl.NumberFormat("zh-CN").format(Math.round(n));
 }
 
+function formatSizeValue(bytes) {
+  const n = Number(bytes);
+  if (!Number.isFinite(n) || n <= 0) return "0 MB";
+  if (n >= 1024 * 1024 * 1024) return (n / (1024 * 1024 * 1024)).toFixed(2) + " GB";
+  if (n >= 1024 * 1024) return (n / (1024 * 1024)).toFixed(2) + " MB";
+  if (n >= 1024) return (n / 1024).toFixed(1) + " KB";
+  return `${Math.round(n)} B`;
+}
+
+function displaySourceLabel(source) {
+  const key = String(source || "unknown").trim().toLowerCase();
+  return SOURCE_LABELS[key] || String(source || "未知来源");
+}
+
 function buildStatCard(title, value, sub = "", role = "", state = "") {
   const extra = role ? ` data-role="${role}"` : "";
   const classes = ["stat-card", state].filter(Boolean).join(" ");
@@ -425,6 +593,7 @@ function unhealthyState(flag) {
 
 function buildDashboardHealthFlags({
   rag,
+  library,
   apiUsage,
   latency,
   cacheStats,
@@ -437,6 +606,9 @@ function buildDashboardHealthFlags({
     ragRerank.avg_top1_local_doc_score_p99,
     ragRerank.avg_top1_local_doc_score,
   );
+  const libraryGraphCoverage = library?.graph_quality?.item_coverage_rate ?? safeRatio(library.graph_nodes, library.total_items);
+  const isolatedRate = library?.graph_quality?.isolated_node_rate;
+  const libraryEdgesPerNode = library?.graph_quality?.edges_per_node ?? safeRatio(library.graph_edges, library.graph_nodes);
   const webUsageRatio = safeRatio(apiUsage.today_web_search, apiUsage.daily_web_limit);
   const deepseekUsageRatio = safeRatio(apiUsage.today_deepseek, apiUsage.daily_deepseek_limit);
 
@@ -444,6 +616,10 @@ function buildDashboardHealthFlags({
     ragGraphDensity:
       isOutsideRange(rag.nodes_per_doc, 8, 20) ||
       isOutsideRange(rag.edges_per_node, 2, 5),
+    libraryGraphScale:
+      isBelowThreshold(libraryGraphCoverage, 0.18) ||
+      isOutsideRange(libraryEdgesPerNode, 1.2, 8) ||
+      isAboveThreshold(isolatedRate, 0.2),
     ragPending: isAboveThreshold(rag.changed_pending, 0),
     webUsage: isAboveThreshold(webUsageRatio, 0.9),
     deepseekUsage: isAboveThreshold(deepseekUsageRatio, 0.9),
@@ -494,7 +670,7 @@ function renderDashboardLatencyTable(data) {
   // Display order and Chinese labels; elapsed_seconds pinned to end as end-to-end
   const STAGE_ORDER = [
     { key: "total",                    label: "向量召回" },
-    { key: "rerank_seconds",           label: "重排序" },
+    { key: "rerank_seconds",           label: "模型重排" },
     { key: "context_assembly_seconds", label: "上下文组装" },
     { key: "web_search_seconds",       label: "网络检索" },
     { key: "elapsed_seconds",          label: "端到端总时长" },
@@ -541,6 +717,129 @@ function renderDashboardLatencyTable(data) {
   `;
 }
 
+function renderDashboardObservabilityTable(data) {
+  if (!dashboardObservabilityTable) return;
+  const ragProfiles = data?.retrieval_by_profile || {};
+  const ragModes = data?.retrieval_by_search_mode || {};
+  const agentProfiles = data?.agent_by_profile || {};
+  const agentModes = data?.agent_by_search_mode || {};
+  const agentTypes = data?.agent_by_query_type || {};
+  const rows = [];
+
+  const pushSection = (title) => {
+    rows.push(`<tr class="dashboard-observability-section"><td colspan="6"><span class="dashboard-observability-title">${escapeHtml(title)}</span></td></tr>`);
+  };
+  const pushRow = (name, c1, c2, c3, c4, c5) => {
+    rows.push(`<tr>
+      <td>${escapeHtml(name)}</td>
+      <td>${c1}</td>
+      <td>${c2}</td>
+      <td>${c3}</td>
+      <td>${c4}</td>
+      <td>${c5}</td>
+    </tr>`);
+  };
+  const orderedEntries = (bucket, orderedKeys) => {
+    const seen = new Set();
+    const entries = [];
+    orderedKeys.forEach((key) => {
+      seen.add(key);
+      entries.push([key, bucket?.[key] || {}]);
+    });
+    Object.entries(bucket || {}).forEach(([key, value]) => {
+      if (seen.has(key)) return;
+      entries.push([key, value]);
+    });
+    return entries;
+  };
+
+  const sharedProfileNames = { short: "短查询", medium: "中查询", long: "长查询" };
+  const orderedProfileKeys = ["short", "medium", "long"];
+  const orderedModeKeys = ["local_only", "hybrid"];
+  if (Object.keys(ragProfiles).length) {
+    pushSection("RAG 分层观测");
+    orderedEntries(ragProfiles, orderedProfileKeys).forEach(([key, value]) => {
+      pushRow(
+        `${sharedProfileNames[key] || key} (${formatNum(value?.count)})`,
+        formatRate(value?.no_context_rate),
+        formatRate(value?.embed_cache_hit_rate),
+        formatRate(value?.query_rewrite_rate),
+        formatDuration(value?.stages?.elapsed_seconds?.p50),
+        formatDuration(value?.stages?.total?.p50),
+      );
+    });
+  }
+
+  if (Object.keys(ragModes).length) {
+    pushSection("RAG 检索模式");
+    orderedEntries(ragModes, orderedModeKeys).forEach(([key, value]) => {
+      pushRow(
+        `${key} (${formatNum(value?.count)})`,
+        formatRate(value?.no_context_rate),
+        formatRate(value?.embed_cache_hit_rate),
+        formatRate(value?.query_rewrite_rate),
+        formatDuration(value?.elapsed?.p50),
+        formatDuration(value?.total?.p50),
+      );
+    });
+  }
+
+  if (Object.keys(agentProfiles).length) {
+    pushSection("Agent 分层观测");
+    orderedEntries(agentProfiles, orderedProfileKeys).forEach(([key, value]) => {
+      pushRow(
+        `${sharedProfileNames[key] || key} (${formatNum(value?.count)})`,
+        formatRate(value?.no_context_rate),
+        formatRate(value?.embed_cache_hit_rate),
+        formatRate(value?.query_rewrite_rate),
+        formatDuration(value?.wall_clock?.p50),
+        formatDuration(value?.vector_recall?.p50),
+      );
+    });
+  }
+
+  if (Object.keys(agentModes).length) {
+    pushSection("Agent 检索模式");
+    orderedEntries(agentModes, orderedModeKeys).forEach(([key, value]) => {
+      pushRow(
+        `${key} (${formatNum(value?.count)})`,
+        formatRate(value?.no_context_rate),
+        formatRate(value?.embed_cache_hit_rate),
+        formatRate(value?.query_rewrite_rate),
+        formatDuration(value?.wall_clock?.p50),
+        formatDuration(value?.vector_recall?.p50),
+      );
+    });
+  }
+
+  if (!rows.length) {
+    dashboardObservabilityTable.innerHTML = `
+      <tbody>
+        <tr>
+          <td colspan="6">暂无分层观测数据</td>
+        </tr>
+      </tbody>
+    `;
+    return;
+  }
+
+  dashboardObservabilityTable.innerHTML = `
+    <thead>
+      <tr>
+        <th>维度</th>
+        <th>未命中</th>
+        <th>Embed 缓存</th>
+        <th>问题重写</th>
+        <th>端到端</th>
+        <th>向量召回</th>
+      </tr>
+    </thead>
+    <tbody>
+      ${rows.join("\n")}
+    </tbody>
+  `;
+}
+
 function renderDashboardStartupLogs(data) {
   if (!dashboardStartupLogs) return;
   const startup = data?.startup || {};
@@ -573,6 +872,16 @@ function renderDashboardError(err) {
   if (dashboardStartupLogs) {
     dashboardStartupLogs.textContent = text;
   }
+  if (dashboardObservabilityTable) {
+    dashboardObservabilityTable.innerHTML = `
+      <tbody>
+        <tr>
+          <td>分层观测</td>
+          <td class="dashboard-error-cell" colspan="5">${escapeHtml(text)}</td>
+        </tr>
+      </tbody>
+    `;
+  }
 }
 
 function loadDashboardPrefill() {
@@ -594,6 +903,7 @@ async function refreshDashboard({ force = false } = {}) {
     const data = await apiGet(url);
     const rag = data?.rag || {};
     const library = data?.library || {};
+    const libraryGraphQuality = library?.graph_quality || {};
     const apiUsage = data?.api_usage || {};
     const agent = data?.agent || {};
     const ragQa = data?.rag_qa || {};
@@ -605,11 +915,14 @@ async function refreshDashboard({ force = false } = {}) {
     const agentRerank = rerankQuality.agent || {};
     const missingQueries = data?.missing_queries_last_30d || {};
     const agentWallClock = data?.agent_wall_clock || {};
+    const runtimeData = data?.runtime_data || {};
     lastStartupStatus = String(startup.status || "unknown");
     lastApiUsage = apiUsage;
+    currentRuntimeDataSummary = runtimeData;
     const warnings = Array.isArray(data?.warnings) ? data.warnings : [];
     const health = buildDashboardHealthFlags({
       rag,
+      library,
       apiUsage,
       latency,
       cacheStats,
@@ -623,7 +936,7 @@ async function refreshDashboard({ force = false } = {}) {
       buildStatCard("书影音游戏总条目", formatNum(library.total_items), `今年条目 ${formatNum(library.this_year_items)}`),
 
       buildStatCard("RAG Graph 节点数", formatNum(rag.graph_nodes), `边数 ${formatNum(rag.graph_edges)}`),
-      buildStatCard("Library Graph 节点数", formatNum(library.graph_nodes), `边数 ${formatNum(library.graph_edges)}`),
+      buildStatCard("Library Graph 节点数", formatNum(library.graph_nodes), `覆盖 ${formatRate(libraryGraphQuality.item_coverage_rate)} | 孤点 ${formatRate(libraryGraphQuality.isolated_node_rate)} | 长按补缺`, "library-graph-summary", unhealthyState(health.libraryGraphScale)),
 
       buildStatCard("RAG 平均节点数", `${rag.nodes_per_doc != null ? Number(rag.nodes_per_doc).toFixed(2) : "—"}`, `每节点平均边数 ${rag.edges_per_node != null ? Number(rag.edges_per_node).toFixed(2) : "—"}`, "", unhealthyState(health.ragGraphDensity)),
       buildStatCard("RAG 待重建文档", formatNum(rag.changed_pending), rag.changed_pending > 0 ? "等待后台同步" : "已全部同步", "rag-changed-pending", unhealthyState(health.ragPending)),
@@ -635,7 +948,7 @@ async function refreshDashboard({ force = false } = {}) {
       buildStatCard("RAG Q&A 消息总数", formatNum(ragQa.message_count), `会话数 ${formatNum(ragQa.session_count)}`),
 
       buildStatCard("向量召回均值", formatDuration(latency.stages?.total?.avg), `近 ${formatNum(latency.stages?.total?.count)} 次 | p50 ${formatDuration(latency.stages?.total?.p50)}`, "", unhealthyState(health.vectorRecall)),
-      buildStatCard("重排序均值", formatDuration(latency.stages?.rerank_seconds?.avg), `近 ${formatNum(latency.stages?.rerank_seconds?.count)} 次 | 含排序回退用时`, "", unhealthyState(health.rerankLatency)),
+      buildStatCard("RAG 模型重排均值", formatDuration(latency.stages?.rerank_seconds?.avg), `近 ${formatNum(latency.stages?.rerank_seconds?.count)} 次 | Agent 融合重排见下表`, "", unhealthyState(health.rerankLatency)),
 
       buildStatCard("检索分位 p50", `${formatDuration(latency.stages?.total?.p50)}`, `p95 ${formatDuration(latency.stages?.total?.p95)} | p99 ${formatDuration(latency.stages?.total?.p99)}`, "", unhealthyState(health.retrievalPercentiles)),
       buildStatCard("RAG 全流程 p50",`${formatDuration(latency.stages?.elapsed_seconds?.p50)}`,`p95 ${formatDuration(latency.stages?.elapsed_seconds?.p95)} | Agent p50 ${formatDuration(agentWallClock.p50)}`, "", unhealthyState(health.endToEnd)),
@@ -648,11 +961,10 @@ async function refreshDashboard({ force = false } = {}) {
 
       buildStatCard("RAG 未命中率", formatRate(cacheStats.rag_no_context_rate), `Agent 未命中率 ${formatRate(cacheStats.agent_no_context_rate)}`, "", unhealthyState(health.noContext)),
       buildStatCard("月检索缺失问题数", formatNum(missingQueries.count), "长按查看导出", "missing-queries-summary"),
+      buildStatCard("运行时数据", formatSizeValue(runtimeData.total_size_bytes), `非空 ${formatNum(runtimeData.nonzero_items)} 项 | 长按查看`, "runtime-data-summary"),
       
       buildStatCard("RAG 最相关 Top1", ragRerank.avg_top1_local_doc_score_p99 != null ? Number(ragRerank.avg_top1_local_doc_score_p99).toFixed(4) : "—", `同口径均值 ${ragRerank.avg_top1_local_doc_score != null ? Number(ragRerank.avg_top1_local_doc_score).toFixed(4) : "—"}`, "", unhealthyState(health.top1Score)),
       buildStatCard("Agent 综合 Top1", agentRerank.avg_top1_local_doc_score_p99 != null ? Number(agentRerank.avg_top1_local_doc_score_p99).toFixed(4) : "—", `同口径均值 ${agentRerank.avg_top1_local_doc_score != null ? Number(agentRerank.avg_top1_local_doc_score).toFixed(4) : "—"}`),
-      
-      buildStatCard("模型预热状态", String(startup.status || "unknown"), String(startup.last_checked_at || "")),
     ];
 
     // Store warnings for modal
@@ -666,7 +978,9 @@ async function refreshDashboard({ force = false } = {}) {
     }
 
     renderDashboardLatencyTable(data);
+    renderDashboardObservabilityTable(data);
     renderDashboardStartupLogs(data);
+  refreshTaskCenter().catch(() => {});
 
     const generated = String(data?.generated_at || "").trim();
     const month = String(data?.month || "").trim();
@@ -690,9 +1004,12 @@ async function bootstrapDashboardTab() {
   const prefill = loadDashboardPrefill();
   if (prefill) {
     renderDashboardLatencyTable(prefill);
+    renderDashboardObservabilityTable(prefill);
     renderDashboardStartupLogs(prefill);
   }
   await refreshDashboard();
+  await refreshTaskCenter().catch(() => {});
+  startTaskCenterPolling();
   dashboardBootstrapped = true;
   scheduleStartupPollingIfNeeded();
 }
@@ -727,12 +1044,18 @@ function scheduleStartupPollingIfNeeded() {
 // ─── RAG sync trigger ─────────────────────────────────────────────────────────
 
 async function triggerRagSync() {
-  if (!window.confirm("触发 RAG 向量重建同步？（将在后台处理所有 changed=true 的文档）")) return;
-  if (dashboardGeneratedAt) dashboardGeneratedAt.textContent = "正在触发 RAG 同步...";
   try {
-    await apiPost("/api/dashboard/trigger-rag-sync", {});
-    if (dashboardGeneratedAt) dashboardGeneratedAt.textContent = "RAG 同步任务已触发，后台重建中...";
-    setTimeout(() => refreshDashboard().catch(() => {}), 3000);
+    const job = await startDashboardJob("/api/dashboard/jobs/rag-sync", {}, {
+      confirmText: "触发 RAG 向量重建同步？（将在后台处理所有 changed=true 的文档）",
+      queuedText: "RAG 同步任务已加入后台队列...",
+      onUpdate: (runningJob) => {
+        if (dashboardGeneratedAt && runningJob?.message) dashboardGeneratedAt.textContent = runningJob.message;
+      },
+      onComplete: async () => {
+        await refreshDashboard({ force: true });
+      },
+    });
+    if (dashboardGeneratedAt && job?.message) dashboardGeneratedAt.textContent = job.message;
   } catch (err) {
     window.alert(`RAG 同步失败: ${err.message || String(err)}`);
     if (dashboardGeneratedAt) dashboardGeneratedAt.textContent = "同步触发失败";
@@ -789,13 +1112,13 @@ async function openMissingQueriesModal() {
   missingQueriesModal.classList.remove("hidden");
   missingQueriesModal.setAttribute("aria-hidden", "false");
   if (missingQueriesModalMeta) {
-    missingQueriesModalMeta.textContent = `最近30天: ${formatNum(currentMissingQueries.length)} 条 | 来源: ${currentMissingQueriesSource}`;
+    missingQueriesModalMeta.textContent = `最近30天: ${formatNum(currentMissingQueries.length)} 条 | 来源: ${displaySourceLabel(currentMissingQueriesSource)}`;
   }
   if (missingQueriesModalList) {
     missingQueriesModalList.innerHTML = currentMissingQueries.length
       ? currentMissingQueries.map((row) => {
           const ts = escapeHtml(String(row?.ts || ""));
-          const source = escapeHtml(String(row?.source || "unknown"));
+          const source = escapeHtml(String(row?.source_label || displaySourceLabel(row?.source || "unknown")));
           const query = escapeHtml(String(row?.query || ""));
           const top1 = row?.top1_score != null ? Number(row.top1_score).toFixed(4) : "—";
           const th = row?.threshold != null ? Number(row.threshold).toFixed(4) : "—";
@@ -836,6 +1159,134 @@ async function exportMissingQueriesCsv() {
   a.click();
   a.remove();
   URL.revokeObjectURL(url);
+}
+
+async function loadRuntimeData() {
+  const data = await apiGet("/api/dashboard/runtime-data");
+  currentRuntimeDataItems = Array.isArray(data?.items) ? data.items : [];
+  currentRuntimeDataSummary = data || {};
+}
+
+function renderRuntimeDataModal() {
+  if (runtimeDataModalMeta) {
+    runtimeDataModalMeta.textContent = `总计 ${formatSizeValue(currentRuntimeDataSummary.total_size_bytes)} | 非空 ${formatNum(currentRuntimeDataSummary.nonzero_items)} 项`;
+  }
+  if (runtimeDataModalList) {
+    runtimeDataModalList.innerHTML = currentRuntimeDataItems.length
+      ? currentRuntimeDataItems.map((item) => {
+          const key = escapeHtml(String(item?.key || ""));
+          const label = escapeHtml(String(item?.label || "未命名项"));
+          const desc = escapeHtml(String(item?.description || ""));
+          const size = formatSizeValue(item?.size_bytes || 0);
+          const files = formatNum(item?.file_count || 0);
+          const disabled = Number(item?.size_bytes || 0) <= 0 ? " disabled" : "";
+          const paths = Array.isArray(item?.paths)
+            ? item.paths.map((path) => {
+                const raw = String(path || "");
+                const base = basenameFromPath(raw) || raw;
+                return `<span class="runtime-data-path"><span class="runtime-data-path-name">${escapeHtml(base)}</span><br/><span class="runtime-data-path-full">${escapeHtml(raw)}</span></span>`;
+              }).join("")
+            : "";
+          return `<li class="runtime-data-item">
+            <label style="cursor:pointer;">
+              <input type="checkbox" value="${key}"${disabled} />
+              <span class="runtime-data-item-body">
+                <strong>${label}</strong> <span class="dashboard-meta">${size} | 文件 ${files}</span><br/>
+                <span class="dashboard-meta">${desc}</span>${paths ? `<span class="runtime-data-paths">${paths}</span>` : ""}
+              </span>
+            </label>
+          </li>`;
+        }).join("")
+      : "<li>暂无可统计的运行时数据</li>";
+  }
+}
+
+async function openRuntimeDataModal() {
+  if (!runtimeDataModal) return;
+  await loadRuntimeData();
+  renderRuntimeDataModal();
+  runtimeDataModal.classList.remove("hidden");
+  runtimeDataModal.setAttribute("aria-hidden", "false");
+}
+
+function closeRuntimeDataModal() {
+  if (!runtimeDataModal) return;
+  runtimeDataModal.classList.add("hidden");
+  runtimeDataModal.setAttribute("aria-hidden", "true");
+}
+
+async function pollJsonJob(url, { interval = 1200, onUpdate } = {}) {
+  while (true) {
+    const payload = await apiGet(url);
+    const job = payload?.job || payload;
+    if (onUpdate) onUpdate(job);
+    const status = String(job?.status || "");
+    if (["completed", "failed", "cancelled"].includes(status)) return job;
+    await sleep(interval);
+  }
+}
+
+async function startDashboardJob(endpoint, payload, { confirmText, queuedText, onUpdate, onComplete } = {}) {
+  if (confirmText && !window.confirm(confirmText)) return null;
+  const response = await apiPost(endpoint, payload || {});
+  const jobId = String(response?.job?.id || "").trim();
+  if (!jobId) throw new Error("未返回任务 ID");
+  if (dashboardGeneratedAt && queuedText) dashboardGeneratedAt.textContent = queuedText;
+  const job = await pollJsonJob(`/api/dashboard/jobs/${encodeURIComponent(jobId)}`, { onUpdate });
+  if (job?.status === "completed") {
+    if (onComplete) await onComplete(job);
+    return job;
+  }
+  throw new Error(job?.error || job?.message || "后台任务失败");
+}
+
+async function clearRuntimeDataSelection() {
+  const checked = Array.from(runtimeDataModalList?.querySelectorAll("input[type='checkbox']:checked") || [])
+    .map((node) => String(node.value || "").trim())
+    .filter(Boolean);
+  if (!checked.length) {
+    window.alert("请先勾选要清除的项目");
+    return;
+  }
+  if (!window.confirm(`确定清除已勾选的 ${checked.length} 项运行时数据？`)) return;
+  if (runtimeDataClearBtn) runtimeDataClearBtn.disabled = true;
+  try {
+    const job = await startDashboardJob("/api/dashboard/jobs/runtime-data-cleanup", { keys: checked }, {
+      queuedText: `已提交运行时数据清理任务（${checked.length} 项）`,
+      onComplete: async (doneJob) => {
+        const result = doneJob?.result || {};
+        if (Array.isArray(result?.failed) && result.failed.length) {
+          const details = result.failed.map((item) => `${item.key}: ${item.error}`).join("\n");
+          window.alert(`部分清除失败:\n${details}`);
+        }
+        await loadRuntimeData();
+        renderRuntimeDataModal();
+        await refreshDashboard({ force: true });
+      },
+    });
+    if (dashboardGeneratedAt && job?.message) dashboardGeneratedAt.textContent = job.message;
+  } finally {
+    if (runtimeDataClearBtn) runtimeDataClearBtn.disabled = false;
+  }
+}
+
+async function triggerLibraryGraphRebuild() {
+  try {
+    const job = await startDashboardJob("/api/dashboard/jobs/library-graph-rebuild", {}, {
+      confirmText: "触发 Library Graph 缺失项补足？这会为当前缺失条目补建图节点与边。",
+      queuedText: "Library Graph 补缺任务已加入后台队列...",
+      onUpdate: (runningJob) => {
+        if (dashboardGeneratedAt && runningJob?.message) dashboardGeneratedAt.textContent = runningJob.message;
+      },
+      onComplete: async () => {
+        await refreshDashboard({ force: true });
+      },
+    });
+    if (dashboardGeneratedAt && job?.message) dashboardGeneratedAt.textContent = job.message;
+  } catch (err) {
+    window.alert(`Library Graph 补缺失败: ${err.message || String(err)}`);
+    if (dashboardGeneratedAt) dashboardGeneratedAt.textContent = "Library Graph 补缺触发失败";
+  }
 }
 
 // ─── Usage edit modal ─────────────────────────────────────────────────────────
@@ -987,6 +1438,10 @@ let benchmarkEventSource = null;
 let benchmarkHistory = [];
 let benchmarkAbortController = null;
 let benchmarkTimerInterval = null;
+let activeBenchmarkJobId = "";
+let lastBenchmarkLogCount = 0;
+const BENCHMARK_HISTORY_COLUMNS = 4;
+let benchmarkCaseSets = [];
 
 // Current test-set selection: "<module>/<length>"
 let currentBmTestSet = "rag/short";
@@ -997,29 +1452,30 @@ function renderBenchmarkTable(results) {
 
   const testSet = currentBmTestSet;
   const [module, length] = testSet.split("/");
+  const emptyColspan = 1 + BENCHMARK_HISTORY_COLUMNS;
 
   if (!results.length) {
-    table.innerHTML = `<tbody><tr><td colspan="6" style="text-align:center;color:#7a7f6f">运行测试后查看历史对比数据</td></tr></tbody>`;
+    table.innerHTML = `<tbody><tr><td colspan="${emptyColspan}" style="text-align:center;color:#7a7f6f">运行测试后查看历史对比数据</td></tr></tbody>`;
     return;
   }
 
   // Only keep runs that contain data for the selected module+length
   const relevant = results.filter((r) => r?.[module]?.by_length?.[length]);
   if (!relevant.length) {
-    const mod = module.toUpperCase();
+    const mod = ({ rag: "RAG", agent: "AGENT", hybrid: "HYBRID" }[module] || module.toUpperCase());
     const lenLabel = { short: "短", medium: "中", long: "长" }[length] || length;
-    table.innerHTML = `<tbody><tr><td colspan="6" style="text-align:center;color:#7a7f6f">当前测试集（${mod} / ${lenLabel}查询）暂无数据，请先运行包含该模块的测试</td></tr></tbody>`;
+    table.innerHTML = `<tbody><tr><td colspan="${emptyColspan}" style="text-align:center;color:#7a7f6f">当前测试集（${mod} / ${lenLabel}查询）暂无数据，请先运行包含该模块的测试</td></tr></tbody>`;
     return;
   }
 
-  // Up to 5 most-recent matching runs, newest first (→ leftmost column)
-  const recent = relevant.slice(-5).reverse();
+  // Up to 4 most-recent matching runs, newest first (→ leftmost column)
+  const recent = relevant.slice(-BENCHMARK_HISTORY_COLUMNS).reverse();
 
   const thead = `<thead><tr>
     <th style="min-width:120px">指标</th>
     ${recent.map((r, i) => {
       const ts = String(r.timestamp || "").replace("T", " ").slice(5, 16);
-      const mods = (r.config?.modules || []).map((m) => m.toUpperCase()).join("+");
+      const mods = (r.config?.modules || []).map((m) => ({ rag: "RAG", agent: "AGENT", hybrid: "HYBRID" }[m] || String(m).toUpperCase())).join("+");
       return `<th${i === 0 ? ' class="bm-latest"' : ""}>${escapeHtml(ts)}<br><small style="font-weight:normal;color:#9a9f8f">${escapeHtml(mods)}</small></th>`;
     }).join("")}
   </tr></thead>`;
@@ -1044,29 +1500,32 @@ function renderBenchmarkTable(results) {
   const ragRows = [
     ["总时长均值",     (d) => fmt(d?.avg_wall_clock_s)],
     ["总时长 p95",      (d) => fmt(d?.p95_wall_clock_s)],
-    //["总时长 p99",      (d) => fmt(d?.p99_wall_clock_s)],
     ["端到端均值",   (d) => fmt(d?.avg_elapsed_s)],
     ["向量召回均值",   (d) => fmt(d?.avg_total_s)],
     ["向量召回 p95",    (d) => fmt(d?.p95_total_s)],
-    ["重排序均值",     (d) => fmt(d?.avg_rerank_seconds_s)],
-    //["上下文组装 均值", (d) => fmt(d?.avg_context_assembly_seconds_s)],
-    ["文档未命中率",   (d) => fmtPct(d?.no_context_rate)],
-    ["有效 / 总查询数", (d) => fmtN(d)],
+    ["模型重排均值",   (d) => fmt(d?.avg_rerank_seconds_s)],
+    ["模型重排 p95",    (d) => fmt(d?.p95_rerank_seconds_s)],
   ];
   const agentRows = [
     ["总时长均值",   (d) => fmt(d?.avg_wall_clock_s)],
     ["总时长 p95",    (d) => fmt(d?.p95_wall_clock_s)],
-    ["总时长 p99",    (d) => fmt(d?.p99_wall_clock_s)],
+    ["端到端均值",   (d) => fmt(d?.avg_elapsed_s ?? d?.avg_wall_clock_s)],
+    ["端到端 p95",    (d) => fmt(d?.p95_elapsed_s ?? d?.p95_wall_clock_s)],
     ["向量召回均值", (d) => fmt(d?.avg_vector_recall_seconds_s)],
-    ["重排序均值",   (d) => fmt(d?.avg_rerank_seconds_s)],
-    ["文档未命中率",  (d) => fmtPct(d?.no_context_rate)],
-    ["有效 / 总查询数", (d) => fmtN(d)],
+    ["向量召回 p95",  (d) => fmt(d?.p95_vector_recall_seconds_s)],
+    ["融合重排均值", (d) => fmt(d?.avg_rerank_seconds_s)],
+    ["融合重排 p95",  (d) => fmt(d?.p95_rerank_seconds_s)],
   ];
-  const rowDefs = module === "rag" ? ragRows : agentRows;
+  const assertionRows = [
+    ["当前集断言", (_d, run) => summarizeAssertionScope(run?.assertions?.[module]?.by_length?.[length])],
+    ["全局断言", (_d, run) => summarizeAssertionScope(run?.assertions?.[module]?.global)],
+    ["当前集失败项", (_d, run) => summarizeAssertionFailures(run?.assertions?.[module]?.by_length?.[length])],
+  ];
+  const rowDefs = (module === "rag" ? ragRows : agentRows).concat(assertionRows);
 
   const rows = rowDefs.map(([label, getter]) =>
     `<tr><td style="white-space:nowrap;color:#b0b89a;font-size:0.82em">${escapeHtml(label)}</td>${recent
-      .map((r) => `<td>${getter(r?.[module]?.by_length?.[length])}</td>`)
+      .map((r) => `<td>${getter(r?.[module]?.by_length?.[length], r)}</td>`)
       .join("")}</tr>`
   );
   table.innerHTML = `${thead}<tbody>${rows.join("")}</tbody>`;
@@ -1086,6 +1545,26 @@ async function bootstrapBenchmarkTab() {
     // History not critical
   }
 
+  try {
+    const casesPayload = await apiGet("/api/benchmark/cases");
+    const caseSel = document.getElementById("bm-case-set-select");
+    benchmarkCaseSets = Array.isArray(casesPayload?.case_sets) ? casesPayload.case_sets : [];
+    if (caseSel) {
+      if (benchmarkCaseSets.length) {
+        caseSel.innerHTML = benchmarkCaseSets.map((item) => {
+          const id = String(item?.id || "");
+          const label = String(item?.label || id);
+          const maxCount = Number(item?.max_query_count_per_type || 0);
+          const desc = `${id} / ${label}${maxCount > 0 ? ` / 每类最多 ${maxCount}` : ""}`;
+          return `<option value="${escapeHtml(id)}"${id === "regression_v1" ? " selected" : ""}>${escapeHtml(desc)}</option>`;
+        }).join("");
+      }
+    }
+    syncBenchmarkCountOptions();
+  } catch (_e) {
+    // Case-set list is optional; keep template fallback.
+  }
+
   // Wire up the test-set dropdown
   const sel = document.getElementById("bm-testset-select");
   if (sel) {
@@ -1096,18 +1575,48 @@ async function bootstrapBenchmarkTab() {
     });
   }
 
+  document.getElementById("bm-case-set-select")?.addEventListener("change", () => {
+    syncBenchmarkCountOptions();
+  });
+
   benchmarkBootstrapped = true;
+}
+
+function syncBenchmarkCountOptions() {
+  const caseSetSelect = document.getElementById("bm-case-set-select");
+  const selectedCaseSetId = String(caseSetSelect?.value || "regression_v1");
+  const selectedCaseSet = benchmarkCaseSets.find((item) => String(item?.id || "") === selectedCaseSetId) || null;
+  const maxCount = Number(selectedCaseSet?.max_query_count_per_type || 0);
+  const radios = Array.from(document.querySelectorAll("input[name='bm-count']"));
+  let fallbackRadio = null;
+  let checkedRadio = null;
+  radios.forEach((radio) => {
+    const value = parseInt(String(radio.value || "0"), 10);
+    const enabled = !maxCount || value <= maxCount;
+    radio.disabled = !enabled;
+    if (enabled && !fallbackRadio) fallbackRadio = radio;
+    if (radio.checked) checkedRadio = radio;
+    const label = radio.closest("label");
+    if (label) label.style.opacity = enabled ? "1" : "0.45";
+  });
+  if (checkedRadio?.disabled && fallbackRadio) {
+    fallbackRadio.checked = true;
+  }
 }
 
 function runBenchmark() {
   const ragCheck = document.getElementById("bm-rag");
   const agentCheck = document.getElementById("bm-agent");
+  const hybridCheck = document.getElementById("bm-hybrid");
+  const caseSetSelect = document.getElementById("bm-case-set-select");
   const countRadio = document.querySelector("input[name='bm-count']:checked");
   const modules = [];
   if (ragCheck?.checked) modules.push("rag");
   if (agentCheck?.checked) modules.push("agent");
+  if (hybridCheck?.checked) modules.push("hybrid");
   if (!modules.length) { window.alert("请至少选择一个测试模块"); return; }
   const queryCount = parseInt(countRadio?.value || "3", 10);
+  const caseSetId = String(caseSetSelect?.value || "regression_v1");
 
   const runBtn = document.getElementById("bm-run-btn");
   const abortBtn = document.getElementById("bm-abort-btn");
@@ -1136,63 +1645,65 @@ function runBenchmark() {
     if (timerEl) timerEl.textContent = `${mm}:${ss}`;
   }, 1000);
 
-  benchmarkAbortController = new AbortController();
-  const body = JSON.stringify({ modules, query_count_per_type: queryCount });
-  fetch("/api/benchmark/run", {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body,
-    signal: benchmarkAbortController.signal,
-  }).then(async (resp) => {
-    if (!resp.ok) {
-      const msg = await resp.text().catch(() => "未知错误");
-      throw new Error(msg);
-    }
-    const reader = resp.body.getReader();
-    const decoder = new TextDecoder();
-    let buffer = "";
-    while (true) {
-      const { done, value } = await reader.read();
-      if (done) break;
-      buffer += decoder.decode(value, { stream: true });
-      const lines = buffer.split("\n");
-      buffer = lines.pop() || "";
-      for (const line of lines) {
-        if (!line.startsWith("data: ")) continue;
-        let event;
-        try { event = JSON.parse(line.slice(6)); } catch (_e) { continue; }
-        if (event.type === "progress") {
-          const msg = String(event.message || "");
+  apiPost("/api/benchmark/jobs", { modules, query_count_per_type: queryCount, case_set_id: caseSetId })
+    .then(async (resp) => {
+      activeBenchmarkJobId = String(resp?.job?.id || "");
+      lastBenchmarkLogCount = 0;
+      const job = await pollJsonJob(`/api/benchmark/jobs/${encodeURIComponent(activeBenchmarkJobId)}`, {
+        onUpdate: (runningJob) => {
+          const msg = String(runningJob?.message || "等待中...");
           if (progressText) progressText.textContent = msg;
-          if (progressFill && event.total > 0) {
-            progressFill.style.width = `${Math.round((event.current / event.total) * 100)}%`;
+          const total = Number(runningJob?.total || 0);
+          const current = Number(runningJob?.current || 0);
+          if (progressFill && total > 0) {
+            progressFill.style.width = `${Math.round((current / total) * 100)}%`;
           }
-          if (logBox) { logBox.textContent += `${msg}\n`; logBox.scrollTop = logBox.scrollHeight; }
-        } else if (event.type === "result") {
-          benchmarkHistory.push(event.data);
+          const logs = Array.isArray(runningJob?.logs) ? runningJob.logs : [];
+          if (logBox && logs.length > lastBenchmarkLogCount) {
+            logBox.textContent += logs.slice(lastBenchmarkLogCount).join("\n") + "\n";
+            logBox.scrollTop = logBox.scrollHeight;
+            lastBenchmarkLogCount = logs.length;
+          }
+        },
+      });
+      if (job?.status === "completed") {
+        const result = job?.result;
+        if (result) {
+          benchmarkHistory.push(result);
           renderBenchmarkTable(benchmarkHistory);
-          if (lastRun) lastRun.textContent = `上次运行: ${event.data.timestamp || ""}`;
-          if (progressFill) progressFill.style.width = "100%";
-          if (progressText) progressText.textContent = "测试完成";
-          if (logBox) { logBox.textContent += "✓ 测试完成\n"; logBox.scrollTop = logBox.scrollHeight; }
-        } else if (event.type === "error") {
-          if (progressText) progressText.textContent = `错误: ${event.message}`;
-          if (logBox) { logBox.textContent += `✗ 错误: ${event.message}\n`; logBox.scrollTop = logBox.scrollHeight; }
+          if (lastRun) {
+            const summary = result?.assertion_summary;
+            const assertionText = summary ? ` | 断言 ${summary.passed}/${summary.passed + summary.failed}` : "";
+            lastRun.textContent = `上次运行: ${result.timestamp || ""}${assertionText}`;
+          }
         }
+        if (progressFill) progressFill.style.width = "100%";
+        if (progressText) progressText.textContent = "测试完成";
+        if (logBox) {
+          const summary = job?.result?.assertion_summary;
+          if (summary) logBox.textContent += `✓ 断言通过 ${summary.passed}，失败 ${summary.failed}\n`;
+          logBox.textContent += "✓ 测试完成\n";
+          logBox.scrollTop = logBox.scrollHeight;
+        }
+      } else if (job?.status === "cancelled") {
+        if (progressText) progressText.textContent = "已中止";
+        if (logBox) {
+          logBox.textContent += "⏸ 用户中止测试\n";
+          logBox.scrollTop = logBox.scrollHeight;
+        }
+      } else {
+        throw new Error(job?.error || job?.message || "Benchmark 失败");
       }
-    }
-  }).catch((err) => {
-    if (err?.name === "AbortError") {
-      if (progressText) progressText.textContent = "已中止";
-      if (logBox) { logBox.textContent += "⏸ 用户中止测试\n"; logBox.scrollTop = logBox.scrollHeight; }
-    } else {
+    })
+    .catch((err) => {
       if (progressText) progressText.textContent = `连接失败: ${String(err)}`;
-    }
-  }).finally(() => {
+    })
+    .finally(() => {
     if (runBtn) runBtn.disabled = false;
     if (abortBtn) abortBtn.disabled = true;
     if (benchmarkTimerInterval) { clearInterval(benchmarkTimerInterval); benchmarkTimerInterval = null; }
     benchmarkAbortController = null;
+    activeBenchmarkJobId = "";
   });
 }
 
@@ -2015,13 +2526,13 @@ async function init() {
     loadMissingQueries(missingQueriesSourceSelect.value)
       .then(() => {
         if (missingQueriesModalMeta) {
-          missingQueriesModalMeta.textContent = `最近30天: ${formatNum(currentMissingQueries.length)} 条 | 来源: ${currentMissingQueriesSource}`;
+          missingQueriesModalMeta.textContent = `最近30天: ${formatNum(currentMissingQueries.length)} 条 | 来源: ${displaySourceLabel(currentMissingQueriesSource)}`;
         }
         if (missingQueriesModalList) {
           missingQueriesModalList.innerHTML = currentMissingQueries.length
             ? currentMissingQueries.map((row) => {
                 const ts = escapeHtml(String(row?.ts || ""));
-                const source = escapeHtml(String(row?.source || "unknown"));
+                const source = escapeHtml(String(row?.source_label || displaySourceLabel(row?.source || "unknown")));
                 const query = escapeHtml(String(row?.query || ""));
                 const top1 = row?.top1_score != null ? Number(row.top1_score).toFixed(4) : "—";
                 const th = row?.threshold != null ? Number(row.threshold).toFixed(4) : "—";
@@ -2033,6 +2544,13 @@ async function init() {
       .catch((e) => window.alert(`筛选失败: ${String(e)}`));
   });
   missingQueriesCloseBtn?.addEventListener("click", closeMissingQueriesModal);
+  runtimeDataRefreshBtn?.addEventListener("click", () => {
+    openRuntimeDataModal().catch((e) => window.alert(`刷新失败: ${String(e)}`));
+  });
+  runtimeDataClearBtn?.addEventListener("click", () => {
+    clearRuntimeDataSelection().catch((e) => window.alert(`清除失败: ${String(e)}`));
+  });
+  runtimeDataCloseBtn?.addEventListener("click", closeRuntimeDataModal);
   warningsModal?.addEventListener("click", (event) => {
     const target = event.target;
     if (target instanceof Element && target.getAttribute("data-role") === "warnings-backdrop") {
@@ -2045,6 +2563,38 @@ async function init() {
       closeMissingQueriesModal();
     }
   });
+  runtimeDataModal?.addEventListener("click", (event) => {
+    const target = event.target;
+    if (target instanceof Element && target.getAttribute("data-role") === "runtime-data-backdrop") {
+      closeRuntimeDataModal();
+    }
+  });
+  dashboardJobsRefreshBtn?.addEventListener("click", () => {
+    refreshTaskCenter().catch((e) => window.alert(`任务刷新失败: ${String(e)}`));
+  });
+  dashboardJobsFilter?.addEventListener("change", () => {
+    dashboardJobsView = String(dashboardJobsFilter.value || "active");
+    refreshTaskCenter().catch((e) => window.alert(`任务筛选失败: ${String(e)}`));
+  });
+  dashboardJobsList?.addEventListener("click", async (event) => {
+    const target = event.target;
+    const cancelBtn = target instanceof Element ? target.closest("[data-job-cancel-id]") : null;
+    if (cancelBtn) {
+      const jobId = String(cancelBtn.getAttribute("data-job-cancel-id") || "").trim();
+      if (!jobId) return;
+      try {
+        await apiPost(`/api/dashboard/jobs/${encodeURIComponent(jobId)}/cancel`, {});
+        await refreshTaskCenter();
+      } catch (e) {
+        window.alert(`取消任务失败: ${String(e)}`);
+      }
+      return;
+    }
+    const card = target instanceof Element ? target.closest("[data-job-id]") : null;
+    if (!card) return;
+    selectedTaskJobId = String(card.getAttribute("data-job-id") || "");
+    renderTaskCenter();
+  });
   // Long-press on warnings/usage cards to open their modals
   if (dashboardGrid) bindLongPress(dashboardGrid, (target) => {
     const warningsCard = target.closest("[data-role='warnings-summary']");
@@ -2052,6 +2602,16 @@ async function init() {
     const missingQueriesCard = target.closest("[data-role='missing-queries-summary']");
     if (missingQueriesCard) {
       openMissingQueriesModal().catch((e) => window.alert(`加载失败: ${String(e)}`));
+      return;
+    }
+    const runtimeDataCard = target.closest("[data-role='runtime-data-summary']");
+    if (runtimeDataCard) {
+      openRuntimeDataModal().catch((e) => window.alert(`加载失败: ${String(e)}`));
+      return;
+    }
+    const libraryGraphCard = target.closest("[data-role='library-graph-summary']");
+    if (libraryGraphCard) {
+      triggerLibraryGraphRebuild().catch((e) => window.alert(`触发失败: ${String(e)}`));
       return;
     }
     const usageCard = target.closest("[data-role='web-search-usage'],[data-role='deepseek-usage']");
@@ -2062,8 +2622,13 @@ async function init() {
 
   // Benchmark
   document.getElementById("bm-run-btn")?.addEventListener("click", runBenchmark);
-  document.getElementById("bm-abort-btn")?.addEventListener("click", () => {
-    benchmarkAbortController?.abort();
+  document.getElementById("bm-abort-btn")?.addEventListener("click", async () => {
+    if (!activeBenchmarkJobId) return;
+    try {
+      await apiPost(`/api/benchmark/jobs/${encodeURIComponent(activeBenchmarkJobId)}/cancel`, {});
+    } catch (_err) {
+      // Ignore cancel race with completed jobs.
+    }
   });
 
   wireChatLinks();

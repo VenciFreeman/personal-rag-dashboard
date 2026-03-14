@@ -40,12 +40,13 @@ def search_vector(
     embedding_model: str = Query(""),
 ) -> dict[str, object]:
     try:
-        hits = preview_service.vector_search(q, top_k=top_k, embedding_model=embedding_model or None)
+        hits, timings = preview_service.vector_search(q, top_k=top_k, embedding_model=embedding_model or None)
     except RuntimeError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
     return {
         "query": q,
         "count": len(hits),
         "embedding_model": embedding_model or preview_service.resolve_embedding_model(),
+        "embed_cache_hit": int(float(timings.get("embed_cache_hit", 0) or 0) > 0) if isinstance(timings, dict) else 0,
         "results": [{"path": h.path, "score": h.score, "topic": h.topic} for h in hits],
     }

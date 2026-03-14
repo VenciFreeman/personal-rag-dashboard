@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from typing import Any
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -97,10 +98,10 @@ def resolve_embedding_model() -> str:
     return model
 
 
-def vector_search(query: str, *, top_k: int = 10, embedding_model: str | None = None) -> list[PreviewHit]:
+def vector_search(query: str, *, top_k: int = 10, embedding_model: str | None = None) -> tuple[list[PreviewHit], dict[str, Any]]:
     model = (embedding_model or "").strip() or resolve_embedding_model()
     try:
-        rows, _timings = search_vector_index_with_diagnostics(
+        rows, timings = search_vector_index_with_diagnostics(
             query=query,
             documents_dir=DOCUMENTS_DIR,
             index_dir=VECTOR_DB_DIR,
@@ -127,4 +128,4 @@ def vector_search(query: str, *, top_k: int = 10, embedding_model: str | None = 
                 topic=str(item.get("topic", "")).strip() or None,
             )
         )
-    return hits
+    return hits, timings if isinstance(timings, dict) else {}

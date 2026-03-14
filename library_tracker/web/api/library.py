@@ -142,6 +142,34 @@ def refresh_embedding_items(req: EmbeddingRefreshItemsRequest) -> dict[str, Any]
     return {"ok": True, **stats}
 
 
+@router.post("/graph/rebuild")
+def rebuild_graph() -> dict[str, Any]:
+    return library_service.rebuild_library_graph()
+
+
+@router.post("/graph/sync-missing")
+def sync_missing_graph() -> dict[str, Any]:
+    return library_service.sync_missing_library_graph()
+
+
+@router.post("/graph/rebuild-job")
+def rebuild_graph_job() -> dict[str, Any]:
+    return {"ok": True, "job": library_service.start_graph_job(full=True)}
+
+
+@router.post("/graph/sync-missing-job")
+def sync_missing_graph_job() -> dict[str, Any]:
+    return {"ok": True, "job": library_service.start_graph_job(full=False)}
+
+
+@router.get("/graph/jobs/{job_id}")
+def get_graph_job(job_id: str) -> dict[str, Any]:
+    job = library_service.get_graph_job(job_id)
+    if job is None:
+        raise HTTPException(status_code=404, detail="Graph job not found")
+    return {"ok": True, "job": job}
+
+
 @router.get("/item/{item_id}")
 def get_item(item_id: str) -> dict[str, Any]:
     try:

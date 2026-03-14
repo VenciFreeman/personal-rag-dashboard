@@ -25,6 +25,7 @@ import json
 import math
 import os
 import re
+import shutil
 import sqlite3
 import subprocess
 import sys
@@ -48,7 +49,7 @@ from pydantic import BaseModel
 from web.api.agent import router as agent_router
 from web.api.benchmark import router as benchmark_router
 from web.config import AI_SUMMARY_URL_OVERRIDE, HOST, LIBRARY_TRACKER_URL_OVERRIDE, PORT
-from web.services import agent_service
+from web.services import agent_service, dashboard_jobs
 
 APP_DIR = Path(__file__).resolve().parent
 PROJECT_ROOT = APP_DIR.parent.parent
@@ -64,6 +65,13 @@ CONTENT_TYPE_TO_EXT = {
     "image/webp": ".webp",
     "image/gif": ".gif",
 }
+SOURCE_LABELS = {
+    "agent": "LLM Agent",
+    "rag_qa": "RAG 问答",
+    "rag_qa_stream": "RAG 问答（流式）",
+    "benchmark_rag": "Benchmark / RAG",
+    "benchmark_agent": "Benchmark / Agent",
+}
 templates = Jinja2Templates(directory=str(APP_DIR / "templates"))
 
 
@@ -76,6 +84,10 @@ class CustomCardPayload(BaseModel):
 class UsageAdjustPayload(BaseModel):
     month_web_search_calls: int
     month_deepseek_calls: int
+
+
+class RuntimeDataCleanupPayload(BaseModel):
+    keys: list[str]
 
 
 def _default_custom_cards() -> list[dict[str, str]]:
@@ -227,6 +239,227 @@ def _safe_load_json(path: Path, default: Any) -> Any:
         return default
 
 
+def _source_display_name(source: str) -> str:
+    raw = str(source or "").strip()
+    if not raw:
+        return "未知来源"
+    return SOURCE_LABELS.get(raw.lower(), raw)
+
+
+def _display_path(path: Path) -> str:
+    try:
+        return str(path.relative_to(PROJECT_ROOT)).replace("\\", "/")
+    except Exception:
+        return str(path).replace("\\", "/")
+
+
+def _sqlite_family(path: Path) -> list[Path]:
+    return [path, path.with_name(path.name + "-wal"), path.with_name(path.name + "-shm")]
+
+
+def _runtime_data_targets() -> list[dict[str, Any]]:
+    ai_data = PROJECT_ROOT / "ai_conversations_summary" / "data"
+    cache_dir = ai_data / "cache"
+    return [
+        {
+            "key": "benchmark_history_current",
+            "label": "Benchmark 历史",
+            "description": "Dashboard 当前基准测试结果，仅保留最近 4 次。",
+            "paths": [PROJECT_ROOT / "nav_dashboard" / "data" / "benchmark" / "results.json"],
+            "mode": "reset_benchmark_history",
+        },
+        {
+            "key": "benchmark_history_legacy",
+            "label": "旧版 Benchmark 结果",
+            "description": "遗留的根目录 benchmark_results.json，不再被当前 Dashboard 使用。",
+            "paths": [PROJECT_ROOT / "data" / "benchmark_results.json"],
+            "mode": "delete_paths",
+        },
+        {
+            "key": "rag_debug_records",
+            "label": "RAG Debug 记录",
+            "description": "ai_conversations_summary 调试输出与排错快照。",
+            "paths": [ai_data / "rag_sessions" / "debug_data"],
+            "mode": "clear_dir_contents",
+        },
+        {
+            "key": "missing_query_log",
+            "label": "检索未命中日志",
+            "description": "最近未命中 query 的 JSONL 日志。",
+            "paths": [cache_dir / "no_context_queries.jsonl"],
+            "mode": "truncate_file",
+        },
+        {
+            "key": "retrieval_metrics",
+            "label": "RAG 检索统计",
+            "description": "RAG rolling latency 指标文件，Dashboard 只取最近 20 条。",
+            "paths": [ai_data / "rag_sessions" / "retrieval_metrics.json"],
+            "mode": "delete_paths",
+        },
+        {
+            "key": "agent_metrics",
+            "label": "Agent 统计",
+            "description": "Agent rolling metrics 文件，Dashboard 只取最近 20 条。",
+            "paths": [PROJECT_ROOT / "nav_dashboard" / "data" / "agent_metrics.json"],
+            "mode": "delete_paths",
+        },
+        {
+            "key": "web_cache",
+            "label": "Web 搜索缓存",
+            "description": "Tavily 搜索缓存数据库，TTL 7 天。",
+            "paths": _sqlite_family(cache_dir / "web_cache.db"),
+            "mode": "delete_paths",
+        },
+        {
+            "key": "embed_cache",
+            "label": "Embedding 缓存",
+            "description": "文本 embedding 缓存数据库，可手动清空后重建。",
+            "paths": _sqlite_family(cache_dir / "embed_cache.db"),
+            "mode": "delete_paths",
+        },
+        {
+            "key": "raw_dir",
+            "label": "原始导入目录",
+            "description": "批处理分类归档后的原始文件缓存。",
+            "paths": [ai_data / "raw_dir"],
+            "mode": "clear_dir_contents",
+        },
+        {
+            "key": "extracted_dir",
+            "label": "解包中间目录",
+            "description": "抽取/解包后的中间文件。",
+            "paths": [ai_data / "extracted_dir"],
+            "mode": "clear_dir_contents",
+        },
+        {
+            "key": "split_dir",
+            "label": "切分中间目录",
+            "description": "文档切分阶段的中间产物。",
+            "paths": [ai_data / "split_dir"],
+            "mode": "clear_dir_contents",
+        },
+        {
+            "key": "summarize_dir",
+            "label": "摘要中间目录",
+            "description": "批处理摘要阶段的中间产物。",
+            "paths": [ai_data / "summarize_dir"],
+            "mode": "clear_dir_contents",
+        },
+        {
+            "key": "deepseek_api_audit",
+            "label": "DeepSeek 审计缓存",
+            "description": "DeepSeek API 调用审计与调试文件。",
+            "paths": [cache_dir / "deepseek_api_audit"],
+            "mode": "clear_dir_contents",
+        },
+    ]
+
+
+def _measure_path(path: Path) -> tuple[int, int, bool]:
+    if not path.exists():
+        return 0, 0, False
+    if path.is_file():
+        try:
+            return int(path.stat().st_size), 1, True
+        except Exception:
+            return 0, 1, True
+
+    total_bytes = 0
+    total_files = 0
+    for child in path.rglob("*"):
+        if not child.is_file():
+            continue
+        total_files += 1
+        try:
+            total_bytes += int(child.stat().st_size)
+        except Exception:
+            continue
+    return total_bytes, total_files, True
+
+
+def _collect_runtime_data_items() -> list[dict[str, Any]]:
+    items: list[dict[str, Any]] = []
+    for target in _runtime_data_targets():
+        total_bytes = 0
+        file_count = 0
+        existing_paths = 0
+        for path in target["paths"]:
+            size_bytes, files, exists = _measure_path(path)
+            total_bytes += size_bytes
+            file_count += files
+            existing_paths += 1 if exists else 0
+        items.append(
+            {
+                "key": str(target["key"]),
+                "label": str(target["label"]),
+                "description": str(target["description"]),
+                "size_bytes": int(total_bytes),
+                "size_mb": round(total_bytes / (1024 * 1024), 3),
+                "file_count": int(file_count),
+                "existing_paths": int(existing_paths),
+                "paths": [_display_path(path) for path in target["paths"]],
+            }
+        )
+    items.sort(key=lambda item: (int(item.get("size_bytes", 0)), int(item.get("file_count", 0))), reverse=True)
+    return items
+
+
+def _runtime_data_summary(include_items: bool = False) -> dict[str, Any]:
+    items = _collect_runtime_data_items()
+    total_bytes = sum(int(item.get("size_bytes", 0) or 0) for item in items)
+    nonzero = sum(1 for item in items if int(item.get("size_bytes", 0) or 0) > 0)
+    payload: dict[str, Any] = {
+        "generated_at": datetime.now().isoformat(timespec="seconds"),
+        "item_count": len(items),
+        "nonzero_items": nonzero,
+        "clearable_items": len(items),
+        "total_size_bytes": total_bytes,
+        "total_size_mb": round(total_bytes / (1024 * 1024), 3),
+    }
+    if include_items:
+        payload["items"] = items
+    return payload
+
+
+def _clear_runtime_target(target: dict[str, Any]) -> None:
+    mode = str(target.get("mode") or "")
+    paths = [path for path in target.get("paths", []) if isinstance(path, Path)]
+
+    if mode == "reset_benchmark_history":
+        if not paths:
+            return
+        path = paths[0]
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(json.dumps({"results": []}, ensure_ascii=False, indent=2), encoding="utf-8")
+        return
+
+    if mode == "truncate_file":
+        for path in paths:
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_text("", encoding="utf-8")
+        return
+
+    if mode == "clear_dir_contents":
+        for path in paths:
+            path.mkdir(parents=True, exist_ok=True)
+            for child in path.iterdir():
+                if child.is_dir():
+                    shutil.rmtree(child, ignore_errors=False)
+                else:
+                    child.unlink(missing_ok=True)
+        return
+
+    if mode == "delete_paths":
+        for path in paths:
+            if path.is_dir():
+                shutil.rmtree(path, ignore_errors=False)
+            else:
+                path.unlink(missing_ok=True)
+        return
+
+    raise ValueError(f"unsupported runtime cleanup mode: {mode}")
+
+
 def _count_rag_index_docs() -> tuple[int, int, int]:
     # Respect AI_SUMMARY_VECTOR_DB_DIR env var (mirrors ai_conversations_summary/web/config.py logic)
     vector_db_env = (os.getenv("AI_SUMMARY_VECTOR_DB_DIR", "") or "").strip()
@@ -296,6 +529,52 @@ def _library_counts() -> tuple[int, dict[str, int], int, int, int, int]:
         graph_edges = len(edges) if isinstance(edges, list) else 0
 
     return total, by_media, sqlite_rows, graph_nodes, graph_edges, this_year
+
+
+def _library_graph_quality(total_items: int, vector_rows: int) -> dict[str, Any]:
+    graph_path = PROJECT_ROOT / "library_tracker" / "data" / "vector_db" / "library_knowledge_graph.json"
+    graph_data = _safe_load_json(graph_path, default={})
+    if not isinstance(graph_data, dict):
+        return {
+            "item_node_count": 0,
+            "processed_item_count": 0,
+            "isolated_nodes": 0,
+            "isolated_node_rate": None,
+            "item_coverage_rate": None,
+            "processed_coverage_rate": None,
+            "vector_coverage_rate": None,
+            "edges_per_node": None,
+        }
+
+    nodes = graph_data.get("nodes", {}) if isinstance(graph_data.get("nodes"), dict) else {}
+    edges = graph_data.get("edges", []) if isinstance(graph_data.get("edges"), list) else []
+    processed = [str(x) for x in graph_data.get("processed_items", []) if str(x).strip()]
+    degrees: dict[str, int] = {str(node_id): 0 for node_id in nodes.keys()}
+    item_node_count = 0
+    for node_id, node in nodes.items():
+        if isinstance(node, dict) and str(node.get("type", "")).strip() == "item":
+            item_node_count += 1
+    for edge in edges:
+        if not isinstance(edge, dict):
+            continue
+        src = str(edge.get("src", "")).strip()
+        dst = str(edge.get("dst", "")).strip()
+        if src:
+            degrees[src] = degrees.get(src, 0) + 1
+        if dst:
+            degrees[dst] = degrees.get(dst, 0) + 1
+    isolated_nodes = sum(1 for value in degrees.values() if int(value) <= 0)
+    node_count = len(nodes)
+    return {
+        "item_node_count": item_node_count,
+        "processed_item_count": len(processed),
+        "isolated_nodes": isolated_nodes,
+        "isolated_node_rate": _safe_div(isolated_nodes, node_count),
+        "item_coverage_rate": _safe_div(item_node_count, total_items),
+        "processed_coverage_rate": _safe_div(len(processed), total_items),
+        "vector_coverage_rate": _safe_div(item_node_count, vector_rows),
+        "edges_per_node": _safe_div(len(edges), node_count),
+    }
 
 
 def _rag_graph_counts() -> tuple[int, int]:
@@ -530,6 +809,7 @@ def _load_missing_queries(days: int = 30, limit: int = 200, source: str = "") ->
             {
                 "ts": ts,
                 "source": row_source,
+                "source_label": _source_display_name(row_source),
                 "query": query,
                 "top1_score": float(top1_score) if isinstance(top1_score, (int, float)) else None,
                 "threshold": float(threshold) if isinstance(threshold, (int, float)) else None,
@@ -595,6 +875,7 @@ def _load_retrieval_latency_summary() -> dict[str, Any]:
     embed_hits = sum(1 for r in records if float(r.get("embed_cache_hit", 0) or 0) > 0)
     web_hits = sum(1 for r in records if float(r.get("web_cache_hit", 0) or 0) > 0)
     no_ctx = sum(1 for r in records if float(r.get("no_context", 0) or 0) > 0)
+    rewrite_hits = sum(1 for r in records if float(r.get("query_rewrite_seconds", 0) or 0) > 0)
 
     # Rerank quality: average top1 cosine score before rerank and delta (after - before)
     before_scores = [float(r["top1_score_before_rerank"]) for r in records if r.get("top1_score_before_rerank") is not None]
@@ -651,6 +932,26 @@ def _load_retrieval_latency_summary() -> dict[str, Any]:
         by_profile[profile] = {
             "count": len(prows),
             "stages": {k: _timing_stats(v) for k, v in pstage.items()},
+            "no_context_rate": round(sum(1 for r in prows if float(r.get("no_context", 0) or 0) > 0) / len(prows), 4),
+            "embed_cache_hit_rate": round(sum(1 for r in prows if float(r.get("embed_cache_hit", 0) or 0) > 0) / len(prows), 4),
+            "web_cache_hit_rate": round(sum(1 for r in prows if float(r.get("web_cache_hit", 0) or 0) > 0) / len(prows), 4),
+            "rewrite_seconds": _timing_stats([float(r.get("query_rewrite_seconds", 0) or 0) for r in prows if float(r.get("query_rewrite_seconds", 0) or 0) >= 0]),
+            "query_rewrite_rate": round(sum(1 for r in prows if float(r.get("query_rewrite_seconds", 0) or 0) > 0) / len(prows), 4),
+        }
+
+    by_search_mode: dict[str, Any] = {}
+    for mode in sorted({str(r.get("search_mode", "") or "").strip() for r in records if str(r.get("search_mode", "")).strip()}):
+        mrows = [r for r in records if str(r.get("search_mode", "") or "").strip() == mode]
+        if not mrows:
+            continue
+        by_search_mode[mode] = {
+            "count": len(mrows),
+            "elapsed": _timing_stats([float(r.get("elapsed_seconds", 0) or 0) for r in mrows if float(r.get("elapsed_seconds", 0) or 0) >= 0]),
+            "total": _timing_stats([float(r.get("total", 0) or 0) for r in mrows if float(r.get("total", 0) or 0) >= 0]),
+            "no_context_rate": round(sum(1 for r in mrows if float(r.get("no_context", 0) or 0) > 0) / len(mrows), 4),
+            "embed_cache_hit_rate": round(sum(1 for r in mrows if float(r.get("embed_cache_hit", 0) or 0) > 0) / len(mrows), 4),
+            "web_cache_hit_rate": round(sum(1 for r in mrows if float(r.get("web_cache_hit", 0) or 0) > 0) / len(mrows), 4),
+            "query_rewrite_rate": round(sum(1 for r in mrows if float(r.get("query_rewrite_seconds", 0) or 0) > 0) / len(mrows), 4),
         }
 
     return {
@@ -660,8 +961,10 @@ def _load_retrieval_latency_summary() -> dict[str, Any]:
         "rerank_quality": rerank_quality,
         "embed_cache_hit_rate": round(embed_hits / n, 3) if n else None,
         "web_cache_hit_rate": round(web_hits / n, 3) if n else None,
+        "query_rewrite_rate": round(rewrite_hits / n, 3) if n else None,
         "no_context_rate": round(no_ctx / n, 3) if n else None,
         "by_profile": by_profile,
+        "by_search_mode": by_search_mode,
     }
 
 
@@ -680,6 +983,8 @@ def _load_agent_metrics_summary() -> dict[str, Any]:
             "web_trigger_rate": None,
             "no_context_rate": None,
             "by_profile": {},
+            "by_search_mode": {},
+            "by_query_type": {},
         }
 
     rag_hits = sum(1 for r in rows if int(r.get("rag_used", 0) or 0))
@@ -728,6 +1033,43 @@ def _load_agent_metrics_summary() -> dict[str, Any]:
             "count": len(prows),
             "vector_recall": _timing_stats(vec_vals),
             "rerank": _timing_stats(rer_vals),
+            "wall_clock": _timing_stats([float(r.get("wall_clock_seconds", 0) or 0) for r in prows]),
+            "no_context_rate": round(sum(1 for r in prows if int(r.get("no_context", 0) or 0)) / len(prows), 4),
+            "embed_cache_hit_rate": round(sum(1 for r in prows if int(r.get("embed_cache_hit", 0) or 0)) / len(prows), 4),
+            "query_rewrite_rate": round(sum(1 for r in prows if int(r.get("query_rewrite_hit", 0) or 0)) / len(prows), 4),
+            "web_cache_hit_rate": round(sum(1 for r in prows if int(r.get("web_cache_hit", 0) or 0)) / len(prows), 4),
+            "rag_trigger_rate": round(sum(1 for r in prows if int(r.get("rag_used", 0) or 0)) / len(prows), 4),
+            "web_trigger_rate": round(sum(1 for r in prows if int(r.get("web_used", 0) or 0)) / len(prows), 4),
+        }
+
+    by_search_mode: dict[str, Any] = {}
+    modes = sorted({str(r.get("search_mode", "") or "").strip() for r in rows if str(r.get("search_mode", "")).strip()})
+    for mode in modes:
+        mrows = [r for r in rows if str(r.get("search_mode", "") or "").strip() == mode]
+        by_search_mode[mode] = {
+            "count": len(mrows),
+            "wall_clock": _timing_stats([float(r.get("wall_clock_seconds", 0) or 0) for r in mrows]),
+            "vector_recall": _timing_stats([float(r.get("vector_recall_seconds", 0) or 0) for r in mrows]),
+            "no_context_rate": round(sum(1 for r in mrows if int(r.get("no_context", 0) or 0)) / len(mrows), 4),
+            "embed_cache_hit_rate": round(sum(1 for r in mrows if int(r.get("embed_cache_hit", 0) or 0)) / len(mrows), 4),
+            "query_rewrite_rate": round(sum(1 for r in mrows if int(r.get("query_rewrite_hit", 0) or 0)) / len(mrows), 4),
+            "web_trigger_rate": round(sum(1 for r in mrows if int(r.get("web_used", 0) or 0)) / len(mrows), 4),
+            "rag_trigger_rate": round(sum(1 for r in mrows if int(r.get("rag_used", 0) or 0)) / len(mrows), 4),
+        }
+
+    by_query_type: dict[str, Any] = {}
+    query_types = sorted({str(r.get("query_type", "") or "").strip() for r in rows if str(r.get("query_type", "")).strip()})
+    for query_type in query_types:
+        qrows = [r for r in rows if str(r.get("query_type", "") or "").strip() == query_type]
+        by_query_type[query_type] = {
+            "count": len(qrows),
+            "wall_clock": _timing_stats([float(r.get("wall_clock_seconds", 0) or 0) for r in qrows]),
+            "vector_recall": _timing_stats([float(r.get("vector_recall_seconds", 0) or 0) for r in qrows]),
+            "no_context_rate": round(sum(1 for r in qrows if int(r.get("no_context", 0) or 0)) / len(qrows), 4),
+            "embed_cache_hit_rate": round(sum(1 for r in qrows if int(r.get("embed_cache_hit", 0) or 0)) / len(qrows), 4),
+            "query_rewrite_rate": round(sum(1 for r in qrows if int(r.get("query_rewrite_hit", 0) or 0)) / len(qrows), 4),
+            "rag_trigger_rate": round(sum(1 for r in qrows if int(r.get("rag_used", 0) or 0)) / len(qrows), 4),
+            "web_trigger_rate": round(sum(1 for r in qrows if int(r.get("web_used", 0) or 0)) / len(qrows), 4),
         }
 
     return {
@@ -739,6 +1081,47 @@ def _load_agent_metrics_summary() -> dict[str, Any]:
         "rerank_quality": rerank_quality,
         "wall_clock": _timing_stats(wall_vals),
         "by_profile": by_profile,
+        "by_search_mode": by_search_mode,
+        "by_query_type": by_query_type,
+    }
+
+
+def _invalidate_overview_cache() -> None:
+    global _overview_cache, _overview_cache_at  # noqa: PLW0603
+    with _overview_cache_lock:
+        _overview_cache = None
+        _overview_cache_at = 0.0
+
+
+def _cleanup_runtime_data_keys(requested: list[str]) -> dict[str, Any]:
+    by_key = {str(item["key"]): item for item in _runtime_data_targets()}
+    cleared: list[dict[str, Any]] = []
+    failed: list[dict[str, str]] = []
+    for key in requested:
+        target = by_key.get(key)
+        if target is None:
+            failed.append({"key": key, "error": "unknown_key"})
+            continue
+        try:
+            before = next((item for item in _collect_runtime_data_items() if item.get("key") == key), None)
+            _clear_runtime_target(target)
+            after = next((item for item in _collect_runtime_data_items() if item.get("key") == key), None)
+            cleared.append(
+                {
+                    "key": key,
+                    "label": str(target.get("label") or key),
+                    "before_size_mb": before.get("size_mb") if isinstance(before, dict) else None,
+                    "after_size_mb": after.get("size_mb") if isinstance(after, dict) else None,
+                }
+            )
+        except Exception as exc:
+            failed.append({"key": key, "error": str(exc)})
+    _invalidate_overview_cache()
+    return {
+        "ok": not failed,
+        "cleared": cleared,
+        "failed": failed,
+        "summary": _runtime_data_summary(include_items=True),
     }
 
 
@@ -790,6 +1173,7 @@ def _build_overview() -> dict[str, Any]:
     """Run all the expensive I/O and return the full overview dict."""
     rag_docs, rag_changed, rag_sources = _count_rag_index_docs()
     lib_total, lib_by_media, lib_vector_rows, lib_graph_nodes, lib_graph_edges, lib_this_year = _library_counts()
+    lib_graph_quality = _library_graph_quality(lib_total, lib_vector_rows)
     rag_graph_nodes, rag_graph_edges = _rag_graph_counts()
     missing_queries = _load_missing_queries(days=30, limit=200)
     month_web, month_deepseek, quota_daily = _load_monthly_quota_counts()
@@ -798,10 +1182,15 @@ def _build_overview() -> dict[str, Any]:
     startup = _load_startup_status_cached()
     retrieval_latency = _load_retrieval_latency_summary()
     agent_metrics = _load_agent_metrics_summary()
+    runtime_data = _runtime_data_summary(include_items=False)
 
     warnings: list[str] = []
     if startup.get("status") == "unreachable":
         warnings.append("Startup-status 接口不可达")
+    if (lib_graph_quality.get("item_coverage_rate") or 0) < 0.7 and lib_total > 0:
+        warnings.append("Library Graph 条目覆盖率偏低")
+    if (lib_graph_quality.get("isolated_node_rate") or 0) > 0.2:
+        warnings.append("Library Graph 孤点率偏高")
 
     return {
         "ok": True,
@@ -823,6 +1212,7 @@ def _build_overview() -> dict[str, Any]:
             "vector_rows": lib_vector_rows,
             "graph_nodes": lib_graph_nodes,
             "graph_edges": lib_graph_edges,
+            "graph_quality": lib_graph_quality,
             "this_year_items": lib_this_year,
         },
         "api_usage": {
@@ -850,7 +1240,10 @@ def _build_overview() -> dict[str, Any]:
             "agent_no_context_rate": agent_metrics.get("no_context_rate"),
         },
         "retrieval_by_profile": retrieval_latency.get("by_profile", {}),
+        "retrieval_by_search_mode": retrieval_latency.get("by_search_mode", {}),
         "agent_by_profile": agent_metrics.get("by_profile", {}),
+        "agent_by_search_mode": agent_metrics.get("by_search_mode", {}),
+        "agent_by_query_type": agent_metrics.get("by_query_type", {}),
         "rerank_quality": {
             "rag": retrieval_latency.get("rerank_quality", {}),
             "agent": agent_metrics.get("rerank_quality", {}),
@@ -861,6 +1254,7 @@ def _build_overview() -> dict[str, Any]:
             "sample_queries": [str(item.get("query", "")) for item in missing_queries[:3]],
         },
         "agent_wall_clock": agent_metrics.get("wall_clock", {}),
+        "runtime_data": runtime_data,
         "warnings": warnings,
     }
 
@@ -894,17 +1288,30 @@ def get_dashboard_missing_queries(days: int = 30, limit: int = 200, source: str 
 @app.get("/api/dashboard/missing-queries/export")
 def export_dashboard_missing_queries(days: int = 30, limit: int = 5000, source: str = "all") -> str:
     rows = _load_missing_queries(days=days, limit=limit, source=source)
-    header = "ts,source,top1_score,threshold,query"
+    header = "时间,来源,Top1分数,阈值,Query"
     lines = [header]
     for r in rows:
         query = str(r.get("query", "")).replace('"', '""')
         top1 = "" if r.get("top1_score") is None else str(r.get("top1_score"))
         threshold = "" if r.get("threshold") is None else str(r.get("threshold"))
         lines.append(
-            f'{str(r.get("ts", ""))},{str(r.get("source", ""))},{top1},{threshold},"{query}"'
+            f'{str(r.get("ts", ""))},{str(r.get("source_label", ""))},{top1},{threshold},"{query}"'
         )
     csv_body = "\ufeff" + "\r\n".join(lines)
     return Response(content=csv_body, media_type="text/csv; charset=utf-8")
+
+
+@app.get("/api/dashboard/runtime-data")
+def get_dashboard_runtime_data() -> dict[str, Any]:
+    return {"ok": True, **_runtime_data_summary(include_items=True)}
+
+
+@app.post("/api/dashboard/runtime-data/cleanup")
+def cleanup_dashboard_runtime_data(payload: RuntimeDataCleanupPayload) -> dict[str, Any]:
+    requested = [str(key).strip() for key in payload.keys if str(key).strip()]
+    if not requested:
+        raise HTTPException(status_code=400, detail="请至少选择一个可清理项")
+    return _cleanup_runtime_data_keys(requested)
 
 
 @app.delete("/api/dashboard/missing-queries")
@@ -935,10 +1342,7 @@ def clear_dashboard_missing_queries(source: str = "all") -> dict[str, Any]:
                 NO_CONTEXT_LOG_PATH.write_text(("\n".join(kept) + ("\n" if kept else "")), encoding="utf-8")
     except Exception as exc:
         raise HTTPException(status_code=500, detail=str(exc)) from exc
-    global _overview_cache, _overview_cache_at  # noqa: PLW0603
-    with _overview_cache_lock:
-        _overview_cache = None
-        _overview_cache_at = 0.0
+    _invalidate_overview_cache()
     return {"ok": True, "cleared": True, "source": str(source or "all")}
 
 
@@ -960,6 +1364,18 @@ def _load_startup_status_cached() -> dict[str, Any]:
         _startup_status_cache = result
         _startup_status_cache_at = time.monotonic()
     return result
+
+
+def _library_tracker_internal_base_url() -> str:
+    raw = (os.getenv("NAV_DASHBOARD_LIBRARY_TRACKER_INTERNAL_URL", "") or "").strip().rstrip("/")
+    if raw:
+        return raw
+    if LIBRARY_TRACKER_URL_OVERRIDE:
+        parsed = urlparse.urlparse(LIBRARY_TRACKER_URL_OVERRIDE)
+        if parsed.scheme and parsed.hostname:
+            port = parsed.port or 8091
+            return f"{parsed.scheme}://{parsed.hostname}:{port}"
+    return "http://127.0.0.1:8091"
 
 
 @app.get("/api/startup/status")
@@ -1036,12 +1452,170 @@ def trigger_rag_sync() -> dict[str, Any]:
 
         with resp_ctx as resp:
             result = json.loads(resp.read())
+        _invalidate_overview_cache()
         return {"ok": True, "result": result}
     except urlerror.HTTPError as exc:
         detail = exc.read().decode("utf-8", errors="replace")
         raise HTTPException(status_code=exc.code, detail=detail) from exc
     except Exception as exc:
         raise HTTPException(status_code=502, detail=str(exc)) from exc
+
+
+def _run_library_graph_rebuild(full: bool = False, *, report_progress=None, is_cancelled=None) -> dict[str, Any]:
+    base = _library_tracker_internal_base_url().rstrip("/")
+    start_url = f"{base}/api/library/graph/rebuild-job" if full else f"{base}/api/library/graph/sync-missing-job"
+    try:
+        req = urlrequest.Request(
+            url=start_url,
+            data=b"{}",
+            headers={"Content-Type": "application/json"},
+            method="POST",
+        )
+        host = (urlparse.urlparse(start_url).hostname or "").lower()
+        local_hosts = {"127.0.0.1", "localhost", "::1"}
+        if host in local_hosts:
+            opener = urlrequest.build_opener(urlrequest.ProxyHandler({}))
+            resp_ctx = opener.open(req, timeout=15)
+        else:
+            resp_ctx = urlrequest.urlopen(req, timeout=15)
+
+        with resp_ctx as resp:
+            started = json.loads(resp.read())
+        job = started.get("job", {}) if isinstance(started, dict) else {}
+        job_id = str(job.get("id") or "").strip()
+        if not job_id:
+            raise RuntimeError("Library Graph job did not return job id")
+
+        status_url = f"{base}/api/library/graph/jobs/{urlparse.quote(job_id)}"
+        if report_progress is not None:
+            report_progress(
+                message="Library Graph 任务已启动",
+                log=f"Library Graph 后台任务已启动: {job_id}",
+                result={"job_id": job_id, "mode": "full" if full else "missing_only"},
+            )
+
+        deadline = time.time() + (7200 if full else 3600)
+        while True:
+            if is_cancelled is not None and is_cancelled():
+                return {"ok": False, "cancelled": True, "job_id": job_id, "message": "dashboard polling cancelled"}
+            if time.time() > deadline:
+                raise TimeoutError("Library Graph 后台任务轮询超时")
+
+            payload = _http_json_get(status_url, timeout=15)
+            status_job = payload.get("job", {}) if isinstance(payload, dict) else {}
+            status = str(status_job.get("status") or "unknown")
+            message = str(status_job.get("message") or status)
+            if report_progress is not None:
+                report_progress(message=message, log=f"Library Graph 状态: {status}")
+            if status == "completed":
+                _invalidate_overview_cache()
+                return {"ok": True, "result": status_job.get("result"), "job": status_job}
+            if status == "failed":
+                raise RuntimeError(str(status_job.get("error") or status_job.get("message") or "Library Graph job failed"))
+            time.sleep(5)
+    except urlerror.HTTPError as exc:
+        detail = exc.read().decode("utf-8", errors="replace")
+        raise HTTPException(status_code=exc.code, detail=detail) from exc
+    except Exception as exc:
+        raise HTTPException(status_code=502, detail=str(exc)) from exc
+
+
+@app.post("/api/dashboard/trigger-library-graph-rebuild")
+def trigger_library_graph_rebuild(full: bool = False) -> dict[str, Any]:
+    return _run_library_graph_rebuild(full=full)
+
+
+@app.get("/api/dashboard/jobs/{job_id}")
+def get_dashboard_job(job_id: str) -> dict[str, Any]:
+    job = dashboard_jobs.get_job(job_id)
+    if not job:
+        raise HTTPException(status_code=404, detail="Job not found")
+    return {"ok": True, "job": job}
+
+
+@app.get("/api/dashboard/jobs")
+def list_dashboard_jobs(job_type: str = "", only_active: bool = False) -> dict[str, Any]:
+    return {
+        "ok": True,
+        "jobs": dashboard_jobs.list_jobs(job_type=str(job_type or "").strip(), only_active=bool(only_active)),
+    }
+
+
+@app.post("/api/dashboard/jobs/{job_id}/cancel")
+def cancel_dashboard_job(job_id: str) -> dict[str, Any]:
+    job = dashboard_jobs.request_cancel(job_id)
+    if not job:
+        raise HTTPException(status_code=404, detail="Job not found")
+    return {"ok": True, "job": job}
+
+
+@app.post("/api/dashboard/jobs/rag-sync")
+def create_rag_sync_job() -> dict[str, Any]:
+    def _target(report_progress, is_cancelled):
+        if is_cancelled():
+            report_progress(message="已取消", log="RAG 同步任务已取消")
+            return {"cancelled": True}
+        report_progress(message="正在触发 RAG 同步", log="开始触发 RAG 同步")
+        result = trigger_rag_sync()
+        report_progress(message="RAG 同步已提交", log="RAG 同步已提交", result=result)
+        return result
+
+    job = dashboard_jobs.create_job(job_type="rag_sync", label="RAG 增量同步", target=_target)
+    return {"ok": True, "job": job}
+
+
+@app.post("/api/dashboard/jobs/library-graph-rebuild")
+def create_library_graph_rebuild_job() -> dict[str, Any]:
+    def _target(report_progress, is_cancelled):
+        if is_cancelled():
+            report_progress(message="已取消", log="Library Graph 重建任务已取消")
+            return {"cancelled": True}
+        report_progress(message="正在补足 Library Graph 缺失项", log="开始补足 Library Graph 缺失项")
+        result = _run_library_graph_rebuild(full=False, report_progress=report_progress, is_cancelled=is_cancelled)
+        report_progress(message="Library Graph 补缺已完成", log="Library Graph 补缺已完成", result=result)
+        return result
+
+    job = dashboard_jobs.create_job(job_type="library_graph_rebuild", label="Library Graph 补缺", metadata={"mode": "missing_only"}, target=_target)
+    return {"ok": True, "job": job}
+
+
+@app.post("/api/dashboard/jobs/library-graph-rebuild-full")
+def create_library_graph_full_rebuild_job() -> dict[str, Any]:
+    def _target(report_progress, is_cancelled):
+        if is_cancelled():
+            report_progress(message="已取消", log="Library Graph 全量重建任务已取消")
+            return {"cancelled": True}
+        report_progress(message="正在触发 Library Graph 全量重建", log="开始全量重建 Library Graph")
+        result = _run_library_graph_rebuild(full=True, report_progress=report_progress, is_cancelled=is_cancelled)
+        report_progress(message="Library Graph 全量重建已完成", log="Library Graph 全量重建已完成", result=result)
+        return result
+
+    job = dashboard_jobs.create_job(job_type="library_graph_rebuild", label="Library Graph 全量重建", metadata={"mode": "full"}, target=_target)
+    return {"ok": True, "job": job}
+
+
+@app.post("/api/dashboard/jobs/runtime-data-cleanup")
+def create_runtime_cleanup_job(payload: RuntimeDataCleanupPayload) -> dict[str, Any]:
+    requested = [str(key).strip() for key in payload.keys if str(key).strip()]
+    if not requested:
+        raise HTTPException(status_code=400, detail="请至少选择一个可清理项")
+
+    def _target(report_progress, is_cancelled):
+        if is_cancelled():
+            report_progress(message="已取消", log="运行时数据清理已取消")
+            return {"cancelled": True}
+        report_progress(message=f"正在清理 {len(requested)} 项运行时数据", log=f"开始清理 {len(requested)} 项运行时数据")
+        result = _cleanup_runtime_data_keys(requested)
+        report_progress(message="运行时数据清理完成", log="运行时数据清理完成", result=result)
+        return result
+
+    job = dashboard_jobs.create_job(
+        job_type="runtime_cleanup",
+        label="运行时数据清理",
+        metadata={"keys": requested},
+        target=_target,
+    )
+    return {"ok": True, "job": job}
 
 
 @app.post("/api/custom_cards/slot/{index}")

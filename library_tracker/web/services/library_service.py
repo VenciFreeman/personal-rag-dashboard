@@ -5,6 +5,8 @@ import math
 import os
 import re
 import sqlite3
+import threading
+import time
 from datetime import datetime
 from dataclasses import dataclass
 import importlib
@@ -76,6 +78,129 @@ LOCAL_LLM_API_KEY = os.getenv("LIBRARY_TRACKER_LOCAL_LLM_API_KEY", "local").stri
 LOCAL_LLM_TIMEOUT = int(os.getenv("LIBRARY_TRACKER_LOCAL_LLM_TIMEOUT", "120"))
 EMBEDDING_DB_PATH = VECTOR_DB_DIR / "library_embeddings.sqlite3"
 _KEYWORD_CORPUS_CACHE: dict[str, Any] = {"signature": None, "texts": []}
+_GRAPH_JOB_LOCK = threading.RLock()
+_GRAPH_JOBS: dict[str, dict[str, Any]] = {}
+_GRAPH_JOB_HISTORY_LIMIT = 12
+
+
+def rebuild_library_graph() -> dict[str, Any]:
+    all_items = _iter_all_items()
+    graph_path = VECTOR_DB_DIR / library_graph.GRAPH_FILE_NAME
+    graph_path.unlink(missing_ok=True)
+    graph_stats = library_graph.sync_library_graph(
+        graph_dir=VECTOR_DB_DIR,
+        items=all_items,
+        target_item_ids=None,
+        only_missing=False,
+    )
+    return {
+        "ok": True,
+        "item_count": len(all_items),
+        "graph": graph_stats,
+    }
+
+
+def sync_missing_library_graph() -> dict[str, Any]:
+    all_items = _iter_all_items()
+    graph_stats = library_graph.sync_library_graph(
+        graph_dir=VECTOR_DB_DIR,
+        items=all_items,
+        target_item_ids=None,
+        only_missing=True,
+    )
+    return {
+        "ok": True,
+        "item_count": len(all_items),
+        "graph": graph_stats,
+        "mode": "missing_only",
+    }
+
+
+def _trim_graph_jobs() -> None:
+    if len(_GRAPH_JOBS) <= _GRAPH_JOB_HISTORY_LIMIT:
+        return
+    ordered = sorted(_GRAPH_JOBS.values(), key=lambda item: str(item.get("created_at", "")))
+    overflow = max(0, len(ordered) - _GRAPH_JOB_HISTORY_LIMIT)
+    for item in ordered[:overflow]:
+        _GRAPH_JOBS.pop(str(item.get("id") or ""), None)
+
+
+def _graph_job_public(job: dict[str, Any]) -> dict[str, Any]:
+    return {
+        "id": str(job.get("id") or ""),
+        "mode": str(job.get("mode") or "missing_only"),
+        "status": str(job.get("status") or "queued"),
+        "message": str(job.get("message") or ""),
+        "created_at": str(job.get("created_at") or ""),
+        "started_at": str(job.get("started_at") or ""),
+        "finished_at": str(job.get("finished_at") or ""),
+        "result": job.get("result"),
+        "error": job.get("error"),
+    }
+
+
+def _update_graph_job(job_id: str, **fields: Any) -> dict[str, Any] | None:
+    with _GRAPH_JOB_LOCK:
+        job = _GRAPH_JOBS.get(str(job_id or ""))
+        if job is None:
+            return None
+        job.update(fields)
+        return _graph_job_public(job)
+
+
+def start_graph_job(*, full: bool = False) -> dict[str, Any]:
+    mode = "full" if full else "missing_only"
+    job_id = str(uuid4())
+    created_at = datetime.now().isoformat(timespec="seconds")
+    job = {
+        "id": job_id,
+        "mode": mode,
+        "status": "queued",
+        "message": "等待开始",
+        "created_at": created_at,
+        "started_at": "",
+        "finished_at": "",
+        "result": None,
+        "error": None,
+    }
+    with _GRAPH_JOB_LOCK:
+        _GRAPH_JOBS[job_id] = job
+        _trim_graph_jobs()
+
+    def _runner() -> None:
+        started_at = datetime.now().isoformat(timespec="seconds")
+        _update_graph_job(job_id, status="running", started_at=started_at, message="正在重建 Library Graph")
+        try:
+            result = rebuild_library_graph() if full else sync_missing_library_graph()
+            finished_at = datetime.now().isoformat(timespec="seconds")
+            _update_graph_job(
+                job_id,
+                status="completed",
+                finished_at=finished_at,
+                message="Library Graph 重建完成" if full else "Library Graph 补缺完成",
+                result=result,
+            )
+        except Exception as exc:  # noqa: BLE001
+            finished_at = datetime.now().isoformat(timespec="seconds")
+            _update_graph_job(
+                job_id,
+                status="failed",
+                finished_at=finished_at,
+                message="Library Graph 重建失败" if full else "Library Graph 补缺失败",
+                error=str(exc),
+            )
+
+    thread = threading.Thread(target=_runner, name=f"library-graph-{job_id}", daemon=True)
+    thread.start()
+    return _graph_job_public(job)
+
+
+def get_graph_job(job_id: str) -> dict[str, Any] | None:
+    with _GRAPH_JOB_LOCK:
+        job = _GRAPH_JOBS.get(str(job_id or ""))
+        if job is None:
+            return None
+        return _graph_job_public(job)
 
 
 def _embedding_status_value(raw: Any) -> int:
