@@ -2,6 +2,7 @@ let currentSessionId = "";
 let currentMode = "local";
 let askInFlight = false;
 let sessionsCache = [];
+let activeRagStreamState = null;
 const collapsedDirs = new Set();
 let localEmbeddingModelDisplay = "本地模型";
 let previewTreeNodes = [];
@@ -12,6 +13,13 @@ let workflowJobId = "";
 let workflowPollingTimer = null;
 let workflowLogRenderedLines = 0;
 let workflowApiKeyVisible = false;
+let currentRenameSessionId = "";
+let suppressSessionClickUntil = 0;
+
+const LONG_PRESS_MS = 600;
+const sessionRenameModal = () => document.getElementById("rag-session-rename-modal");
+const sessionRenameInput = () => document.getElementById("rag-session-rename-input");
+const sessionRenameMeta = () => document.getElementById("rag-session-rename-meta");
 
 async function apiGet(url) {
   const r = await fetch(url);
@@ -19,14 +27,47 @@ async function apiGet(url) {
   return r.json();
 }
 
-async function apiPost(url, payload) {
+async function apiPost(url, payload, method = "POST") {
   const r = await fetch(url, {
-    method: "POST",
+    method,
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify(payload),
   });
   if (!r.ok) throw new Error(await r.text());
   return r.json();
+}
+
+function setLongPressSelectionLock(locked) {
+  document.body?.classList.toggle("long-press-selection-lock", !!locked);
+}
+
+function bindLongPress(el, callback) {
+  let timer = null;
+  let startX = 0;
+  let startY = 0;
+  const cancel = () => {
+    if (timer) {
+      clearTimeout(timer);
+      timer = null;
+    }
+    setLongPressSelectionLock(false);
+  };
+  el.addEventListener("pointerdown", (event) => {
+    if (!(event.target instanceof Element)) return;
+    startX = event.clientX;
+    startY = event.clientY;
+    cancel();
+    if (event.pointerType !== "mouse") setLongPressSelectionLock(true);
+    timer = setTimeout(() => {
+      timer = null;
+      callback(event.target);
+    }, LONG_PRESS_MS);
+  });
+  el.addEventListener("pointermove", (event) => {
+    if (Math.abs(event.clientX - startX) > 8 || Math.abs(event.clientY - startY) > 8) cancel();
+  });
+  el.addEventListener("pointerup", cancel);
+  el.addEventListener("pointercancel", cancel);
 }
 
 function setTab(name) {
@@ -52,6 +93,18 @@ function toggleSidebar(id) {
   if (workspace) {
     workspace.classList.toggle("sidebar-collapsed", el.classList.contains("collapsed"));
   }
+  updateSidebarToggleButton(el);
+}
+
+function updateSidebarToggleButton(sidebar) {
+  const el = sidebar instanceof Element ? sidebar : document.getElementById(String(sidebar || ""));
+  if (!el) return;
+  const btn = el.querySelector(".sidebar-toggle");
+  if (!btn) return;
+  const isMobile = window.matchMedia("(max-width: 820px), (hover: none) and (pointer: coarse)").matches;
+  const isCollapsed = el.classList.contains("collapsed");
+  btn.textContent = isMobile ? (isCollapsed ? "v" : "^") : (isCollapsed ? ">" : "<");
+  btn.title = isMobile ? (isCollapsed ? "向下展开" : "向上折叠") : (isCollapsed ? "向右展开" : "向左折叠");
 }
 
 function setMode(mode) {
@@ -93,11 +146,11 @@ function normalizeListWhitespace(text) {
 }
 
 function normalizeMarkdown(source) {
-  // Minimal normalization: only ensure code blocks are protected
-  // Trust that input markdown is already properly formatted with correct line breaks
-  // Remove the aggressive regex replacements that were destroying indentation
   if (!source) return "";
-  return stripZeroWidth(String(source));
+  let value = stripZeroWidth(String(source));
+  value = value.replace(/([^\n])\s+(#{1,6}\s+)/g, "$1\n\n$2");
+  value = value.replace(/([^\n])\s+(-{3,}\s*(?:\n|$))/g, "$1\n\n$2");
+  return value;
 }
 
 function markdownToHtml(text) {
@@ -529,10 +582,12 @@ function getPreviousUserQuestion(row) {
 function addRagFeedbackForRow(row, payload = {}) {
   const question = String(payload.question || getPreviousUserQuestion(row) || "").trim();
   const answer = String(payload.answer || row?.querySelector(".content")?.textContent || "").trim();
+  const traceId = String(payload.traceId || "").trim();
+  if (!answer || !traceId) return;
   addFeedbackButton(row, {
     question,
     answer,
-    trace_id: String(payload.traceId || "").trim(),
+    trace_id: traceId,
     session_id: String(currentSessionId || "").trim(),
     model: String(payload.model || currentMode || "local"),
     search_mode: String(payload.searchMode || ""),
@@ -568,31 +623,134 @@ function renderChat(messages) {
   chat.scrollTop = chat.scrollHeight;
 }
 
+function getSessionById(sessionId) {
+  return sessionsCache.find((session) => String(session.id || "") === String(sessionId || "").trim()) || null;
+}
+
+function ensureRagSessionCache(sessionId) {
+  const sid = String(sessionId || "").trim();
+  if (!sid) return null;
+  let session = getSessionById(sid);
+  if (session) {
+    if (!Array.isArray(session.messages)) session.messages = [];
+    return session;
+  }
+  session = {
+    id: sid,
+    title: "新会话",
+    updated_at: new Date().toISOString().slice(0, 19),
+    messages: [],
+  };
+  sessionsCache.unshift(session);
+  return session;
+}
+
+function appendMessageToRagSessionCache(sessionId, role, text, traceId = "") {
+  const session = ensureRagSessionCache(sessionId);
+  if (!session) return;
+  const message = { role, text };
+  const normalizedTrace = String(traceId || "").trim();
+  if (normalizedTrace) message.trace_id = normalizedTrace;
+  session.messages.push(message);
+  session.updated_at = new Date().toISOString().slice(0, 19);
+}
+
+function renderActiveRagStreamPreview() {
+  if (!activeRagStreamState || String(activeRagStreamState.sessionId || "") !== String(currentSessionId || "")) return;
+  const progressText = String(activeRagStreamState.progressText || "正在检索相关文档...").trim();
+  appendChatRow("system", progressText, false, "processing");
+  const answerText = String(activeRagStreamState.streamedText || "");
+  if (answerText.trim()) {
+    const parsed = stripThinkForPreview(answerText);
+    const assistantRow = appendChatRow("assistant", parsed.answer || answerText, false);
+    insertSystemRowsBefore(assistantRow, parsed.thoughts);
+    upsertTraceMetaRowBefore(assistantRow, formatTraceMeta(activeRagStreamState.traceId));
+  }
+}
+
+function renderCurrentRagSessionView() {
+  renderChat(getSessionById(currentSessionId)?.messages || []);
+  renderActiveRagStreamPreview();
+}
+
 function renderSessions() {
   const ul = document.getElementById("rag-session-list");
   ul.innerHTML = "";
   for (const session of sessionsCache) {
     const li = document.createElement("li");
+    li.dataset.sessionId = String(session.id || "");
+    li.title = String(session.title || "新会话");
     if (session.id === currentSessionId) li.classList.add("active");
     li.innerHTML = `<div class="title">${escapeHtml(session.title || "新会话")}</div><div class="meta">${escapeHtml(session.updated_at || "")}</div>`;
     li.onclick = async () => {
+      if (Date.now() < suppressSessionClickUntil) return;
       currentSessionId = session.id;
       renderSessions();
       if (session.messages) {
-        renderChat(session.messages);
+        renderCurrentRagSessionView();
       } else {
         try {
           const full = await apiGet(`/api/rag/sessions/${encodeURIComponent(session.id)}`);
           const idx = sessionsCache.findIndex((s) => s.id === session.id);
           if (idx >= 0) sessionsCache[idx] = { ...sessionsCache[idx], messages: full.messages || [] };
-          renderChat(full.messages || []);
+          renderCurrentRagSessionView();
         } catch (_e) {
-          renderChat([]);
+          renderCurrentRagSessionView();
         }
       }
     };
     ul.appendChild(li);
   }
+}
+
+function getSessionSummary(sessionId) {
+  return sessionsCache.find((session) => String(session.id || "") === String(sessionId || "").trim()) || null;
+}
+
+function closeSessionRenameModal() {
+  currentRenameSessionId = "";
+  const modal = sessionRenameModal();
+  if (!modal) return;
+  modal.classList.add("hidden");
+  modal.setAttribute("aria-hidden", "true");
+}
+
+function openSessionRenameModal(sessionId) {
+  const session = getSessionSummary(sessionId);
+  const modal = sessionRenameModal();
+  const input = sessionRenameInput();
+  if (!session || !modal || !input) return;
+  currentRenameSessionId = String(session.id || "").trim();
+  input.value = String(session.title || "新会话");
+  const meta = sessionRenameMeta();
+  if (meta) meta.textContent = `会话 ID: ${currentRenameSessionId}`;
+  modal.classList.remove("hidden");
+  modal.setAttribute("aria-hidden", "false");
+  const shouldAutoFocus = !!(window.matchMedia && window.matchMedia("(pointer: fine)").matches);
+  if (shouldAutoFocus) {
+    window.setTimeout(() => {
+      input.focus();
+      input.select();
+    }, 20);
+  }
+}
+
+function openSessionRenameModalFromTarget(target) {
+  const item = target instanceof Element ? target.closest("[data-session-id]") : null;
+  const sessionId = String(item?.getAttribute("data-session-id") || "").trim();
+  if (!sessionId) return;
+  suppressSessionClickUntil = Date.now() + 650;
+  openSessionRenameModal(sessionId);
+}
+
+async function saveSessionRename() {
+  const sessionId = String(currentRenameSessionId || "").trim();
+  const input = sessionRenameInput();
+  const title = String(input?.value || "").trim();
+  if (!sessionId || !title) return;
+  await apiPost(`/api/rag/sessions/${encodeURIComponent(sessionId)}`, { title, lock: true }, "PATCH");
+  closeSessionRenameModal();
+  await refreshSessions(true);
 }
 
 async function refreshSessions(selectNewest = false) {
@@ -622,15 +780,15 @@ async function refreshSessions(selectNewest = false) {
 
   const session = sessionsCache.find((s) => s.id === currentSessionId);
   if (session?.messages) {
-    renderChat(session.messages);
+    renderCurrentRagSessionView();
   } else {
     try {
       const full = await apiGet(`/api/rag/sessions/${encodeURIComponent(currentSessionId)}`);
       const idx = sessionsCache.findIndex((s) => s.id === currentSessionId);
       if (idx >= 0) sessionsCache[idx] = { ...sessionsCache[idx], messages: full.messages || [] };
-      renderChat(full.messages || []);
+      renderCurrentRagSessionView();
     } catch (_e) {
-      renderChat([]);
+      renderCurrentRagSessionView();
     }
   }
 }
@@ -858,9 +1016,11 @@ async function ask(searchMode = "hybrid", forcedMode = null, confirmOverQuota = 
   const questionInput = document.getElementById("question");
   const question = questionInput.value.trim();
   if (!question) return;
+  const requestSessionId = String(currentSessionId || "").trim();
 
   questionInput.value = "";
   appendChat("user", question);
+  appendMessageToRagSessionCache(requestSessionId, "用户", question);
   const pending = appendChatRow("system", "正在检索相关文档... `00:00`", true, "processing");
   const pendingContent = pending.querySelector(".content");
   let progressText = "正在检索相关文档...";
@@ -873,6 +1033,12 @@ async function ask(searchMode = "hybrid", forcedMode = null, confirmOverQuota = 
   let quotaExceededEvent = null;
   let activeTraceId = "";
   let finalPayload = null;
+  activeRagStreamState = {
+    sessionId: requestSessionId,
+    progressText: "正在检索相关文档...",
+    streamedText: "",
+    traceId: "",
+  };
   const removePending = () => {
     try {
       pending.remove();
@@ -974,10 +1140,18 @@ async function ask(searchMode = "hybrid", forcedMode = null, confirmOverQuota = 
           if (event.trace_id) activeTraceId = String(event.trace_id || "").trim();
           streamFinalized = true;
           quotaExceededEvent = event;
+          if (activeRagStreamState && activeRagStreamState.sessionId === requestSessionId) {
+            activeRagStreamState.traceId = activeTraceId;
+            activeRagStreamState.progressText = String(event.message || "API 配额已满，等待处理");
+          }
           pending.classList.remove("processing");
         } else if (event.type === "progress") {
           if (event.trace_id) activeTraceId = String(event.trace_id || "").trim();
           progressText = String(event.message || progressText);
+          if (activeRagStreamState && activeRagStreamState.sessionId === requestSessionId) {
+            activeRagStreamState.progressText = progressText;
+            activeRagStreamState.traceId = activeTraceId;
+          }
         } else if (event.type === "chunk") {
           if (event.trace_id) activeTraceId = String(event.trace_id || "").trim();
           const chunk = String(event.text || "");
@@ -987,6 +1161,10 @@ async function ask(searchMode = "hybrid", forcedMode = null, confirmOverQuota = 
           }
           if (chunk) {
             streamedText += chunk;
+            if (activeRagStreamState && activeRagStreamState.sessionId === requestSessionId) {
+              activeRagStreamState.streamedText = streamedText;
+              activeRagStreamState.traceId = activeTraceId;
+            }
             // Fast path: update immediately if enough time elapsed since last paint.
             const now = Date.now();
             if (assistantContent && now - lastRenderAt >= 180) {
@@ -1001,6 +1179,9 @@ async function ask(searchMode = "hybrid", forcedMode = null, confirmOverQuota = 
         } else if (event.type === "aborted") {
           if (event.trace_id) activeTraceId = String(event.trace_id || "").trim();
           streamFinalized = true;
+          if (activeRagStreamState && activeRagStreamState.sessionId === requestSessionId) {
+            activeRagStreamState.traceId = activeTraceId;
+          }
           if (pendingContent) pendingContent.innerHTML = markdownToHtml("已中止");
           pending.classList.remove("processing");
           // Preserve any streamed content
@@ -1013,6 +1194,9 @@ async function ask(searchMode = "hybrid", forcedMode = null, confirmOverQuota = 
         } else if (event.type === "error") {
           if (event.trace_id) activeTraceId = String(event.trace_id || "").trim();
           streamFinalized = true;
+          if (activeRagStreamState && activeRagStreamState.sessionId === requestSessionId) {
+            activeRagStreamState.traceId = activeTraceId;
+          }
           const errorMsg = event.message || "请求失败";
           if (pendingContent) pendingContent.innerHTML = markdownToHtml(`[错误] ${errorMsg}`);
           pending.classList.remove("processing");
@@ -1033,7 +1217,10 @@ async function ask(searchMode = "hybrid", forcedMode = null, confirmOverQuota = 
           removePending();
           finalPayload = event.payload || null;
           const answer = String(event.payload?.answer || streamedText || "");
-          currentSessionId = event.payload?.session_id || currentSessionId;
+          const resolvedSessionId = String(event.payload?.session_id || requestSessionId || "").trim();
+          if (currentSessionId === requestSessionId) currentSessionId = resolvedSessionId;
+          appendMessageToRagSessionCache(resolvedSessionId, "助手", answer, activeTraceId || event.payload?.trace_id || "");
+          activeRagStreamState = null;
           if (!assistantRow) {
             assistantRow = appendChatRow("assistant", "", true);
             assistantContent = assistantRow.querySelector(".content");
@@ -1053,6 +1240,7 @@ async function ask(searchMode = "hybrid", forcedMode = null, confirmOverQuota = 
             mode: event.payload?.mode,
             debugEnabled,
           });
+          if (currentSessionId === resolvedSessionId) renderCurrentRagSessionView();
         }
       }
     };
@@ -1133,10 +1321,14 @@ async function ask(searchMode = "hybrid", forcedMode = null, confirmOverQuota = 
     } else if (!assistantRow) {
       appendChatRow("assistant", `**错误**: ${errorMsg}`, true);
     }
+    appendMessageToRagSessionCache(requestSessionId, "助手", `**错误**: ${errorMsg}`);
     await refreshSidebarTitles();
   } finally {
     clearInterval(pendingTimer);
     clearInterval(streamRenderTimer);
+    if (activeRagStreamState && activeRagStreamState.sessionId === requestSessionId) {
+      activeRagStreamState = null;
+    }
     if (!quotaExceededEvent) {
       removePending();
       document.querySelectorAll("#chat .msg.processing").forEach((node) => {
@@ -1505,8 +1697,39 @@ async function init() {
 
   document.getElementById("rag-toggle-sidebar").onclick = () => toggleSidebar("rag-sidebar");
   document.getElementById("preview-toggle-sidebar").onclick = () => toggleSidebar("preview-sidebar");
+  updateSidebarToggleButton("rag-sidebar");
+  updateSidebarToggleButton("preview-sidebar");
+  window.addEventListener("resize", () => {
+    updateSidebarToggleButton("rag-sidebar");
+    updateSidebarToggleButton("preview-sidebar");
+  });
   document.getElementById("rag-new-session").onclick = createSession;
   document.getElementById("rag-delete-session").onclick = deleteCurrentSession;
+  document.getElementById("rag-session-rename-save")?.addEventListener("click", () => {
+    saveSessionRename().catch((err) => window.alert(`重命名失败: ${String(err)}`));
+  });
+  document.getElementById("rag-session-rename-cancel")?.addEventListener("click", closeSessionRenameModal);
+  sessionRenameModal()?.addEventListener("click", (event) => {
+    const target = event.target;
+    if (!(target instanceof Element)) return;
+    if (target.getAttribute("data-role") === "rag-session-rename-backdrop") closeSessionRenameModal();
+  });
+  sessionRenameInput()?.addEventListener("keydown", (event) => {
+    if (event.key !== "Enter") return;
+    event.preventDefault();
+    saveSessionRename().catch((err) => window.alert(`重命名失败: ${String(err)}`));
+  });
+  const ragSessionList = document.getElementById("rag-session-list");
+  ragSessionList?.addEventListener("contextmenu", (event) => {
+    const target = event.target;
+    const item = target instanceof Element ? target.closest("[data-session-id]") : null;
+    if (!item) return;
+    event.preventDefault();
+    openSessionRenameModalFromTarget(item);
+  });
+  if (ragSessionList) bindLongPress(ragSessionList, (target) => {
+    openSessionRenameModalFromTarget(target);
+  });
 
   document.getElementById("btn-kw").onclick = runKeyword;
   document.getElementById("btn-vs").onclick = runVector;

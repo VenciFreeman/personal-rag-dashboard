@@ -125,18 +125,39 @@ body {
   border: 1px solid transparent;
   color: #d7d7c9;
   margin-bottom: 4px;
+  overflow: hidden;
+  width: 100%;
+  min-width: 0;
 }
 .list li.active {
   background: #394136;
   border-color: #5f6b4b;
 }
 .list li .title {
+  display: block;
+  width: 100%;
+  min-width: 0;
   font-size: 13px;
   font-weight: 700;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
 }
 .list li .meta {
+  display: block;
+  width: 100%;
+  min-width: 0;
   font-size: 11px;
   color: #a8ad98;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.long-press-selection-lock,
+.long-press-selection-lock * {
+  user-select: none !important;
+  -webkit-user-select: none !important;
 }
 .main-panel {
   background: #262821;
@@ -801,6 +822,20 @@ button:disabled { opacity: 0.6; cursor: not-allowed; }
   gap: 10px;
 }
 
+.rag-session-rename-panel {
+  width: min(480px, 88vw);
+}
+
+#rag-session-rename-input {
+  width: 100%;
+  min-width: 0;
+}
+
+.rag-session-rename-meta {
+  color: #a8ad98;
+  font-size: 12px;
+}
+
 .wf-modal-head h3 {
   margin: 0;
 }
@@ -918,6 +953,21 @@ button:disabled { opacity: 0.6; cursor: not-allowed; }
     width: 100%;
     margin-bottom: 12px;
     order: -1;
+  }
+
+  .sidebar.collapsed {
+    width: 100%;
+    padding: 8px 10px;
+    overflow: hidden;
+  }
+
+  .workspace.sidebar-collapsed {
+    grid-template-columns: 1fr;
+    grid-template-rows: auto auto;
+  }
+
+  .sidebar.collapsed .sidebar-head {
+    justify-content: flex-end;
   }
 
   .main-panel {
@@ -1048,5 +1098,34 @@ button:disabled { opacity: 0.6; cursor: not-allowed; }
   textarea,
   select {
     font-size: 16px;
+  }
+
+  .workspace {
+    height: auto;
+    min-height: 0;
+    display: grid;
+    grid-template-columns: 1fr;
+    grid-template-rows: auto auto;
+  }
+
+  .sidebar {
+    width: 100%;
+    margin-bottom: 12px;
+    order: -1;
+  }
+
+  .sidebar.collapsed {
+    width: 100%;
+    padding: 8px 10px;
+    overflow: hidden;
+  }
+
+  .workspace.sidebar-collapsed {
+    grid-template-columns: 1fr;
+    grid-template-rows: auto auto;
+  }
+
+  .sidebar.collapsed .sidebar-head {
+    justify-content: flex-end;
   }
 }

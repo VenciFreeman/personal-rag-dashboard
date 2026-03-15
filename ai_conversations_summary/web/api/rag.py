@@ -35,6 +35,11 @@ class SessionCreatePayload(BaseModel):
     title: str = "新会话"
 
 
+class SessionRenamePayload(BaseModel):
+    title: str = Field(min_length=1)
+    lock: bool = True
+
+
 class AbortPayload(BaseModel):
     session_id: str = Field(min_length=1)
 
@@ -71,6 +76,14 @@ def get_session(session_id: str) -> dict[str, object]:
 @router.post("/sessions")
 def post_session(payload: SessionCreatePayload) -> dict[str, object]:
     return rag_service.create_session(payload.title)
+
+
+@router.patch("/sessions/{session_id}")
+def patch_session(session_id: str, payload: SessionRenamePayload) -> dict[str, object]:
+    session = rag_service.set_session_title(session_id, payload.title, lock=payload.lock)
+    if session is None:
+        raise HTTPException(status_code=404, detail="Session not found")
+    return session
 
 
 @router.delete("/sessions/{session_id}")
@@ -141,9 +154,7 @@ def post_ask(payload: AskPayload, request: Request) -> dict[str, object]:
         if answer:
             rag_service.append_message_with_trace(session_id, "助手", answer, trace_id=request_trace_id)
             rag_service.schedule_memory_update(session_id, payload.question, answer)
-        title = rag_service.suggest_local_session_title(payload.question, max_len=15)
-        if title:
-            rag_service.set_session_title_if_unlocked(session_id, title, lock=True)
+            rag_service.schedule_generated_session_title(session_id, payload.question, answer, lock=True)
 
     answer_payload["session_id"] = session_id
     answer_payload["mode"] = mode

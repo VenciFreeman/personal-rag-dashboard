@@ -51,6 +51,11 @@ class SessionCreatePayload(BaseModel):
     title: str = "新会话"
 
 
+class SessionRenamePayload(BaseModel):
+    title: str = Field(min_length=1)
+    lock: bool = True
+
+
 @router.get("/sessions")
 def get_sessions() -> dict[str, Any]:
     return {"sessions": agent_service.list_sessions()}
@@ -59,6 +64,14 @@ def get_sessions() -> dict[str, Any]:
 @router.post("/sessions")
 def post_session(payload: SessionCreatePayload) -> dict[str, Any]:
     return agent_service.create_session(payload.title)
+
+
+@router.patch("/sessions/{session_id}")
+def patch_session(session_id: str, payload: SessionRenamePayload) -> dict[str, Any]:
+    session = agent_service.set_session_title(session_id, payload.title, lock=payload.lock)
+    if session is None:
+        raise HTTPException(status_code=404, detail="Session not found")
+    return session
 
 
 @router.delete("/sessions/{session_id}")

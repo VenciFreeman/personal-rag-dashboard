@@ -9,7 +9,7 @@
   <link rel="icon" type="image/png" sizes="16x16" href="/static/favicon_logosc/favicon-16x16.png" />
   <link rel="shortcut icon" href="/static/favicon_logosc/favicon.ico" />
   <link rel="manifest" href="/static/favicon_logosc/site.webmanifest" />
-  <link rel="stylesheet" href="/static/app.css?v=20260314g" />
+  <link rel="stylesheet" href="/static/app.css?v=20260315k" />
 </head>
 <body data-local-model="{{ local_model }}" data-deepseek-model="{{ deepseek_model }}" data-ai-summary-url="{{ ai_summary_url }}" data-library-url="{{ library_tracker_url }}">
   <header class="top">
@@ -21,6 +21,7 @@
       <button class="tab active" data-tab="home" id="tab-home" role="tab" aria-selected="true">Navigator</button>
       <button class="tab" data-tab="agent" id="tab-agent" role="tab" aria-selected="false">LLM Agent</button>
       <button class="tab" data-tab="dashboard" id="tab-dashboard" role="tab" aria-selected="false">Dashboard</button>
+      <button class="tab" data-tab="tickets" id="tab-tickets" role="tab" aria-selected="false">Tickets</button>
       <button class="tab" data-tab="benchmark" id="tab-benchmark" role="tab" aria-selected="false">Benchmark</button>
     </nav>
 
@@ -49,9 +50,8 @@
       <section class="panel notes">
         <h3>Information</h3>
         <ul>
-          <li>导航页默认端口为 <code>8092</code>。</li>
-          <li>卡片链接默认跟随当前访问主机 IP 的对应端口，可通过环境变量覆盖。</li>
-          <li>当前 Agent 工具集：文档 RAG 检索、媒体记录检索、知识图谱扩展、联网搜索（可选）。</li>
+          <li>导航页默认端口为 <code>8092</code>。链接默认跟随当前访问主机 IP 的对应端口，可通过环境变量覆盖。</li>
+          <li>当前 Agent 工具集：RAG 文档检索、媒体记录检索、知识图谱扩展、Media Wiki、TMDB、联网搜索</li>
         </ul>
       </section>
     </section>
@@ -140,6 +140,7 @@
               <input id="dashboard-trace-input" type="text" autocomplete="off" spellcheck="false" placeholder="输入 trace_id，例如 trace_xxx" />
               <button id="dashboard-trace-query-btn">查询</button>
               <button id="dashboard-trace-open-btn" class="ghost" disabled>弹窗查看</button>
+              <button id="dashboard-trace-ticket-btn" class="ghost" disabled>转为 Ticket</button>
             </div>
           </div>
           <div id="dashboard-trace-meta" class="dashboard-meta">输入 trace_id 查看阶段用时、路由和工具调用摘要</div>
@@ -161,6 +162,24 @@
           <div id="dashboard-jobs-list" class="dashboard-job-list">
             <div class="dashboard-job-empty">等待加载任务...</div>
           </div>
+        </section>
+
+        <section class="dashboard-ticket-insights">
+          <section class="panel-shell dashboard-ticket-summary-panel">
+            <div class="dashboard-log-head">近几周 Ticket 概览</div>
+            <div id="dashboard-ticket-summary-meta" class="dashboard-meta">等待加载 ticket 统计...</div>
+            <div id="dashboard-ticket-summary-body" class="dashboard-ticket-summary-body">
+              <div class="ticket-trend-empty">等待加载统计...</div>
+            </div>
+          </section>
+
+          <section class="panel-shell dashboard-ticket-trend-panel">
+            <div class="dashboard-log-head">Ticket 周趋势</div>
+            <div id="dashboard-ticket-trend-meta" class="dashboard-meta">等待加载 ticket 周统计...</div>
+            <div id="dashboard-ticket-trend-chart" class="ticket-trend-chart">
+              <div class="ticket-trend-empty">等待加载图表...</div>
+            </div>
+          </section>
         </section>
 
         <section class="dashboard-log-panel">
@@ -256,6 +275,171 @@
         </section>
       </div>
     </section>
+
+    <section id="panel-tickets" class="panel tab-panel" role="tabpanel" aria-labelledby="tab-tickets">
+      <div class="tickets-layout">
+        <section class="panel-shell tickets-toolbar-shell">
+          <div class="stats-toolbar">
+            <div>
+              <strong class="panel-heading">Issue Tickets</strong>
+              <div id="tickets-meta" class="dashboard-meta">等待加载 tickets...</div>
+            </div>
+            <div class="tickets-toolbar-actions">
+              <button id="tickets-refresh-btn" class="ghost" type="button">刷新</button>
+              <button id="tickets-new-btn" class="ghost" type="button">新建空白</button>
+              <button id="tickets-ai-draft-btn" type="button">AI 生成草稿</button>
+              <button id="tickets-save-btn" type="button">保存 Ticket</button>
+              <button id="tickets-delete-btn" class="ghost danger-action" type="button" disabled>删除 Ticket</button>
+            </div>
+          </div>
+
+          <div class="tickets-filter-grid">
+            <label class="tickets-field compact">
+              <span>搜索</span>
+              <input id="tickets-search-input" type="text" autocomplete="off" spellcheck="false" placeholder="ticket_id / 标题 / trace / query" />
+            </label>
+            <label class="tickets-field compact">
+              <span>Status</span>
+              <select id="tickets-status-filter">
+                <option value="non_closed">非关闭</option>
+                <option value="all">全部</option>
+              </select>
+            </label>
+            <label class="tickets-field compact">
+              <span>Priority</span>
+              <select id="tickets-priority-filter">
+                <option value="all">全部</option>
+              </select>
+            </label>
+            <label class="tickets-field compact">
+              <span>Domain</span>
+              <select id="tickets-domain-filter">
+                <option value="all">全部</option>
+              </select>
+            </label>
+            <label class="tickets-field compact">
+              <span>Category</span>
+              <select id="tickets-category-filter">
+                <option value="all">全部</option>
+              </select>
+            </label>
+            <label class="tickets-field compact tickets-date-field">
+              <span>From</span>
+              <input id="tickets-created-from" type="date" />
+            </label>
+            <label class="tickets-field compact tickets-date-field">
+              <span>To</span>
+              <input id="tickets-created-to" type="date" />
+            </label>
+          </div>
+        </section>
+
+        <div id="tickets-main-grid" class="tickets-main-grid">
+          <section id="tickets-list-shell" class="panel-shell tickets-list-shell">
+            <div class="dashboard-log-head tickets-list-head">
+              <span>Ticket 列表</span>
+              <div class="tickets-list-head-actions">
+                <button id="tickets-sort-toggle-btn" class="ghost ticket-sort-toggle" type="button">最新优先</button>
+                <button id="tickets-list-collapse-btn" class="ghost ticket-list-collapse-toggle" type="button" aria-expanded="true">折叠</button>
+              </div>
+            </div>
+            <div id="tickets-list" class="tickets-list">
+              <div class="dashboard-job-empty">等待加载 tickets...</div>
+            </div>
+          </section>
+
+          <section class="panel-shell tickets-detail-shell">
+            <div class="dashboard-log-head tickets-detail-head">
+              <span>Ticket 详情</span>
+              <div id="tickets-detail-meta" class="dashboard-meta">可先用 trace_id 生成草稿，再人工编辑更新字段</div>
+            </div>
+
+            <div class="tickets-form-grid">
+              <label class="tickets-field compact">
+                <span>Ticket ID</span>
+                <input id="ticket-id" type="text" readonly placeholder="保存后生成" />
+              </label>
+              <label class="tickets-field compact">
+                <span>AI 草稿 Trace ID</span>
+                <input id="ticket-trace-id" type="text" autocomplete="off" spellcheck="false" placeholder="例如 trace_xxx" />
+              </label>
+              <label class="tickets-field compact">
+                <span>Status</span>
+                <select id="ticket-status">
+                  <option value="open">open</option>
+                  <option value="in_progress">in_progress</option>
+                  <option value="blocked">blocked</option>
+                  <option value="resolved">resolved</option>
+                  <option value="closed">closed</option>
+                </select>
+              </label>
+              <label class="tickets-field compact">
+                <span>Priority</span>
+                <select id="ticket-priority">
+                  <option value="low">low</option>
+                  <option value="medium">medium</option>
+                  <option value="high">high</option>
+                  <option value="critical">critical</option>
+                </select>
+              </label>
+              <label class="tickets-field full">
+                <span>Title</span>
+                <input id="ticket-title" type="text" autocomplete="off" spellcheck="false" placeholder="简要描述问题" />
+              </label>
+              <label class="tickets-field compact">
+                <span>Domain</span>
+                <input id="ticket-domain" type="text" autocomplete="off" spellcheck="false" placeholder="media / knowledge / agent" />
+              </label>
+              <label class="tickets-field compact">
+                <span>Category</span>
+                <input id="ticket-category" type="text" autocomplete="off" spellcheck="false" placeholder="answer_restricted / retrieval_empty" />
+              </label>
+              <label class="tickets-field compact">
+                <span>Created At</span>
+                <input id="ticket-created-at" type="text" readonly />
+              </label>
+              <label class="tickets-field compact">
+                <span>Updated At</span>
+                <input id="ticket-updated-at" type="text" readonly />
+              </label>
+              <label class="tickets-field full">
+                <span>Related Traces</span>
+                <textarea id="ticket-related-traces" rows="2" placeholder="每行或逗号分隔一个 trace_id"></textarea>
+              </label>
+              <div id="ticket-related-traces-links" class="ticket-trace-links full"></div>
+              <label class="tickets-field full">
+                <span>Repro Query</span>
+                <textarea id="ticket-repro-query" rows="3" placeholder="复现问题的 query"></textarea>
+              </label>
+              <label class="tickets-field full">
+                <span>Summary</span>
+                <textarea id="ticket-summary" rows="3" placeholder="一句话概括问题"></textarea>
+              </label>
+              <label class="tickets-field full">
+                <span>Expected Behavior</span>
+                <textarea id="ticket-expected-behavior" rows="4" placeholder="预期表现"></textarea>
+              </label>
+              <label class="tickets-field full">
+                <span>Actual Behavior</span>
+                <textarea id="ticket-actual-behavior" rows="5" placeholder="实际表现"></textarea>
+              </label>
+              <label class="tickets-field full">
+                <span>Root Cause</span>
+                <textarea id="ticket-root-cause" rows="4" placeholder="已知根因或初步判断"></textarea>
+              </label>
+              <label class="tickets-field full">
+                <span>Fix Notes</span>
+                <textarea id="ticket-fix-notes" rows="4" placeholder="修复思路、改动点、PR 链接等"></textarea>
+              </label>
+              <label class="tickets-field full">
+                <span>Additional Notes</span>
+                <textarea id="ticket-additional-notes" rows="4" placeholder="补充备注"></textarea>
+              </label>
+            </div>
+          </section>
+        </div>
+      </div>
+    </section>
   </main>
 
   <div id="warnings-modal" class="card-modal hidden" aria-hidden="true">
@@ -320,6 +504,44 @@
     </div>
   </div>
 
+  <div id="ticket-delete-modal" class="card-modal hidden" aria-hidden="true">
+    <div class="card-modal-backdrop" data-role="ticket-delete-backdrop"></div>
+    <div class="card-modal-panel ticket-delete-panel" role="dialog" aria-modal="true" aria-label="删除 Ticket">
+      <div class="card-modal-head">
+        <h3>删除 Ticket</h3>
+        <div class="dashboard-meta" id="ticket-delete-meta"></div>
+      </div>
+      <p class="ticket-delete-hint">删除后会从 Tickets 列表中移除，并且不会计入 Dashboard 的提交/关闭统计。</p>
+      <label>
+        <span>确认操作</span>
+        <select id="ticket-delete-confirm-select">
+          <option value="">请选择</option>
+          <option value="delete">确认删除</option>
+        </select>
+      </label>
+      <div class="card-modal-actions">
+        <button id="ticket-delete-confirm-btn" type="button" disabled>确认删除</button>
+        <button id="ticket-delete-cancel-btn" type="button" class="ghost">取消</button>
+      </div>
+    </div>
+  </div>
+
+  <div id="session-rename-modal" class="card-modal hidden" aria-hidden="true">
+    <div class="card-modal-backdrop" data-role="session-rename-backdrop"></div>
+    <div class="card-modal-panel session-rename-panel" role="dialog" aria-modal="true" aria-label="重命名会话">
+      <div class="card-modal-head">
+        <h3>重命名会话</h3>
+        <div class="dashboard-meta" id="session-rename-meta"></div>
+      </div>
+      <label class="session-rename-label" for="session-rename-input">会话标题</label>
+      <input id="session-rename-input" class="session-rename-input" type="text" autocomplete="off" spellcheck="false" enterkeyhint="done" />
+      <div class="card-modal-actions">
+        <button id="session-rename-save-btn">保存</button>
+        <button id="session-rename-cancel-btn" class="ghost">取消</button>
+      </div>
+    </div>
+  </div>
+
   <div id="runtime-data-modal" class="card-modal hidden" aria-hidden="true">
     <div class="card-modal-backdrop" data-role="runtime-data-backdrop"></div>
     <div class="card-modal-panel" role="dialog" aria-modal="true" aria-label="运行时数据与缓存">
@@ -348,6 +570,21 @@
       <div class="card-modal-actions">
         <button id="trace-modal-export-btn">导出 TXT</button>
         <button id="trace-modal-close-btn" class="ghost">关闭</button>
+      </div>
+    </div>
+  </div>
+
+  <div id="app-error-modal" class="card-modal hidden" aria-hidden="true">
+    <div class="card-modal-backdrop" data-role="app-error-backdrop"></div>
+    <div class="card-modal-panel" role="dialog" aria-modal="true" aria-label="操作提示">
+      <div class="card-modal-head">
+        <h3 id="app-error-title">操作提示</h3>
+        <div class="dashboard-meta" id="app-error-meta"></div>
+      </div>
+      <textarea id="app-error-copybox" class="app-error-copybox" readonly spellcheck="false"></textarea>
+      <div class="card-modal-actions">
+        <button id="app-error-copy-btn">复制内容</button>
+        <button id="app-error-close-btn" class="ghost">关闭</button>
       </div>
     </div>
   </div>
@@ -411,6 +648,6 @@
     </div>
   </div>
 
-  <script src="/static/app.js?v=20260314g"></script>
+  <script src="/static/app.js?v=20260315n"></script>
 </body>
 </html>

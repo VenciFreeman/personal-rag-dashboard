@@ -9,7 +9,7 @@
   <link rel="icon" type="image/png" sizes="16x16" href="/static/favicon_logosc/favicon-16x16.png" />
   <link rel="shortcut icon" href="/static/favicon_logosc/favicon.ico" />
   <link rel="manifest" href="/static/favicon_logosc/site.webmanifest" />
-  <link rel="stylesheet" href="/static/app.css?v=20260314f" />
+  <link rel="stylesheet" href="/static/app.css?v=20260315d" />
 </head>
 <body>
   <header class="top">
@@ -167,6 +167,23 @@
     </div>
   </div>
 
+  <div id="rag-session-rename-modal" class="wf-modal hidden" aria-hidden="true">
+    <div class="wf-modal-backdrop" data-role="rag-session-rename-backdrop"></div>
+    <div class="wf-modal-panel rag-session-rename-panel" role="dialog" aria-modal="true" aria-label="重命名会话">
+      <div class="wf-modal-head">
+        <h3>重命名会话</h3>
+        <div id="rag-session-rename-meta" class="rag-session-rename-meta"></div>
+      </div>
+      <label>会话标题
+        <input id="rag-session-rename-input" type="text" autocomplete="off" spellcheck="false" enterkeyhint="done" />
+      </label>
+      <div class="wf-modal-actions">
+        <button id="rag-session-rename-save">保存</button>
+        <button id="rag-session-rename-cancel" class="ghost">取消</button>
+      </div>
+    </div>
+  </div>
+
   <div id="wf-create-modal" class="wf-modal hidden" aria-hidden="true">
     <div class="wf-modal-backdrop" data-role="wf-backdrop"></div>
     <div class="wf-modal-panel" role="dialog" aria-modal="true" aria-label="创建 Markdown 文件">
@@ -186,6 +203,6 @@
     </div>
   </div>
 
-  <script src="/static/app.js?v=20260314f"></script>
+  <script src="/static/app.js?v=20260315c"></script>
 </body>
 </html>

@@ -6,11 +6,31 @@
     "timeout": 120
   },
   "rag": {
-    "embedding_model": "BAAI/bge-base-zh-v1.5"
+    "embedding_model": "BAAI/bge-base-zh-v1.5",
+    "response_max_tokens_with_context": 1400,
+    "response_max_tokens_no_context": 1200,
+    "local_only_read_web_cache": true
   },
   "local_llm": {
     "url": "http://127.0.0.1:1234/v1",
     "model": "qwen2.5-7b-instruct",
     "api_key": "local"
+  },
+  "external_apis": {
+    "mediawiki": {
+      "zh_api_url": "https://zh.wikipedia.org/w/api.php",
+      "en_api_url": "https://en.wikipedia.org/w/api.php",
+      "user_agent": "",
+      "api_user_agent": "",
+      "contact": "",
+      "timeout": 20
+    },
+    "tmdb": {
+      "api_base_url": "https://api.themoviedb.org/3",
+      "api_key": "",
+      "read_access_token": "",
+      "timeout": 20,
+      "language": "zh-CN"
+    }
   }
 }

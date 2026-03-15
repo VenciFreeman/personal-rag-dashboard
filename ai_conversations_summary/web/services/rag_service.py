@@ -1,14 +1,13 @@
 from __future__ import annotations
 
+import argparse
 import importlib.util
 import json
 import os
 import queue
 import re
 import socket
-import subprocess
 import sys
-import tempfile
 import threading
 import time
 from datetime import datetime
@@ -22,6 +21,11 @@ from uuid import uuid4
 WORKSPACE_ROOT = Path(__file__).resolve().parents[3]
 if str(WORKSPACE_ROOT) not in sys.path:
     sys.path.insert(0, str(WORKSPACE_ROOT))
+SCRIPTS_DIR = WORKSPACE_ROOT / "ai_conversations_summary" / "scripts"
+if str(SCRIPTS_DIR) not in sys.path:
+    sys.path.insert(0, str(SCRIPTS_DIR))
+
+import ask_rag as ask_rag_script
 
 from web.config import DOCUMENTS_DIR, RAG_SESSIONS_DIR, VECTOR_DB_DIR
 from web.services.context import (
@@ -35,14 +39,16 @@ from web.services.context import (
 )
 from rag_knowledge_graph import expand_query_by_graph
 from web.services.preview_service import resolve_embedding_model
+from core_service.config import get_settings
 from core_service.trace_store import write_trace_record
 
 _LOCK = threading.Lock()
 _PROCESS_LOCK = threading.Lock()
-_ACTIVE_PROCESSES: dict[str, subprocess.Popen] = {}
+_ACTIVE_PROCESSES: dict[str, dict[str, Any]] = {}
 _ABORTED_SESSIONS: set[str] = set()
 _MEMORY_QUEUE: queue.Queue[dict[str, str]] = queue.Queue()
 _MEMORY_WORKER_STARTED = False
+_CORE_SETTINGS = get_settings()
 
 SESSION_FILE_PREFIX = "session_"
 MEMORY_DIR = RAG_SESSIONS_DIR / "_memory"
@@ -70,6 +76,8 @@ ENABLE_RERANK = os.getenv("AI_SUMMARY_ENABLE_RERANK", "1").strip().lower() not i
 RERANKER_MODEL = os.getenv("AI_SUMMARY_RERANKER_MODEL", "BAAI/bge-reranker-v2-m3").strip() or "BAAI/bge-reranker-v2-m3"
 ASK_RAG_SUBPROCESS_TIMEOUT_SECONDS = int(os.getenv("AI_SUMMARY_ASK_RAG_SUBPROCESS_TIMEOUT_SECONDS", "0") or "0")
 BUILD_INDEX_ON_DEMAND = os.getenv("AI_SUMMARY_RAG_BUILD_INDEX_ON_DEMAND", "0").strip().lower() in {"1", "true", "yes", "on"}
+MAX_REFERENCE_ITEMS = int(os.getenv("AI_SUMMARY_MAX_REFERENCE_ITEMS", "6") or "6")
+LOCAL_ONLY_READ_WEB_CACHE = bool(_CORE_SETTINGS.rag_local_only_read_web_cache)
 
 SHORT_QUERY_MAX_TOKENS = 5
 LONG_QUERY_MIN_TOKENS = int(os.getenv("AI_SUMMARY_LONG_QUERY_MIN_TOKENS", "12") or "12")
@@ -378,40 +386,155 @@ def _check_rag_quota_exceeded(mode: str, search_mode: str) -> list[dict[str, Any
     return exceeded
 
 
-def _resolve_ask_rag_subprocess_timeout_seconds() -> int:
-    if ASK_RAG_SUBPROCESS_TIMEOUT_SECONDS > 0:
-        return max(20, ASK_RAG_SUBPROCESS_TIMEOUT_SECONDS)
-    # No timeout by default — LLM generation can take a long time for large local models.
-    # Set env var AI_SUMMARY_ASK_RAG_SUBPROCESS_TIMEOUT_SECONDS to re-enable.
-    return 0
-
-
-def _terminate_subprocess_tree(proc: subprocess.Popen[Any] | None) -> None:
-    if proc is None:
+def _register_active_request(session_id: str, **state: Any) -> None:
+    sid = (session_id or "").strip()
+    if not sid:
         return
-    if proc.poll() is not None:
-        return
+    with _PROCESS_LOCK:
+        _ACTIVE_PROCESSES[sid] = dict(state)
 
-    try:
-        if os.name == "nt":
-            subprocess.run(
-                ["taskkill", "/PID", str(proc.pid), "/F", "/T"],
-                stdout=subprocess.DEVNULL,
-                stderr=subprocess.DEVNULL,
-                check=False,
+
+def _clear_active_request(session_id: str) -> tuple[bool, dict[str, Any]]:
+    sid = (session_id or "").strip()
+    with _PROCESS_LOCK:
+        was_aborted = sid in _ABORTED_SESSIONS
+        state = _ACTIVE_PROCESSES.pop(sid, {}) if sid else {}
+        if sid:
+            _ABORTED_SESSIONS.discard(sid)
+    return was_aborted, state
+
+
+def _build_ask_rag_runtime_args(
+    *,
+    session_id: str,
+    trace_id: str,
+    question: str,
+    normalized_search_mode: str,
+    effective_top_k: int,
+    effective_vector_top_n: int,
+    effective_similarity_threshold: float,
+    rerank_top_k: int,
+    emb: str,
+    url: str,
+    key: str,
+    mdl: str,
+    debug: bool,
+    use_local_llm: bool,
+    memory_context: str,
+    no_embed_cache: bool,
+    benchmark_mode: bool,
+    stream: bool,
+) -> argparse.Namespace:
+    return ask_rag_script.build_runtime_args(
+        question=question,
+        documents_dir=str(DOCUMENTS_DIR),
+        index_dir=str(VECTOR_DB_DIR),
+        backend="faiss",
+        search_mode=normalized_search_mode,
+        top_k=effective_top_k,
+        vector_top_n=effective_vector_top_n,
+        enable_rerank="true" if ENABLE_RERANK else "false",
+        rerank_top_k=rerank_top_k,
+        reranker_model=RERANKER_MODEL,
+        similarity_threshold=float(effective_similarity_threshold),
+        debug="true" if debug else "false",
+        session_id=session_id,
+        trace_id=trace_id,
+        embedding_model=emb,
+        api_url=url,
+        api_key=key,
+        model=mdl,
+        timeout=str(7200 if use_local_llm else int(DEFAULT_TIMEOUT)),
+        call_type="answer",
+        memory_context=memory_context,
+        max_context_chars=str(max(800, int(LOCAL_LLM_MAX_CONTEXT_CHARS))),
+        max_chars_per_doc=str(max(300, int(LOCAL_LLM_MAX_CHARS_PER_DOC))),
+        no_embed_cache=bool(no_embed_cache or benchmark_mode),
+        stream=bool(stream),
+    )
+
+
+def _session_title_is_unlocked(session_id: str) -> bool:
+    sid = (session_id or "").strip()
+    if not sid:
+        return False
+    with _LOCK:
+        session = _load_session_file(_session_file_path(sid))
+        if session is None:
+            return False
+        return not bool(session.get("title_locked", False))
+
+
+def _normalize_title_compare_key(text: str) -> str:
+    return re.sub(r"[^\w\u4e00-\u9fff]+", "", str(text or "").strip().lower())
+
+
+def _looks_like_weak_session_title(title: str, question: str) -> bool:
+    normalized_title = _normalize_title_compare_key(title)
+    normalized_question = _normalize_title_compare_key(question)
+    if not normalized_title:
+        return True
+    if normalized_question.startswith(normalized_title):
+        return True
+    return any(
+        str(title or "").strip().startswith(prefix)
+        for prefix in ("请", "帮我", "请帮我", "比较", "请比较", "分析", "请分析", "解释", "请解释", "说明", "请说明")
+    )
+
+
+def _build_answer_anchor_title(question: str, answer: str, max_len: int | None = None) -> str:
+    lines = [re.sub(r"^#{1,6}\s*", "", line).strip() for line in str(answer or "").splitlines()]
+    headings = [
+        line for line in lines
+        if line and line not in {"参考资料", "结论", "关键要点", "总结", "背景与关键机制", "典型使用场景及角色"}
+    ]
+    for heading in headings:
+        candidate = sanitize_session_title(heading, max_len=max_len)
+        if candidate and not _looks_like_weak_session_title(candidate, question):
+            return candidate
+    return ""
+
+
+def _generate_local_session_title(question: str, answer: str, max_len: int | None = None) -> str:
+    local_endpoint_is_safe = _is_loopback_url(LOCAL_LLM_API_URL) and not _is_deepseek_url(LOCAL_LLM_API_URL)
+    can_use_local_title_llm = bool(LOCAL_LLM_API_URL and LOCAL_LLM_MODEL) and (local_endpoint_is_safe or ALLOW_REMOTE_LOCAL_LLM)
+    if can_use_local_title_llm and _is_local_llm_reachable(LOCAL_LLM_API_URL):
+        try:
+            title = ask_rag_script.generate_session_title(
+                question,
+                answer,
+                api_key=LOCAL_LLM_API_KEY,
+                api_url=LOCAL_LLM_API_URL,
+                model=LOCAL_LLM_MODEL,
+                timeout=min(30, max(5, int(DEFAULT_TIMEOUT))),
             )
-        else:
-            proc.terminate()
-        proc.wait(timeout=3)
-        return
-    except Exception:
-        pass
+            normalized = sanitize_session_title(title, max_len=max_len)
+            if normalized and not _looks_like_weak_session_title(normalized, question):
+                return normalized
+        except Exception:
+            pass
+    answer_anchor = _build_answer_anchor_title(question, answer, max_len=max_len)
+    if answer_anchor:
+        return answer_anchor
+    return suggest_local_session_title_from_qa(question, answer, max_len=max_len)
 
-    try:
-        proc.kill()
-        proc.wait(timeout=2)
-    except Exception:
-        pass
+
+def schedule_generated_session_title(session_id: str, question: str, answer: str, *, lock: bool = True) -> None:
+    sid = (session_id or "").strip()
+    if not sid or not str(answer or "").strip():
+        return
+
+    def _run() -> None:
+        try:
+            if not _session_title_is_unlocked(sid):
+                return
+            title = _generate_local_session_title(question, answer)
+            if title:
+                set_session_title_if_unlocked(sid, title, lock=lock)
+        except Exception:
+            return
+
+    threading.Thread(target=_run, daemon=True, name=f"rag-title-{sid[:8]}").start()
 
 
 def _heartbeat_progress_message(message: str, stage_started_at: float) -> str:
@@ -427,12 +550,12 @@ def _normalize_search_mode(search_mode: str) -> str:
     return "hybrid"
 
 
-def _resolve_search_profile(search_mode: str, top_k: int) -> tuple[int, bool]:
+def _resolve_search_profile(search_mode: str, top_k: int) -> tuple[int, bool, bool]:
     normalized = _normalize_search_mode(search_mode)
     if normalized == "local_only":
         local_k = max(1, int(top_k) if str(top_k).strip() else LOCAL_ONLY_TOP_K)
-        return local_k, False
-    return HYBRID_LOCAL_TOP_K, True
+        return local_k, False, LOCAL_ONLY_READ_WEB_CACHE
+    return HYBRID_LOCAL_TOP_K, True, True
 
 
 def _estimate_query_tokens(text: str) -> int:
@@ -647,11 +770,27 @@ def _build_rag_trace_record(
             "graph_expansion_batches": len(graph_batches),
         },
         "ranking": {
-            "method": str(payload.get("reranker_model", "") or "") and "cross_encoder",
+            "method": str(payload.get("reranker_model", "") or "") and "cross_encoder_fused",
             "rerank_k": int(payload.get("rerank_top_k", 0) or 0),
+            "rerank_candidate_count": int(timings.get("local_rerank_candidate_count", 0) or 0),
+            "rerank_candidate_profile": str(timings.get("local_rerank_candidate_profile", "") or ""),
+            "fusion_alpha": timings.get("local_rerank_fusion_alpha"),
+            "fusion_alpha_base": timings.get("local_rerank_fusion_alpha_base"),
+            "dynamic_alpha_enabled": timings.get("local_rerank_dynamic_alpha_enabled"),
+            "rerank_soft_top1": timings.get("local_rerank_rerank_soft_top1"),
+            "rerank_soft_top2": timings.get("local_rerank_rerank_soft_top2"),
+            "rerank_soft_diff": timings.get("local_rerank_rerank_soft_diff"),
+            "rerank_confidence_factor": timings.get("local_rerank_confidence_factor"),
+            "fusion_alpha_reason": timings.get("local_rerank_fusion_alpha_reason"),
             "top1_rerank_score": timings.get("local_top1_rerank_score_after_rerank", timings.get("local_top1_score_after_rerank")),
+            "top1_final_score": timings.get("local_top1_final_score_after_rerank"),
+            "top1_vector_delta": timings.get("local_top1_vector_score_delta_after_rerank"),
             "top1_identity_changed": timings.get("local_top1_identity_changed"),
             "top1_rank_shift": timings.get("local_top1_rank_shift"),
+            "baseline_gap": timings.get("local_rerank_guard_baseline_gap"),
+            "swap_blocked_by_gap": timings.get("local_rerank_guard_swap_blocked_by_gap"),
+            "guard_triggered": timings.get("local_rerank_guard_triggered"),
+            "guard_reason": timings.get("local_rerank_guard_reason"),
         },
         "llm": {
             "backend": mode,
@@ -1072,7 +1211,7 @@ def _build_local_only_answer(question: str, rows: list[dict[str, Any]]) -> tuple
 
 
 def _ask_rag_local_without_api(question: str, top_k: int, embedding_model: str, search_mode: str = "hybrid") -> dict[str, Any]:
-    local_top_k, enable_web_search = _resolve_search_profile(search_mode, top_k)
+    local_top_k, enable_web_search, allow_web_cache = _resolve_search_profile(search_mode, top_k)
     graph_expand = expand_query_by_graph(VECTOR_DB_DIR, question)
     expanded_query = str(graph_expand.get("expanded_query") or question).strip() or question
     try:
@@ -1091,8 +1230,11 @@ def _ask_rag_local_without_api(question: str, top_k: int, embedding_model: str, 
 
     web_rows: list[dict[str, Any]] = []
     web_status = "disabled"
-    if enable_web_search:
+    if enable_web_search or allow_web_cache:
         web_rows, web_status = _search_web_tavily_rows(question, HYBRID_WEB_TOP_K)
+        if not enable_web_search and web_status != "cache_hit":
+            web_rows = []
+            web_status = "disabled_cache_only"
     merged_rows = sorted(list(rows) + list(web_rows), key=lambda x: float(x.get("score", 0.0)), reverse=True)
     answer, used_docs = _build_local_only_answer(question, merged_rows)
     timings["web_search_status"] = web_status
@@ -1297,14 +1439,16 @@ def default_chat_config() -> dict[str, str]:
     }
 
 
-def sanitize_session_title(title: str, max_len: int = 30) -> str:
+def sanitize_session_title(title: str, max_len: int | None = None) -> str:
     clean = re.sub(r"\s+", " ", (title or "").strip())
     if not clean:
         return "未命名会话"
+    if max_len is None or max_len <= 0 or len(clean) <= max_len:
+        return clean
     return clean[:max_len]
 
 
-def suggest_local_session_title(question: str, max_len: int = 20) -> str:
+def suggest_local_session_title(question: str, max_len: int | None = None) -> str:
     text = re.sub(r"\s+", " ", (question or "").strip())
     if not text:
         return "未命名会话"
@@ -1316,7 +1460,7 @@ def suggest_local_session_title(question: str, max_len: int = 20) -> str:
     return sanitize_session_title(first or text, max_len=max_len)
 
 
-def suggest_local_session_title_from_qa(question: str, answer: str, max_len: int = 20) -> str:
+def suggest_local_session_title_from_qa(question: str, answer: str, max_len: int | None = None) -> str:
     q = re.sub(r"\s+", " ", (question or "").strip())
     a = re.sub(r"\s+", " ", (answer or "").strip())
 
@@ -1343,13 +1487,15 @@ def format_local_answer_with_refs(answer: str, used_docs: list[dict[str, Any]] |
     text = re.sub(r"\[资料\s*(\d+)\]", r"[\1]", text)
 
     docs = used_docs or []
-    ref_entries: list[dict[str, str]] = []
+    ref_entries: list[dict[str, Any]] = []
     seen_keys: set[str] = set()
     for item in docs:
         if not isinstance(item, dict):
             continue
         path = str(item.get("path", "")).strip().replace("\\", "/")
         title = str(item.get("title", "")).strip()
+        score = item.get("score")
+        rerank_score = item.get("rerank_score")
         if not path:
             continue
         lowered = path.lower()
@@ -1360,18 +1506,28 @@ def format_local_answer_with_refs(answer: str, used_docs: list[dict[str, Any]] |
         if key in seen_keys:
             continue
         seen_keys.add(key)
-        ref_entries.append({"label": label, "link": link})
+        ref_entries.append({"label": label, "link": link, "score": score, "rerank_score": rerank_score})
 
     if not ref_entries:
         return text
 
+    ranked_entries = sorted(ref_entries, key=lambda entry: float(entry.get("score", 0.0) or 0.0), reverse=True)[: max(1, int(MAX_REFERENCE_ITEMS))]
+
     if not re.search(r"\[\d+\]", text):
-        markers = "".join(f"[{idx}]" for idx in range(1, len(ref_entries) + 1))
+        markers = "".join(f"[{idx}]" for idx in range(1, len(ranked_entries) + 1))
         text = f"{text}\n\n参考标注：{markers}"
 
     lines = ["---", "### 参考资料"]
-    for idx, entry in enumerate(ref_entries, start=1):
-        lines.append(f"- [{idx}] [{entry['label']}]({entry['link']})")
+    for idx, entry in enumerate(ranked_entries, start=1):
+        score_text = ""
+        try:
+            if entry.get("score") is not None:
+                score_text = f" score={float(entry.get('score')):.4f}"
+                if entry.get("rerank_score") is not None:
+                    score_text = f"{score_text} rerank={float(entry.get('rerank_score')):.4f}"
+        except Exception:
+            score_text = ""
+        lines.append(f"- [{idx}] [{entry['label']}{score_text}]({entry['link']})")
     return f"{text}\n\n" + "\n".join(lines)
 
 
@@ -1385,13 +1541,15 @@ def format_answer_with_refs(answer: str, used_docs: list[dict[str, Any]] | None,
         return text
 
     docs = used_docs or []
-    ref_entries: list[dict[str, str]] = []
+    ref_entries: list[dict[str, Any]] = []
     seen_keys: set[str] = set()
     for item in docs:
         if not isinstance(item, dict):
             continue
         path = str(item.get("path", "")).strip().replace("\\", "/")
         title = str(item.get("title", "")).strip()
+        score = item.get("score")
+        rerank_score = item.get("rerank_score")
         if not path:
             continue
         lowered = path.lower()
@@ -1402,7 +1560,12 @@ def format_answer_with_refs(answer: str, used_docs: list[dict[str, Any]] | None,
         if key in seen_keys:
             continue
         seen_keys.add(key)
-        ref_entries.append({"label": label, "link": link})
+        ref_entries.append({
+            "label": label,
+            "link": link,
+            "score": score,
+            "rerank_score": rerank_score,
+        })
 
     if not ref_entries:
         return text
@@ -1412,8 +1575,22 @@ def format_answer_with_refs(answer: str, used_docs: list[dict[str, Any]] | None,
     text = re.sub(r"\s{2,}", " ", text).strip()
 
     lines = ["---", "### 参考资料"]
-    for idx, entry in enumerate(ref_entries, start=1):
-        lines.append(f"- [{idx}] [{entry['label']}]({entry['link']})")
+    def _score_sort_key(entry: dict[str, Any]) -> float:
+        try:
+            return float(entry.get("score", 0.0) or 0.0)
+        except Exception:
+            return 0.0
+
+    for idx, entry in enumerate(sorted(ref_entries, key=_score_sort_key, reverse=True)[: max(1, int(MAX_REFERENCE_ITEMS))], start=1):
+        score_text = ""
+        try:
+            if entry.get("score") is not None:
+                score_text = f" score={float(entry.get('score')):.4f}"
+                if entry.get("rerank_score") is not None:
+                    score_text = f"{score_text} rerank={float(entry.get('rerank_score')):.4f}"
+        except Exception:
+            score_text = ""
+        lines.append(f"- [{idx}] [{entry['label']}{score_text}]({entry['link']})")
     return f"{text}\n\n" + "\n".join(lines)
 
 
@@ -2167,10 +2344,7 @@ def _post_stream_finalize_async(
                 web_search_delta=1 if (web_count > 0 and not web_from_cache) else 0,
                 deepseek_delta=1 if is_deepseek_call else 0,
             )
-
-            title = suggest_local_session_title(question, max_len=15)
-            if title:
-                set_session_title_if_unlocked(session_id, title, lock=True)
+            schedule_generated_session_title(session_id, question, answer, lock=True)
         except Exception:
             return
 
@@ -2198,6 +2372,27 @@ def set_session_title_if_unlocked(session_id: str, title: str, lock: bool = True
         session["updated_at"] = datetime.now().isoformat(timespec="seconds")
         _save_session(session)
         return True
+
+
+def set_session_title(session_id: str, title: str, lock: bool = True) -> dict[str, Any] | None:
+    sid = (session_id or "").strip()
+    if not sid:
+        return None
+    new_title = sanitize_session_title(title)
+    if not new_title:
+        return None
+    with _LOCK:
+        path = _session_file_path(sid)
+        if not path.exists():
+            return None
+        session = _load_session_file(path)
+        if session is None:
+            return None
+        session["title"] = new_title
+        session["title_locked"] = bool(lock)
+        session["updated_at"] = datetime.now().isoformat(timespec="seconds")
+        _save_session(session)
+        return session
 
 
 def ask_rag(
@@ -2347,326 +2542,33 @@ def ask_rag(
     if normalized_mode in {"deepseek", "reasoner"} and not key:
         raise RuntimeError("DeepSeek/深度思考模式需要 API_KEY")
 
-    # Ensure TAVILY_API_KEY is visible to the subprocess (it may only be loaded as a
-    # Python variable from api_config, not as an actual OS env var).
-    if not os.environ.get("TAVILY_API_KEY") and DEFAULT_TAVILY_API_KEY:
-        os.environ["TAVILY_API_KEY"] = DEFAULT_TAVILY_API_KEY
+    runtime_args = _build_ask_rag_runtime_args(
+        session_id=session_id,
+        trace_id=resolved_trace_id,
+        question=q,
+        normalized_search_mode=normalized_search_mode,
+        effective_top_k=effective_top_k,
+        effective_vector_top_n=effective_vector_top_n,
+        effective_similarity_threshold=effective_similarity_threshold,
+        rerank_top_k=rerank_top_k,
+        emb=emb,
+        url=url,
+        key=key,
+        mdl=mdl,
+        debug=debug,
+        use_local_llm=use_local_llm,
+        memory_context=memory_context,
+        no_embed_cache=no_embed_cache,
+        benchmark_mode=benchmark_mode,
+        stream=False,
+    )
 
-    tmp_path = ""
     try:
-        with tempfile.NamedTemporaryFile(delete=False, suffix=".json") as tmp:
-            tmp_path = tmp.name
-
-        command = [
-            sys.executable,
-            "-u",
-            str(Path(__file__).resolve().parent.parent.parent / "scripts" / "ask_rag.py"),
-            "--question",
-            q,
-            "--documents-dir",
-            str(DOCUMENTS_DIR),
-            "--index-dir",
-            str(VECTOR_DB_DIR),
-            "--backend",
-            "faiss",
-            "--search-mode",
-            normalized_search_mode,
-            "--top-k",
-            str(effective_top_k),
-            "--vector-top-n",
-            str(effective_vector_top_n),
-            "--enable-rerank",
-            enable_rerank_arg,
-            "--rerank-top-k",
-            str(rerank_top_k),
-            "--reranker-model",
-            RERANKER_MODEL,
-            "--similarity-threshold",
-            str(float(effective_similarity_threshold)),
-            "--debug",
-            "true" if debug else "false",
-            "--session-id",
-            session_id,
-            "--trace-id",
-            resolved_trace_id,
-            "--embedding-model",
-            emb,
-            "--api-url",
-            url,
-            "--api-key",
-            key,
-            "--model",
-            mdl,
-            "--timeout",
-            str(7200 if use_local_llm else int(DEFAULT_TIMEOUT)),
-            "--call-type",
-            "answer",
-            "--output-json",
-            tmp_path,
-        ]
-
-        if memory_context:
-            command.extend(["--memory-context", memory_context])
-
-        if use_local_llm:
-            command.extend(
-                [
-                    "--max-context-chars",
-                    str(max(800, int(LOCAL_LLM_MAX_CONTEXT_CHARS))),
-                    "--max-chars-per-doc",
-                    str(max(300, int(LOCAL_LLM_MAX_CHARS_PER_DOC))),
-                ]
-            )
-
-        if no_embed_cache or benchmark_mode:
-            command.append("--no-embed-cache")
-
-        # Pass the in-process reranker sidecar URL so the subprocess skips
-        # cold-loading the CrossEncoder model on every request.
-        # Sidecar is used even during benchmark so results reflect warm-production conditions.
-        if ENABLE_RERANK:
-            try:
-                sidecar_url = _get_reranker_sidecar_url()
-                command.extend(["--reranker-server-url", sidecar_url])
-            except Exception:
-                pass  # fall back to subprocess-local model load
-
-        # Pass the in-process embedding sidecar URL so the subprocess skips
-        # cold-loading the SentenceTransformer model (~7s) on every request.
-        try:
-            embed_sidecar_url = _get_embed_sidecar_url()
-            command.extend(["--embed-server-url", embed_sidecar_url])
-        except Exception:
-            pass
-
-        proc = subprocess.Popen(
-            command,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.STDOUT,
-            text=True,
-            encoding="utf-8",
-            errors="replace",
-        )
-        with _PROCESS_LOCK:
-            _ACTIVE_PROCESSES[session_id] = proc
-
-        subprocess_timeout_seconds = _resolve_ask_rag_subprocess_timeout_seconds()
-        start_wait = time.monotonic()
-        while proc.poll() is None:
-            if subprocess_timeout_seconds > 0 and time.monotonic() - start_wait > subprocess_timeout_seconds:
-                _terminate_subprocess_tree(proc)
-                should_timeout_fallback = use_local_llm
-                if should_timeout_fallback:
-                    notice = _local_fallback_notice() + f"（子进程超时>{subprocess_timeout_seconds}s，已自动降级）"
-                    fallback_payload = _safe_build_local_fallback_payload(
-                        q,
-                        top_k,
-                        emb,
-                        notice,
-                        normalized_search_mode,
-                        normalized_mode,
-                        "local_llm_timeout_and_fallback_failed",
-                    )
-                    if debug:
-                        _write_debug_record(
-                            session_id,
-                            {
-                                "timestamp": datetime.now().isoformat(timespec="seconds"),
-                                "trace_id": resolved_trace_id,
-                                "session_id": session_id,
-                                "debug_enabled": True,
-                                "source": "rag_service_subprocess_timeout_fallback",
-                                "question": q,
-                                "query": q,
-                                "search_mode": normalized_search_mode,
-                                "mode": normalized_mode,
-                                "timeout_seconds": subprocess_timeout_seconds,
-                                "payload": fallback_payload,
-                            },
-                        )
-                    return fallback_payload
-                if debug:
-                    _write_debug_record(
-                        session_id,
-                        {
-                            "timestamp": datetime.now().isoformat(timespec="seconds"),
-                            "trace_id": resolved_trace_id,
-                            "session_id": session_id,
-                            "debug_enabled": True,
-                            "source": "rag_service_subprocess_timeout",
-                            "question": q,
-                            "query": q,
-                            "search_mode": normalized_search_mode,
-                            "mode": normalized_mode,
-                            "similarity_threshold": float(effective_similarity_threshold),
-                            "vector_top_n": effective_vector_top_n,
-                            "rerank_top_k": rerank_top_k,
-                            "enable_rerank": bool(ENABLE_RERANK),
-                            "reranker_model": RERANKER_MODEL,
-                            "query_profile": query_profile,
-                            "memory_context": memory_context,
-                            "memory_tokens_est": _approx_tokens(memory_context),
-                            "subprocess": {
-                                "timeout_seconds": subprocess_timeout_seconds,
-                                "command": _sanitize_command_for_debug(command),
-                            },
-                        },
-                    )
-                raise RuntimeError(
-                    f"ask_rag.py 子进程超时（>{subprocess_timeout_seconds}s），已终止。"
-                )
-            time.sleep(0.1)
-
-        output = ""
-        if proc.stdout is not None:
-            output = proc.stdout.read() or ""
-        code = proc.wait()
-
-        with _PROCESS_LOCK:
-            was_aborted = session_id in _ABORTED_SESSIONS
-            _ACTIVE_PROCESSES.pop(session_id, None)
-            _ABORTED_SESSIONS.discard(session_id)
-
-        if was_aborted:
-            raise RAGTaskAborted("已中止")
-
-        if code != 0:
-            raw_error_text = _friendly_subprocess_error(output, code)
-            error_text = _humanize_error_message(raw_error_text)
-            if debug:
-                _write_debug_record(
-                    session_id,
-                    {
-                        "timestamp": datetime.now().isoformat(timespec="seconds"),
-                        "trace_id": resolved_trace_id,
-                        "session_id": session_id,
-                        "debug_enabled": True,
-                        "source": "rag_service_subprocess_error",
-                        "question": q,
-                        "query": q,
-                        "search_mode": normalized_search_mode,
-                        "mode": normalized_mode,
-                        "similarity_threshold": float(effective_similarity_threshold),
-                        "vector_top_n": effective_vector_top_n,
-                        "rerank_top_k": rerank_top_k,
-                        "enable_rerank": bool(ENABLE_RERANK),
-                        "reranker_model": RERANKER_MODEL,
-                        "query_profile": query_profile,
-                        "memory_context": memory_context,
-                        "memory_tokens_est": _approx_tokens(memory_context),
-                        "subprocess": {
-                            "return_code": code,
-                            "command": _sanitize_command_for_debug(command),
-                            "stdout": output,
-                            "raw_error_text": raw_error_text,
-                            "error_text": error_text,
-                        },
-                    },
-                )
-            should_fallback_local = use_local_llm and (
-                _is_local_llm_unavailable_error(raw_error_text)
-                or _looks_like_generic_subprocess_error(raw_error_text)
-            )
-            if should_fallback_local:
-                notice = _local_fallback_notice()
-                fallback_payload = _safe_build_local_fallback_payload(
-                    q,
-                    top_k,
-                    emb,
-                    notice,
-                    normalized_search_mode,
-                    normalized_mode,
-                    "local_llm_unavailable_and_fallback_failed",
-                )
-                fallback_payload["mode"] = normalized_mode
-                fallback_payload["embedding_model"] = emb
-                if debug:
-                    memory_tokens = _approx_tokens(memory_context)
-                    answer_tokens = _approx_tokens(str(fallback_payload.get("answer", "")))
-                    _write_debug_record(
-                        session_id,
-                        {
-                            "timestamp": datetime.now().isoformat(timespec="seconds"),
-                            "trace_id": resolved_trace_id,
-                            "session_id": session_id,
-                            "debug_enabled": True,
-                            "source": "rag_service_local_fallback",
-                            "question": q,
-                            "search_mode": normalized_search_mode,
-                            "similarity_threshold": float(effective_similarity_threshold),
-                            "query_profile": query_profile,
-                            "memory_context": memory_context,
-                            "memory_tokens_est": memory_tokens,
-                            "output_tokens_est": answer_tokens,
-                            "payload": fallback_payload,
-                        },
-                    )
-                return fallback_payload
-            raise RuntimeError(error_text)
-
-        if not tmp_path or not Path(tmp_path).exists():
-            raise RuntimeError("未生成 RAG 输出")
-
-        payload = json.loads(Path(tmp_path).read_text(encoding="utf-8"))
-        payload["trace_id"] = str(payload.get("trace_id") or resolved_trace_id)
-        payload["embedding_model"] = emb
-        payload["mode"] = normalized_mode
-        payload["query_profile"] = query_profile
-        payload["similarity_threshold"] = float(effective_similarity_threshold)
-        payload["vector_top_n"] = int(payload.get("vector_top_n") or effective_vector_top_n)
-        _timings_dict = payload.get("timings", {}) if isinstance(payload.get("timings"), dict) else {}
-        _lat = _timings_dict.get("local_after_threshold")
-        _no_context = 1 if (_lat is not None and float(_lat) == 0.0) else 0
-        if not benchmark_mode:
-            record_retrieval_metrics(
-                source="rag_qa",
-                search_mode=normalized_search_mode,
-                query_profile=str(query_profile.get("profile") or "medium"),
-                token_count=int(query_profile.get("token_count") or 0),
-                timings=_timings_dict,
-                elapsed_seconds=float(payload.get("elapsed_seconds") or 0),
-                embed_cache_hit=1 if float(_timings_dict.get("embed_cache_hit") or 0) > 0 else 0,
-                web_cache_hit=1 if str(_timings_dict.get("web_search_status", "")) == "cache_hit" else 0,
-                no_context=_no_context,
-                no_context_reason="below_threshold" if _no_context else "",
-                trace_id=resolved_trace_id,
-                similarity_threshold=float(effective_similarity_threshold),
-                top1_score_before_rerank=float(_timings_dict["local_top1_score"]) if _timings_dict.get("local_top1_score") is not None else None,
-                top1_score_after_rerank=float(_timings_dict["local_top1_vector_score_after_rerank"]) if _timings_dict.get("local_top1_vector_score_after_rerank") is not None else None,
-                top1_rerank_score_after_rerank=float(_timings_dict["local_top1_rerank_score_after_rerank"]) if _timings_dict.get("local_top1_rerank_score_after_rerank") is not None else None,
-                top1_identity_changed=int(_timings_dict["local_top1_identity_changed"]) if _timings_dict.get("local_top1_identity_changed") is not None else None,
-                top1_rank_shift=float(_timings_dict["local_top1_rank_shift"]) if _timings_dict.get("local_top1_rank_shift") is not None else None,
-            )
-        _write_rag_trace_record(
-            _build_rag_trace_record(
-                trace_id=resolved_trace_id,
-                session_id=session_id,
-                source="benchmark_rag" if benchmark_mode else "rag_qa",
-                mode=normalized_mode,
-                search_mode=normalized_search_mode,
-                query_profile=query_profile,
-                similarity_threshold=float(effective_similarity_threshold),
-                payload=payload,
-                timings=_timings_dict,
-                no_context=_no_context,
-                no_context_reason="below_threshold" if _no_context else "",
-            )
-        )
-        if _no_context and not benchmark_mode:
-            try:
-                from cache_db import log_no_context_query
-                log_no_context_query(
-                    q,
-                    source="rag_qa",
-                    top1_score=float(_timings_dict.get("local_top1_score") or 0),
-                    threshold=float(effective_similarity_threshold),
-                    trace_id=resolved_trace_id,
-                    reason="below_threshold",
-                )
-            except Exception:
-                pass
+        payload = ask_rag_script.run_rag_query(runtime_args)
+    except Exception as exc:  # noqa: BLE001
+        raw_error_text = str(exc)
+        error_text = _humanize_error_message(raw_error_text)
         if debug:
-            debug_trace = payload.get("debug_trace") if isinstance(payload.get("debug_trace"), dict) else {}
             _write_debug_record(
                 session_id,
                 {
@@ -2674,32 +2576,155 @@ def ask_rag(
                     "trace_id": resolved_trace_id,
                     "session_id": session_id,
                     "debug_enabled": True,
-                    "source": "rag_service",
+                    "source": "rag_service_inprocess_error",
                     "question": q,
                     "query": q,
                     "search_mode": normalized_search_mode,
+                    "mode": normalized_mode,
                     "similarity_threshold": float(effective_similarity_threshold),
+                    "vector_top_n": effective_vector_top_n,
+                    "rerank_top_k": rerank_top_k,
+                    "enable_rerank": bool(ENABLE_RERANK),
+                    "reranker_model": RERANKER_MODEL,
                     "query_profile": query_profile,
-                    "trace": debug_trace,
-                    "payload_summary": {
-                        "retrieved_local_count": payload.get("retrieved_local_count"),
-                        "retrieved_local_vector_candidates": payload.get("retrieved_local_vector_candidates"),
-                        "retrieved_web_count": payload.get("retrieved_web_count"),
-                        "vector_top_n": payload.get("vector_top_n"),
-                        "rerank_top_k": payload.get("rerank_top_k"),
-                        "timings": payload.get("timings"),
+                    "memory_context": memory_context,
+                    "memory_tokens_est": _approx_tokens(memory_context),
+                    "runtime_args": {
+                        "search_mode": normalized_search_mode,
+                        "top_k": effective_top_k,
+                        "vector_top_n": effective_vector_top_n,
+                        "rerank_top_k": rerank_top_k,
+                        "timeout": 7200 if use_local_llm else int(DEFAULT_TIMEOUT),
                     },
+                    "raw_error_text": raw_error_text,
+                    "error_text": error_text,
                 },
             )
-        return payload
-    finally:
-        with _PROCESS_LOCK:
-            _ACTIVE_PROCESSES.pop(session_id, None)
-        if tmp_path:
-            try:
-                Path(tmp_path).unlink(missing_ok=True)
-            except Exception:
-                pass
+        should_fallback_local = use_local_llm and (
+            _is_local_llm_unavailable_error(raw_error_text)
+            or _looks_like_generic_subprocess_error(raw_error_text)
+        )
+        if should_fallback_local:
+            notice = _local_fallback_notice()
+            fallback_payload = _safe_build_local_fallback_payload(
+                q,
+                top_k,
+                emb,
+                notice,
+                normalized_search_mode,
+                normalized_mode,
+                "local_llm_unavailable_and_fallback_failed",
+            )
+            fallback_payload["mode"] = normalized_mode
+            fallback_payload["embedding_model"] = emb
+            if debug:
+                memory_tokens = _approx_tokens(memory_context)
+                answer_tokens = _approx_tokens(str(fallback_payload.get("answer", "")))
+                _write_debug_record(
+                    session_id,
+                    {
+                        "timestamp": datetime.now().isoformat(timespec="seconds"),
+                        "trace_id": resolved_trace_id,
+                        "session_id": session_id,
+                        "debug_enabled": True,
+                        "source": "rag_service_local_fallback",
+                        "question": q,
+                        "search_mode": normalized_search_mode,
+                        "similarity_threshold": float(effective_similarity_threshold),
+                        "query_profile": query_profile,
+                        "memory_context": memory_context,
+                        "memory_tokens_est": memory_tokens,
+                        "output_tokens_est": answer_tokens,
+                        "payload": fallback_payload,
+                    },
+                )
+            return fallback_payload
+        raise RuntimeError(error_text) from exc
+
+    payload["trace_id"] = str(payload.get("trace_id") or resolved_trace_id)
+    payload["embedding_model"] = emb
+    payload["mode"] = normalized_mode
+    payload["query_profile"] = query_profile
+    payload["similarity_threshold"] = float(effective_similarity_threshold)
+    payload["vector_top_n"] = int(payload.get("vector_top_n") or effective_vector_top_n)
+    _timings_dict = payload.get("timings", {}) if isinstance(payload.get("timings"), dict) else {}
+    _lat = _timings_dict.get("local_after_threshold")
+    _no_context = 1 if (_lat is not None and float(_lat) == 0.0) else 0
+    if not benchmark_mode:
+        record_retrieval_metrics(
+            source="rag_qa",
+            search_mode=normalized_search_mode,
+            query_profile=str(query_profile.get("profile") or "medium"),
+            token_count=int(query_profile.get("token_count") or 0),
+            timings=_timings_dict,
+            elapsed_seconds=float(payload.get("elapsed_seconds") or 0),
+            embed_cache_hit=1 if float(_timings_dict.get("embed_cache_hit") or 0) > 0 else 0,
+            web_cache_hit=1 if str(_timings_dict.get("web_search_status", "")) == "cache_hit" else 0,
+            no_context=_no_context,
+            no_context_reason="below_threshold" if _no_context else "",
+            trace_id=resolved_trace_id,
+            similarity_threshold=float(effective_similarity_threshold),
+            top1_score_before_rerank=float(_timings_dict["local_top1_score"]) if _timings_dict.get("local_top1_score") is not None else None,
+            top1_score_after_rerank=float(_timings_dict["local_top1_vector_score_after_rerank"]) if _timings_dict.get("local_top1_vector_score_after_rerank") is not None else None,
+            top1_rerank_score_after_rerank=float(_timings_dict["local_top1_rerank_score_after_rerank"]) if _timings_dict.get("local_top1_rerank_score_after_rerank") is not None else None,
+            top1_identity_changed=int(_timings_dict["local_top1_identity_changed"]) if _timings_dict.get("local_top1_identity_changed") is not None else None,
+            top1_rank_shift=float(_timings_dict["local_top1_rank_shift"]) if _timings_dict.get("local_top1_rank_shift") is not None else None,
+        )
+    _write_rag_trace_record(
+        _build_rag_trace_record(
+            trace_id=resolved_trace_id,
+            session_id=session_id,
+            source="benchmark_rag" if benchmark_mode else "rag_qa",
+            mode=normalized_mode,
+            search_mode=normalized_search_mode,
+            query_profile=query_profile,
+            similarity_threshold=float(effective_similarity_threshold),
+            payload=payload,
+            timings=_timings_dict,
+            no_context=_no_context,
+            no_context_reason="below_threshold" if _no_context else "",
+        )
+    )
+    if _no_context and not benchmark_mode:
+        try:
+            from cache_db import log_no_context_query
+            log_no_context_query(
+                q,
+                source="rag_qa",
+                top1_score=float(_timings_dict.get("local_top1_score") or 0),
+                threshold=float(effective_similarity_threshold),
+                trace_id=resolved_trace_id,
+                reason="below_threshold",
+            )
+        except Exception:
+            pass
+    if debug:
+        debug_trace = payload.get("debug_trace") if isinstance(payload.get("debug_trace"), dict) else {}
+        _write_debug_record(
+            session_id,
+            {
+                "timestamp": datetime.now().isoformat(timespec="seconds"),
+                "trace_id": resolved_trace_id,
+                "session_id": session_id,
+                "debug_enabled": True,
+                "source": "rag_service",
+                "question": q,
+                "query": q,
+                "search_mode": normalized_search_mode,
+                "similarity_threshold": float(effective_similarity_threshold),
+                "query_profile": query_profile,
+                "trace": debug_trace,
+                "payload_summary": {
+                    "retrieved_local_count": payload.get("retrieved_local_count"),
+                    "retrieved_local_vector_candidates": payload.get("retrieved_local_vector_candidates"),
+                    "retrieved_web_count": payload.get("retrieved_web_count"),
+                    "vector_top_n": payload.get("vector_top_n"),
+                    "rerank_top_k": payload.get("rerank_top_k"),
+                    "timings": payload.get("timings"),
+                },
+            },
+        )
+    return payload
 
 
 def ask_rag_stream(
@@ -2836,151 +2861,119 @@ def ask_rag_stream(
     if normalized_mode in {"deepseek", "reasoner"} and not key:
         raise RuntimeError("DeepSeek/深度思考模式需要 API_KEY")
 
-    # Ensure TAVILY_API_KEY is visible to the subprocess (it may only be loaded as a
-    # Python variable from api_config, not as an actual OS env var).
-    if not os.environ.get("TAVILY_API_KEY") and DEFAULT_TAVILY_API_KEY:
-        os.environ["TAVILY_API_KEY"] = DEFAULT_TAVILY_API_KEY
+    runtime_args = _build_ask_rag_runtime_args(
+        session_id=session_id,
+        trace_id=resolved_trace_id,
+        question=q,
+        normalized_search_mode=normalized_search_mode,
+        effective_top_k=effective_top_k,
+        effective_vector_top_n=effective_vector_top_n,
+        effective_similarity_threshold=effective_similarity_threshold,
+        rerank_top_k=rerank_top_k,
+        emb=emb,
+        url=url,
+        key=key,
+        mdl=mdl,
+        debug=debug,
+        use_local_llm=use_local_llm,
+        memory_context=memory_context,
+        no_embed_cache=no_embed_cache,
+        benchmark_mode=benchmark_mode,
+        stream=True,
+    )
 
-    tmp_path = ""
     collected_chunks: list[str] = []
-    raw_logs: list[str] = []
-    try:
-        with tempfile.NamedTemporaryFile(delete=False, suffix=".json") as tmp:
-            tmp_path = tmp.name
+    event_queue: queue.Queue[dict[str, Any]] = queue.Queue()
+    cancel_event = threading.Event()
 
-        command = [
-            sys.executable,
-            "-u",
-            str(Path(__file__).resolve().parent.parent.parent / "scripts" / "ask_rag.py"),
-            "--question",
-            q,
-            "--documents-dir",
-            str(DOCUMENTS_DIR),
-            "--index-dir",
-            str(VECTOR_DB_DIR),
-            "--backend",
-            "faiss",
-            "--search-mode",
-            normalized_search_mode,
-            "--top-k",
-            str(effective_top_k),
-            "--vector-top-n",
-            str(effective_vector_top_n),
-            "--enable-rerank",
-            enable_rerank_arg,
-            "--rerank-top-k",
-            str(rerank_top_k),
-            "--reranker-model",
-            RERANKER_MODEL,
-            "--similarity-threshold",
-            str(float(effective_similarity_threshold)),
-            "--debug",
-            "true" if debug else "false",
-            "--session-id",
-            session_id,
-            "--trace-id",
-            resolved_trace_id,
-            "--embedding-model",
-            emb,
-            "--api-url",
-            url,
-            "--api-key",
-            key,
-            "--model",
-            mdl,
-            "--timeout",
-            str(7200 if use_local_llm else int(DEFAULT_TIMEOUT)),
-            "--call-type",
-            "answer",
-            "--output-json",
-            tmp_path,
-            "--stream",
-        ]
+    def _progress_callback(message: str) -> None:
+        if cancel_event.is_set():
+            raise RAGTaskAborted("已中止")
+        event_queue.put({"kind": "progress", "message": str(message or "")})
 
-        if memory_context:
-            command.extend(["--memory-context", memory_context])
+    def _stream_callback(text: str) -> None:
+        if cancel_event.is_set():
+            raise RAGTaskAborted("已中止")
+        event_queue.put({"kind": "chunk", "text": str(text or "")})
 
-        if use_local_llm:
-            command.extend(
-                [
-                    "--max-context-chars",
-                    str(max(800, int(LOCAL_LLM_MAX_CONTEXT_CHARS))),
-                    "--max-chars-per-doc",
-                    str(max(300, int(LOCAL_LLM_MAX_CHARS_PER_DOC))),
-                ]
-            )
-
-        if no_embed_cache or benchmark_mode:
-            command.append("--no-embed-cache")
-
-        # Pass the in-process reranker sidecar URL so the subprocess skips
-        # cold-loading the CrossEncoder model on every request.
-        # Sidecar is used even during benchmark so results reflect warm-production conditions.
-        if ENABLE_RERANK:
-            try:
-                sidecar_url = _get_reranker_sidecar_url()
-                command.extend(["--reranker-server-url", sidecar_url])
-            except Exception:
-                pass  # fall back to subprocess-local model load
-
-        # Pass the in-process embedding sidecar URL so the subprocess skips
-        # cold-loading the SentenceTransformer model (~7s) on every request.
+    def _worker() -> None:
         try:
-            embed_sidecar_url = _get_embed_sidecar_url()
-            command.extend(["--embed-server-url", embed_sidecar_url])
-        except Exception:
-            pass
+            payload = ask_rag_script.run_rag_query(
+                runtime_args,
+                progress_callback=_progress_callback,
+                stream_callback=_stream_callback,
+            )
+            event_queue.put({"kind": "done", "payload": payload})
+        except RAGTaskAborted:
+            event_queue.put({"kind": "aborted"})
+        except Exception as exc:  # noqa: BLE001
+            event_queue.put({"kind": "error", "message": str(exc)})
 
-        proc = subprocess.Popen(
-            command,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.STDOUT,
-            text=True,
-            encoding="utf-8",
-            errors="replace",
-        )
-        with _PROCESS_LOCK:
-            _ACTIVE_PROCESSES[session_id] = proc
+    worker = threading.Thread(target=_worker, daemon=True, name=f"rag-stream-{session_id[:8]}")
+    _register_active_request(session_id, cancel_event=cancel_event, thread=worker)
+    worker.start()
 
-        line_queue: queue.Queue[str | None] = queue.Queue()
-
-        def _pump_stdout() -> None:
-            if proc.stdout is None:
-                line_queue.put(None)
-                return
-            for raw_line in proc.stdout:
-                line_queue.put(raw_line)
-            line_queue.put(None)
-
-        threading.Thread(target=_pump_stdout, daemon=True).start()
-
-        pending_chunk = ""
-        last_chunk_flush = time.monotonic()
-
-        def _flush_pending_chunk(force: bool = False) -> Iterator[dict[str, Any]]:
-            nonlocal pending_chunk, last_chunk_flush
-            if not pending_chunk:
-                return
-            age = time.monotonic() - last_chunk_flush
-            should_flush = force or len(pending_chunk) >= 180 or age >= 0.25
-            if not should_flush:
-                return
-            collected_chunks.append(pending_chunk)
-            yield {"type": "chunk", "trace_id": resolved_trace_id, "text": pending_chunk}
-            pending_chunk = ""
-            last_chunk_flush = time.monotonic()
-
+    try:
         last_heartbeat = time.monotonic()
-        last_progress_message = "正在启动 RAG 子进程..."
+        last_progress_message = "正在启动 RAG 进程内执行..."
         last_progress_started_at = time.monotonic()
-        subprocess_timeout_seconds = _resolve_ask_rag_subprocess_timeout_seconds()
         yield {"type": "progress", "trace_id": resolved_trace_id, "message": last_progress_message}
-        start_wait = time.monotonic()
+
         while True:
-            if subprocess_timeout_seconds > 0 and proc.poll() is None and time.monotonic() - start_wait > subprocess_timeout_seconds:
-                _terminate_subprocess_tree(proc)
-                if use_local_llm:
-                    notice = _local_fallback_notice() + f"（子进程超时>{subprocess_timeout_seconds}s，已自动降级）"
+            if cancel_event.is_set():
+                partial = "".join(collected_chunks).strip()
+                if partial:
+                    append_message_with_trace(session_id, "助手", partial + "\n\n_[已中止]_", trace_id=resolved_trace_id)
+                yield {"type": "aborted", "trace_id": resolved_trace_id}
+                return
+
+            try:
+                event = event_queue.get(timeout=0.2)
+            except queue.Empty:
+                if not worker.is_alive():
+                    break
+                if time.monotonic() - last_heartbeat >= 0.8:
+                    yield {"type": "progress", "trace_id": resolved_trace_id, "message": _heartbeat_progress_message(last_progress_message, last_progress_started_at)}
+                    last_heartbeat = time.monotonic()
+                continue
+
+            kind = str(event.get("kind") or "")
+            if kind == "progress":
+                message = str(event.get("message") or "").strip()
+                if not message:
+                    continue
+                last_progress_message = message
+                last_progress_started_at = time.monotonic()
+                last_heartbeat = time.monotonic()
+                yield {"type": "progress", "trace_id": resolved_trace_id, "message": message}
+                continue
+
+            if kind == "chunk":
+                text = str(event.get("text") or "")
+                if not text:
+                    continue
+                collected_chunks.append(text)
+                last_heartbeat = time.monotonic()
+                yield {"type": "chunk", "trace_id": resolved_trace_id, "text": text}
+                continue
+
+            if kind == "aborted":
+                partial = "".join(collected_chunks).strip()
+                if partial:
+                    append_message_with_trace(session_id, "助手", partial + "\n\n_[已中止]_", trace_id=resolved_trace_id)
+                yield {"type": "aborted", "trace_id": resolved_trace_id}
+                return
+
+            if kind == "error":
+                raw_error_text = str(event.get("message") or "")
+                error_text = _humanize_error_message(raw_error_text or "未知错误")
+                should_fallback_local = use_local_llm and (
+                    _is_local_llm_unavailable_error(raw_error_text)
+                    or _looks_like_generic_subprocess_error(raw_error_text)
+                )
+                if should_fallback_local:
+                    notice = _local_fallback_notice()
+                    yield {"type": "progress", "trace_id": resolved_trace_id, "message": "本地大模型不可用，正在降级为检索回答..."}
                     fallback_payload = _safe_build_local_fallback_payload(
                         q,
                         top_k,
@@ -2988,8 +2981,17 @@ def ask_rag_stream(
                         notice,
                         normalized_search_mode,
                         normalized_mode,
-                        "stream_local_llm_timeout_and_fallback_failed",
+                        "stream_local_llm_unavailable_and_fallback_failed",
                     )
+                    fallback_answer = str(fallback_payload.get("answer", "")).strip()
+                    fallback_docs = fallback_payload.get("used_context_docs", [])
+                    docs = fallback_docs if isinstance(fallback_docs, list) else []
+                    fallback_answer = format_answer_with_refs(fallback_answer, docs, mode=normalized_mode)
+                    fallback_payload["answer"] = fallback_answer
+                    fallback_payload["mode"] = normalized_mode
+                    fallback_payload["embedding_model"] = emb
+                    fallback_payload["session_id"] = session_id
+                    fallback_payload["trace_id"] = resolved_trace_id
                     if debug:
                         _write_debug_record(
                             session_id,
@@ -2998,119 +3000,110 @@ def ask_rag_stream(
                                 "trace_id": resolved_trace_id,
                                 "session_id": session_id,
                                 "debug_enabled": True,
-                                "source": "rag_service_stream_subprocess_timeout_fallback",
+                                "source": "rag_service_stream_local_fallback",
                                 "question": q,
-                                "query": q,
                                 "search_mode": normalized_search_mode,
-                                "mode": normalized_mode,
-                                "last_progress_message": last_progress_message,
-                                "timeout_seconds": subprocess_timeout_seconds,
+                                "similarity_threshold": float(effective_similarity_threshold),
+                                "query_profile": query_profile,
                                 "payload": fallback_payload,
                             },
                         )
-                    fallback_payload["trace_id"] = resolved_trace_id
+                    if fallback_answer:
+                        fallback_chunks = [fallback_answer[i : i + 220] for i in range(0, len(fallback_answer), 220)]
+                        for chunk in fallback_chunks:
+                            yield {"type": "chunk", "trace_id": resolved_trace_id, "text": chunk}
+                    _post_stream_finalize_async(
+                        session_id=session_id,
+                        answer=fallback_answer,
+                        question=q,
+                        trace_id=resolved_trace_id,
+                        normalized_mode=normalized_mode,
+                        payload=fallback_payload,
+                        timings=fallback_payload.get("timings", {}) if isinstance(fallback_payload.get("timings"), dict) else {},
+                    )
                     yield {"type": "done", "trace_id": resolved_trace_id, "payload": fallback_payload}
                     return
-                raise RuntimeError(
-                    f"ask_rag.py 子进程超时（>{subprocess_timeout_seconds}s，最后阶段：{last_progress_message}），已终止。"
+
+                partial = "".join(collected_chunks).strip()
+                if partial:
+                    append_message_with_trace(session_id, "助手", partial + "\n\n---\n\n_[输出中断]_", trace_id=resolved_trace_id)
+                append_message(session_id, "系统", f"RAG Q&A 失败：{error_text}")
+                yield {"type": "error", "trace_id": resolved_trace_id, "message": error_text}
+                return
+
+            if kind == "done":
+                payload = event.get("payload") if isinstance(event.get("payload"), dict) else {}
+                payload["trace_id"] = str(payload.get("trace_id") or resolved_trace_id)
+                answer = str(payload.get("answer", "")).strip() or "".join(collected_chunks).strip()
+                used_docs = payload.get("used_context_docs", [])
+                docs = used_docs if isinstance(used_docs, list) else []
+                answer = format_answer_with_refs(answer, docs, mode=normalized_mode)
+
+                if answer and not collected_chunks:
+                    synthetic_chunks = [answer[i : i + 240] for i in range(0, len(answer), 240)]
+                    for chunk in synthetic_chunks:
+                        yield {"type": "chunk", "trace_id": resolved_trace_id, "text": chunk}
+
+                payload["answer"] = answer
+                payload["mode"] = normalized_mode
+                payload["embedding_model"] = emb
+                payload["query_profile"] = query_profile
+                payload["similarity_threshold"] = float(effective_similarity_threshold)
+                payload["vector_top_n"] = int(payload.get("vector_top_n") or effective_vector_top_n)
+                payload["session_id"] = session_id
+                _timings_dict = payload.get("timings", {}) if isinstance(payload.get("timings"), dict) else {}
+                _lat = _timings_dict.get("local_after_threshold")
+                _no_context = 1 if (_lat is not None and float(_lat) == 0.0) else 0
+                if not benchmark_mode:
+                    record_retrieval_metrics(
+                        source="rag_qa_stream",
+                        search_mode=normalized_search_mode,
+                        query_profile=str(query_profile.get("profile") or "medium"),
+                        token_count=int(query_profile.get("token_count") or 0),
+                        timings=_timings_dict,
+                        elapsed_seconds=float(payload.get("elapsed_seconds") or 0),
+                        embed_cache_hit=1 if float(_timings_dict.get("embed_cache_hit") or 0) > 0 else 0,
+                        web_cache_hit=1 if str(_timings_dict.get("web_search_status", "")) == "cache_hit" else 0,
+                        no_context=_no_context,
+                        no_context_reason="below_threshold" if _no_context else "",
+                        trace_id=resolved_trace_id,
+                        similarity_threshold=float(effective_similarity_threshold),
+                        top1_score_before_rerank=float(_timings_dict["local_top1_score"]) if _timings_dict.get("local_top1_score") is not None else None,
+                        top1_score_after_rerank=float(_timings_dict["local_top1_vector_score_after_rerank"]) if _timings_dict.get("local_top1_vector_score_after_rerank") is not None else None,
+                        top1_rerank_score_after_rerank=float(_timings_dict["local_top1_rerank_score_after_rerank"]) if _timings_dict.get("local_top1_rerank_score_after_rerank") is not None else None,
+                        top1_identity_changed=int(_timings_dict["local_top1_identity_changed"]) if _timings_dict.get("local_top1_identity_changed") is not None else None,
+                        top1_rank_shift=float(_timings_dict["local_top1_rank_shift"]) if _timings_dict.get("local_top1_rank_shift") is not None else None,
+                    )
+                _write_rag_trace_record(
+                    _build_rag_trace_record(
+                        trace_id=resolved_trace_id,
+                        session_id=session_id,
+                        source="benchmark_rag" if benchmark_mode else "rag_qa_stream",
+                        mode=normalized_mode,
+                        search_mode=normalized_search_mode,
+                        query_profile=query_profile,
+                        similarity_threshold=float(effective_similarity_threshold),
+                        payload=payload,
+                        timings=_timings_dict,
+                        no_context=_no_context,
+                        no_context_reason="below_threshold" if _no_context else "",
+                    )
                 )
-            try:
-                line = line_queue.get(timeout=0.1)
-            except queue.Empty:
-                for event in _flush_pending_chunk(force=False):
-                    yield event
-                if proc.poll() is None and time.monotonic() - last_heartbeat >= 0.8:
-                    yield {"type": "progress", "trace_id": resolved_trace_id, "message": _heartbeat_progress_message(last_progress_message, last_progress_started_at)}
-                    last_heartbeat = time.monotonic()
-                continue
-
-            if line is None:
-                break
-
-            line = line.rstrip()
-            if not line:
-                continue
-
-            if line.startswith("PROGRESS: "):
-                for event in _flush_pending_chunk(force=True):
-                    yield event
-                message = line[len("PROGRESS: ") :].strip()
-                last_progress_message = message or last_progress_message
-                last_progress_started_at = time.monotonic()
-                yield {"type": "progress", "trace_id": resolved_trace_id, "message": message}
-                last_heartbeat = time.monotonic()
-            elif line.startswith("STREAM_CHUNK_JSON: "):
-                raw_payload = line[len("STREAM_CHUNK_JSON: ") :].strip()
-                try:
-                    chunk = str(json.loads(raw_payload))
-                except Exception:
-                    chunk = raw_payload
-                pending_chunk += chunk
-                if re.search(r"[\n。！？!?；;:]$", pending_chunk) or len(pending_chunk) >= 180:
-                    for event in _flush_pending_chunk(force=True):
-                        yield event
-                    last_heartbeat = time.monotonic()
-            elif line.startswith("STREAM_CHUNK: "):
-                chunk = line[len("STREAM_CHUNK: ") :]
-                pending_chunk += chunk
-                # Flush sooner at natural boundaries to improve markdown structure stability.
-                if re.search(r"[\n。！？!?；;:]$", pending_chunk) or len(pending_chunk) >= 180:
-                    for event in _flush_pending_chunk(force=True):
-                        yield event
-                    last_heartbeat = time.monotonic()
-            else:
-                # Ignore non-protocol logs (for example model-load report lines).
-                raw_logs.append(line)
-                continue
-
-        for event in _flush_pending_chunk(force=True):
-            yield event
-
-        output = "\n".join(raw_logs).strip()
-        if proc.stdout is not None:
-            tail = proc.stdout.read() or ""
-            if tail.strip():
-                output = f"{output}\n{tail}".strip() if output else tail
-        code = proc.wait()
-
-        with _PROCESS_LOCK:
-            was_aborted = session_id in _ABORTED_SESSIONS
-            _ACTIVE_PROCESSES.pop(session_id, None)
-            _ABORTED_SESSIONS.discard(session_id)
-
-        if was_aborted:
-            yield {"type": "aborted", "trace_id": resolved_trace_id}
-            return
-
-        if code != 0:
-            raw_error_text = _friendly_subprocess_error(output, code)
-            error_text = _humanize_error_message(raw_error_text)
-            should_fallback_local = use_local_llm and (
-                _is_local_llm_unavailable_error(raw_error_text)
-                or _looks_like_generic_subprocess_error(raw_error_text)
-            )
-            if should_fallback_local:
-                notice = _local_fallback_notice()
-                yield {"type": "progress", "trace_id": resolved_trace_id, "message": "本地大模型不可用，正在降级为检索回答..."}
-                fallback_payload = _safe_build_local_fallback_payload(
-                    q,
-                    top_k,
-                    emb,
-                    notice,
-                    normalized_search_mode,
-                    normalized_mode,
-                    "stream_local_llm_unavailable_and_fallback_failed",
-                )
-                fallback_answer = str(fallback_payload.get("answer", "")).strip()
-                fallback_docs = fallback_payload.get("used_context_docs", [])
-                docs = fallback_docs if isinstance(fallback_docs, list) else []
-                fallback_answer = format_answer_with_refs(fallback_answer, docs, mode=normalized_mode)
-                fallback_payload["answer"] = fallback_answer
-                fallback_payload["mode"] = normalized_mode
-                fallback_payload["embedding_model"] = emb
-                fallback_payload["session_id"] = session_id
-                fallback_payload["trace_id"] = resolved_trace_id
+                if float(_timings_dict.get("local_after_threshold", -1) or -1) == 0 and not benchmark_mode:
+                    try:
+                        from cache_db import log_no_context_query
+                        log_no_context_query(
+                            q,
+                            source="rag_qa",
+                            top1_score=float(_timings_dict.get("local_top1_score") or 0),
+                            threshold=float(effective_similarity_threshold),
+                            trace_id=resolved_trace_id,
+                            reason="below_threshold",
+                        )
+                    except Exception:
+                        pass
                 if debug:
+                    debug_trace = payload.get("debug_trace") if isinstance(payload.get("debug_trace"), dict) else {}
                     _write_debug_record(
                         session_id,
                         {
@@ -3118,164 +3111,47 @@ def ask_rag_stream(
                             "trace_id": resolved_trace_id,
                             "session_id": session_id,
                             "debug_enabled": True,
-                            "source": "rag_service_stream_local_fallback",
+                            "source": "rag_service_stream",
                             "question": q,
                             "search_mode": normalized_search_mode,
                             "similarity_threshold": float(effective_similarity_threshold),
                             "query_profile": query_profile,
-                            "payload": fallback_payload,
+                            "trace": debug_trace,
+                            "payload_summary": {
+                                "retrieved_local_count": payload.get("retrieved_local_count"),
+                                "retrieved_local_vector_candidates": payload.get("retrieved_local_vector_candidates"),
+                                "retrieved_web_count": payload.get("retrieved_web_count"),
+                                "vector_top_n": payload.get("vector_top_n"),
+                                "rerank_top_k": payload.get("rerank_top_k"),
+                                "timings": payload.get("timings"),
+                            },
                         },
                     )
 
-                if fallback_answer:
-                    fallback_chunks = [fallback_answer[i : i + 220] for i in range(0, len(fallback_answer), 220)]
-                    for chunk in fallback_chunks:
-                        yield {"type": "chunk", "trace_id": resolved_trace_id, "text": chunk}
-                    append_message_with_trace(session_id, "助手", fallback_answer, trace_id=resolved_trace_id)
-                    schedule_memory_update(session_id, q, fallback_answer)
-
-                title = suggest_local_session_title(q, max_len=15)
-                if title:
-                    set_session_title_if_unlocked(session_id, title, lock=True)
-
-                yield {"type": "done", "trace_id": resolved_trace_id, "payload": fallback_payload}
-                return
-            raise RuntimeError(error_text)
-
-        if not tmp_path or not Path(tmp_path).exists():
-            raise RuntimeError("未生成 RAG 输出")
-
-        payload = json.loads(Path(tmp_path).read_text(encoding="utf-8"))
-        payload["trace_id"] = str(payload.get("trace_id") or resolved_trace_id)
-        answer = str(payload.get("answer", "")).strip() or "".join(collected_chunks).strip()
-        used_docs = payload.get("used_context_docs", [])
-        docs = used_docs if isinstance(used_docs, list) else []
-        answer = format_answer_with_refs(answer, docs, mode=normalized_mode)
-
-        if answer and not collected_chunks:
-            # Fallback when upstream buffers everything and emits no stream chunks.
-            synthetic_chunks = [answer[i : i + 240] for i in range(0, len(answer), 240)]
-            for chunk in synthetic_chunks:
-                yield {"type": "chunk", "trace_id": resolved_trace_id, "text": chunk}
-
-        payload["answer"] = answer
-        payload["mode"] = normalized_mode
-        payload["embedding_model"] = emb
-        payload["query_profile"] = query_profile
-        payload["similarity_threshold"] = float(effective_similarity_threshold)
-        payload["vector_top_n"] = int(payload.get("vector_top_n") or effective_vector_top_n)
-        payload["session_id"] = session_id
-        _timings_dict = payload.get("timings", {}) if isinstance(payload.get("timings"), dict) else {}
-        _lat = _timings_dict.get("local_after_threshold")
-        _no_context = 1 if (_lat is not None and float(_lat) == 0.0) else 0
-        if not benchmark_mode:
-            record_retrieval_metrics(
-                source="rag_qa_stream",
-                search_mode=normalized_search_mode,
-                query_profile=str(query_profile.get("profile") or "medium"),
-                token_count=int(query_profile.get("token_count") or 0),
-                timings=_timings_dict,
-                elapsed_seconds=float(payload.get("elapsed_seconds") or 0),
-                embed_cache_hit=1 if float(_timings_dict.get("embed_cache_hit") or 0) > 0 else 0,
-                web_cache_hit=1 if str(_timings_dict.get("web_search_status", "")) == "cache_hit" else 0,
-                no_context=_no_context,
-                no_context_reason="below_threshold" if _no_context else "",
-                trace_id=resolved_trace_id,
-                similarity_threshold=float(effective_similarity_threshold),
-                top1_score_before_rerank=float(_timings_dict["local_top1_score"]) if _timings_dict.get("local_top1_score") is not None else None,
-                top1_score_after_rerank=float(_timings_dict["local_top1_vector_score_after_rerank"]) if _timings_dict.get("local_top1_vector_score_after_rerank") is not None else None,
-                top1_rerank_score_after_rerank=float(_timings_dict["local_top1_rerank_score_after_rerank"]) if _timings_dict.get("local_top1_rerank_score_after_rerank") is not None else None,
-                top1_identity_changed=int(_timings_dict["local_top1_identity_changed"]) if _timings_dict.get("local_top1_identity_changed") is not None else None,
-                top1_rank_shift=float(_timings_dict["local_top1_rank_shift"]) if _timings_dict.get("local_top1_rank_shift") is not None else None,
-            )
-        _write_rag_trace_record(
-            _build_rag_trace_record(
-                trace_id=resolved_trace_id,
-                session_id=session_id,
-                source="benchmark_rag" if benchmark_mode else "rag_qa_stream",
-                mode=normalized_mode,
-                search_mode=normalized_search_mode,
-                query_profile=query_profile,
-                similarity_threshold=float(effective_similarity_threshold),
-                payload=payload,
-                timings=_timings_dict,
-                no_context=_no_context,
-                no_context_reason="below_threshold" if _no_context else "",
-            )
-        )
-        if float(_timings_dict.get("local_after_threshold", -1) or -1) == 0 and not benchmark_mode:
-            try:
-                from cache_db import log_no_context_query
-                log_no_context_query(
-                    q,
-                    source="rag_qa",
-                    top1_score=float(_timings_dict.get("local_top1_score") or 0),
-                    threshold=float(effective_similarity_threshold),
+                yield {"type": "done", "trace_id": resolved_trace_id, "payload": payload}
+                _post_stream_finalize_async(
+                    session_id=session_id,
+                    answer=answer,
+                    question=q,
                     trace_id=resolved_trace_id,
-                    reason="below_threshold",
+                    normalized_mode=normalized_mode,
+                    payload=payload,
+                    timings=_timings_dict,
                 )
-            except Exception:
-                pass
-        if debug:
-            debug_trace = payload.get("debug_trace") if isinstance(payload.get("debug_trace"), dict) else {}
-            _write_debug_record(
-                session_id,
-                {
-                    "timestamp": datetime.now().isoformat(timespec="seconds"),
-                    "trace_id": resolved_trace_id,
-                    "session_id": session_id,
-                    "debug_enabled": True,
-                    "source": "rag_service_stream",
-                    "question": q,
-                    "search_mode": normalized_search_mode,
-                    "similarity_threshold": float(effective_similarity_threshold),
-                    "query_profile": query_profile,
-                    "trace": debug_trace,
-                    "payload_summary": {
-                        "retrieved_local_count": payload.get("retrieved_local_count"),
-                        "retrieved_local_vector_candidates": payload.get("retrieved_local_vector_candidates"),
-                        "retrieved_web_count": payload.get("retrieved_web_count"),
-                        "vector_top_n": payload.get("vector_top_n"),
-                        "rerank_top_k": payload.get("rerank_top_k"),
-                        "timings": payload.get("timings"),
-                    },
-                },
-            )
+                return
 
-        yield {"type": "done", "trace_id": resolved_trace_id, "payload": payload}
-        _post_stream_finalize_async(
-            session_id=session_id,
-            answer=answer,
-            question=q,
-            trace_id=resolved_trace_id,
-            normalized_mode=normalized_mode,
-            payload=payload,
-            timings=_timings_dict,
-        )
-        return
-    except RAGTaskAborted:
-        # Save any partial streamed content so it survives session reload.
-        partial = "".join(collected_chunks).strip()
-        if partial:
-            append_message_with_trace(session_id, "助手", partial + "\n\n_[已中止]_", trace_id=resolved_trace_id)
-        yield {"type": "aborted", "trace_id": resolved_trace_id}
-    except Exception as exc:
-        # Stream an error event to preserve any partial output already sent to client.
-        error_message = _humanize_error_message(str(exc) or "未知错误")
-        # Save partial streamed content so it survives session reload.
+        error_message = _humanize_error_message("未知错误")
         partial = "".join(collected_chunks).strip()
         if partial:
             append_message_with_trace(session_id, "助手", partial + "\n\n---\n\n_[输出中断]_", trace_id=resolved_trace_id)
         append_message(session_id, "系统", f"RAG Q&A 失败：{error_message}")
         yield {"type": "error", "trace_id": resolved_trace_id, "message": error_message}
     finally:
-        with _PROCESS_LOCK:
-            _ACTIVE_PROCESSES.pop(session_id, None)
-        if tmp_path:
-            try:
-                Path(tmp_path).unlink(missing_ok=True)
-            except Exception:
-                pass
+        _, state = _clear_active_request(session_id)
+        cancel_event.set()
+        thread = state.get("thread") if isinstance(state, dict) else None
+        if isinstance(thread, threading.Thread) and thread.is_alive():
+            thread.join(timeout=0.1)
 
 
 def abort_session(session_id: str) -> bool:
@@ -3283,9 +3159,11 @@ def abort_session(session_id: str) -> bool:
     if not sid:
         return False
     with _PROCESS_LOCK:
-        proc = _ACTIVE_PROCESSES.get(sid)
-        if proc is None or proc.poll() is not None:
+        state = _ACTIVE_PROCESSES.get(sid)
+        if not isinstance(state, dict):
             return False
         _ABORTED_SESSIONS.add(sid)
-    _terminate_subprocess_tree(proc)
+        cancel_event = state.get("cancel_event")
+    if isinstance(cancel_event, threading.Event):
+        cancel_event.set()
     return True

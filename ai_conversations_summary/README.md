@@ -27,11 +27,15 @@ Raw Inputs
 5. 回答生成：本地或云端 LLM 基于上下文生成答案。
 6. 会话落盘：写入 `data/rag_sessions/`，并记录检索指标。
 
+补充说明：当前 RAG 服务已经与 `nav_dashboard` 共用部分共享能力，并通过 Dashboard 汇总检索时延、缓存命中率、未命中率、rerank 换榜率等观测指标。
+
 ## 3. 关键目录与文件
 
 - `web/main.py`：FastAPI Web 服务入口
 - `scripts/ask_rag.py`：CLI 问答入口
 - `scripts/build_rag_index.py`：向量索引构建与更新
+- `scripts/cache_db.py`：embedding / web cache
+- `scripts/rag_knowledge_graph.py`：查询扩展用知识图谱
 - `scripts/rag_vector_index.py`：本项目 RAG 索引实现
 - `data/rag_sessions/`：会话与调试数据
 - `documents/`：分类知识文档库
@@ -100,7 +104,13 @@ launch_web.bat
 3. 归档到 `documents/` 后执行索引构建。
 4. 在 Web 或 GUI 中发起 RAG 问答。
 
-## 8. 说明
+## 8. 与 Dashboard/Agent 的关系
+
+- `nav_dashboard` 的文档工具会调用本服务的检索能力。
+- Agent 的 mixed/tech 路由会参考文档 embedding similarity 决定是否加入文档检索。
+- 因此这里的 query rewrite、rerank、threshold 调整会直接影响 Dashboard Agent 的路由表现与最终回答。
+
+## 9. 说明
 
 本 README 聚焦架构与落地流程；更细的调参、故障场景和发布细节请查看：
 

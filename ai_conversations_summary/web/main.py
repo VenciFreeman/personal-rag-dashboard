@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import sys
 from pathlib import Path
 
 from fastapi import FastAPI, Request
@@ -7,6 +8,10 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import HTMLResponse
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
+
+WORKSPACE_ROOT = Path(__file__).resolve().parents[2]
+if str(WORKSPACE_ROOT) not in sys.path:
+    sys.path.insert(0, str(WORKSPACE_ROOT))
 
 from web.api.preview import router as preview_router
 from web.api.rag import router as rag_router

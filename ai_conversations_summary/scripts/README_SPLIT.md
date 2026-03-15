@@ -33,6 +33,12 @@ python split_multi_topic_documents.py <input_file> [--output-dir <dir>] [--dry-r
 python batch_split_documents.py <documents_dir> [--dry-run] [--move-originals] [--no-recursive]
 ```
 
+如果在当前仓库统一虚拟环境下执行，推荐使用：
+
+```powershell
+..\..\.venv\Scripts\python.exe batch_split_documents.py <documents_dir> --dry-run
+```
+
 ## 5. 推荐流程
 
 1. 先执行 `--dry-run` 预览结果。
@@ -45,3 +51,4 @@ python batch_split_documents.py <documents_dir> [--dry-run] [--move-originals] [
 - 不满足主题标题约定的文档会被跳过。
 - `--move-originals` 会移动原文档，建议先做预览。
 - 文件名可能因平台限制进行长度裁剪。
+- 文档拆分会直接影响后续 RAG 与 Dashboard Agent 的召回粒度，因此建议在大批量拆分后重建索引并做回归验证。

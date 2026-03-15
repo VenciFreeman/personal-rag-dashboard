@@ -1,0 +1,40 @@
+{
+	"hooks": {
+		"SubagentStop": [
+			{
+				"type": "command",
+				"command": "python scripts/bug_ticket_sync_hook.py",
+				"windows": ".\\.venv\\Scripts\\python.exe .\\scripts\\bug_ticket_sync_hook.py",
+				"cwd": ".",
+				"timeout": 20,
+				"env": {
+					"BUG_TICKET_SYNC_DIR": "nav_dashboard/data",
+					"BUG_TICKET_LOOKBACK_DAYS": "21",
+					"BUG_TICKET_RECENT_LIMIT": "1000",
+					"BUG_TICKET_MATCH_THRESHOLD": "0.74",
+					"BUG_TICKET_CREATED_BY": "ai-hook",
+					"BUG_TICKET_UPDATED_BY": "ai-hook",
+					"BUG_TICKET_DEBUG_LOG": "nav_dashboard/data/bug_ticket_hook_debug.jsonl"
+				}
+			}
+		],
+		"Stop": [
+			{
+				"type": "command",
+				"command": "python scripts/bug_ticket_sync_hook.py",
+				"windows": ".\\.venv\\Scripts\\python.exe .\\scripts\\bug_ticket_sync_hook.py",
+				"cwd": ".",
+				"timeout": 20,
+				"env": {
+					"BUG_TICKET_SYNC_DIR": "nav_dashboard/data",
+					"BUG_TICKET_LOOKBACK_DAYS": "21",
+					"BUG_TICKET_RECENT_LIMIT": "1000",
+					"BUG_TICKET_MATCH_THRESHOLD": "0.74",
+					"BUG_TICKET_CREATED_BY": "ai-hook",
+					"BUG_TICKET_UPDATED_BY": "ai-hook",
+					"BUG_TICKET_DEBUG_LOG": "nav_dashboard/data/bug_ticket_hook_debug.jsonl"
+				}
+			}
+		]
+	}
+}

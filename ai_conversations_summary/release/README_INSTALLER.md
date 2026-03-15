@@ -38,3 +38,8 @@ build_installer.bat
 - `release/app/data/local_models/`
 
 说明：模型文件会显著增大安装包体积，建议按分发场景选择是否内置。
+
+## 5. 当前安装包范围说明
+
+- 安装包面向 `ai_conversations_summary` 发布，不负责打包 `nav_dashboard` 与 `library_tracker` 的完整三站工作台。
+- 如需交付完整工作台，建议单独提供仓库级启动方案或自定义统一安装器。

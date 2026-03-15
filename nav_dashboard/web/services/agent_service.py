@@ -61,6 +61,7 @@ Agent 规划、工具执行与会话管理核心服务
 """
 from __future__ import annotations
 
+import html
 import json
 import importlib.util
 import math
@@ -83,15 +84,36 @@ _LLM_IMPORT_ERROR: Exception | None = None
 _WORKSPACE_ROOT = Path(__file__).resolve().parents[3]
 if str(_WORKSPACE_ROOT) not in sys.path:
     sys.path.insert(0, str(_WORKSPACE_ROOT))
+_AI_SUMMARY_SCRIPTS_DIR = _WORKSPACE_ROOT / "ai_conversations_summary" / "scripts"
+if str(_AI_SUMMARY_SCRIPTS_DIR) not in sys.path:
+    sys.path.insert(0, str(_AI_SUMMARY_SCRIPTS_DIR))
+
+import ask_rag as ask_rag_script
+from nav_dashboard.web.services.media_taxonomy import (
+    MEDIA_ABSTRACT_CONCEPT_CUES,
+    MEDIA_BOOKISH_CUES,
+    MEDIA_BOOK_CATEGORY_HINTS,
+    MEDIA_COLLECTION_CUES,
+    MEDIA_INTENT_KEYWORDS,
+    MEDIA_REGION_ALIASES,
+    MEDIA_VIDEO_CATEGORY_HINTS,
+    MEDIAWIKI_FILLER_PATTERNS,
+    MEDIAWIKI_QUERY_ALIASES,
+    TMDB_AUDIOVISUAL_CUES,
+    TMDB_MOVIE_CUES,
+    TMDB_PERSON_CUES,
+    TMDB_TV_CUES,
+)
 
 try:
     from core_service.config import get_settings
     from core_service.llm_client import chat_completion_with_retry
-    from core_service.trace_store import write_trace_record
+    from core_service.trace_store import get_trace_record, write_trace_record
 except Exception as exc:  # noqa: BLE001
     _LLM_IMPORT_ERROR = exc
     get_settings = None
     chat_completion_with_retry = None
+    get_trace_record = None
     write_trace_record = None
 
 # Optional knowledge graph support for query expansion
@@ -147,6 +169,10 @@ TOOL_QUERY_MEDIA = "query_media_record"
 TOOL_SEARCH_WEB = "search_web"
 TOOL_EXPAND_DOC_QUERY = "expand_document_query"
 TOOL_EXPAND_MEDIA_QUERY = "expand_media_query"
+TOOL_SEARCH_MEDIAWIKI = "search_mediawiki_action"
+TOOL_PARSE_MEDIAWIKI = "parse_mediawiki_page"
+TOOL_EXPAND_MEDIAWIKI_CONCEPT = "expand_mediawiki_concept"
+TOOL_SEARCH_TMDB = "search_tmdb_media"
 
 QUERY_TYPE_TECH = "TECH_QUERY"
 QUERY_TYPE_MEDIA = "MEDIA_QUERY"
@@ -164,7 +190,17 @@ TECH_SPACE_PREFIXES = (
     "science/",
 )
 
-TOOL_NAMES = [TOOL_QUERY_DOC_RAG, TOOL_QUERY_MEDIA, TOOL_SEARCH_WEB, TOOL_EXPAND_DOC_QUERY, TOOL_EXPAND_MEDIA_QUERY]
+TOOL_NAMES = [
+    TOOL_QUERY_DOC_RAG,
+    TOOL_QUERY_MEDIA,
+    TOOL_SEARCH_WEB,
+    TOOL_EXPAND_DOC_QUERY,
+    TOOL_EXPAND_MEDIA_QUERY,
+    TOOL_SEARCH_MEDIAWIKI,
+    TOOL_PARSE_MEDIAWIKI,
+    TOOL_EXPAND_MEDIAWIKI_CONCEPT,
+    TOOL_SEARCH_TMDB,
+]
 DOC_SCORE_THRESHOLD = 0.45
 WEB_SCORE_THRESHOLD = 0.5
 MEDIA_KEYWORD_SCORE_THRESHOLD = float(os.getenv("NAV_DASHBOARD_MEDIA_KEYWORD_SCORE_THRESHOLD", "0.2"))
@@ -176,6 +212,7 @@ LOCAL_TOP_K_MEDIA = 3
 HYBRID_TOP_K_DOC = 3
 HYBRID_TOP_K_MEDIA = 3
 HYBRID_TOP_K_WEB = 3
+MAX_REFERENCE_ITEMS = int(os.getenv("NAV_DASHBOARD_MAX_REFERENCE_ITEMS", "6") or "6")
 DOC_VECTOR_TOP_N = int(os.getenv("NAV_DASHBOARD_DOC_VECTOR_TOP_N", "12"))
 DOC_VECTOR_TOP_N_SCALE = float(os.getenv("NAV_DASHBOARD_DOC_VECTOR_TOP_N_SCALE", "0.7") or "0.7")
 DOC_QUERY_REWRITE_COUNT = max(1, min(2, int(os.getenv("NAV_DASHBOARD_QUERY_REWRITE_COUNT", "2"))))
@@ -195,34 +232,18 @@ LONG_QUERY_LIMIT_DELTA = int(os.getenv("NAV_DASHBOARD_LONG_TOOL_LIMIT_DELTA", "-
 _MEDIA_GRAPH_CACHE: dict[str, Any] = {"mtime": None, "degrees": {}}
 _MEDIA_COMPARE_SPLIT_RE = re.compile(r"\s*(?:和|与|以及|及|跟|vs\.?|VS\.?|/|／|、)\s*")
 _MEDIA_TITLE_MARKER_RE = re.compile(r"(?:《[^》]+》|「[^」]+」|『[^』]+』|“[^”]+”|\"[^\"]+\")")
-_MEDIA_INTENT_KEYWORDS = (
-    "电影",
-    "影片",
-    "影视",
-    "电视剧",
-    "剧集",
-    "动漫",
-    "动画",
-    "番",
-    "漫画",
-    "轻小说",
-    "小说",
-    "游戏",
-    "gal",
-    "visual novel",
-    "角色",
-    "主角",
-    "剧情",
-    "作者",
-    "导演",
-    "演员",
-    "配乐",
-    "结局",
-    "观后感",
-    "读后感",
-    "游玩体验",
-    "作品",
-)
+_MEDIA_LIBRARY_VOCAB_CACHE: dict[str, Any] = {
+    "signature": None,
+    "data": {"nationalities": [], "authors": [], "categories": [], "titles": []},
+}
+_MEDIAWIKI_CONCEPT_CACHE: dict[str, Any] = {"entries": {}, "lock": threading.RLock()}
+PROMPT_HISTORY_MAX_MESSAGES = int(os.getenv("NAV_DASHBOARD_PROMPT_HISTORY_MAX_MESSAGES", "6") or "6")
+PROMPT_HISTORY_ITEM_MAX_CHARS = int(os.getenv("NAV_DASHBOARD_PROMPT_HISTORY_ITEM_MAX_CHARS", "360") or "360")
+PROMPT_MEMORY_MAX_CHARS = int(os.getenv("NAV_DASHBOARD_PROMPT_MEMORY_MAX_CHARS", "1800") or "1800")
+PROMPT_TOOL_CONTEXT_MAX_CHARS = int(os.getenv("NAV_DASHBOARD_PROMPT_TOOL_CONTEXT_MAX_CHARS", "5200") or "5200")
+PROMPT_TOOL_CONTEXT_RETRY_CHARS = int(os.getenv("NAV_DASHBOARD_PROMPT_TOOL_CONTEXT_RETRY_CHARS", "3000") or "3000")
+PROMPT_TOOL_RESULT_MAX_CHARS = int(os.getenv("NAV_DASHBOARD_PROMPT_TOOL_RESULT_MAX_CHARS", "1700") or "1700")
+PROMPT_TOOL_RESULT_MIN_CHARS = int(os.getenv("NAV_DASHBOARD_PROMPT_TOOL_RESULT_MIN_CHARS", "420") or "420")
 
 
 def _is_doc_graph_available() -> bool:
@@ -235,7 +256,14 @@ def _is_media_graph_available() -> bool:
 
 def _allowed_tool_names(search_mode: str) -> list[str]:
     normalized_mode = _normalize_search_mode(search_mode)
-    allowed = [TOOL_QUERY_DOC_RAG, TOOL_QUERY_MEDIA]
+    allowed = [
+        TOOL_QUERY_DOC_RAG,
+        TOOL_QUERY_MEDIA,
+        TOOL_SEARCH_MEDIAWIKI,
+        TOOL_PARSE_MEDIAWIKI,
+        TOOL_EXPAND_MEDIAWIKI_CONCEPT,
+        TOOL_SEARCH_TMDB,
+    ]
     if normalized_mode == "hybrid":
         allowed.append(TOOL_SEARCH_WEB)
     if _is_doc_graph_available():
@@ -249,12 +277,18 @@ def _build_tool_prompt_lines(search_mode: str) -> str:
     lines = [
         f"- {TOOL_QUERY_DOC_RAG}: 查询RAG文档知识库",
         f"- {TOOL_QUERY_MEDIA}: 查询书影音游记录",
+        f"- {TOOL_SEARCH_MEDIAWIKI}: 使用 MediaWiki Action API 搜索百科条目",
+        f"- {TOOL_PARSE_MEDIAWIKI}: 使用 MediaWiki Action API 解析百科页面内容",
+        f"- {TOOL_EXPAND_MEDIAWIKI_CONCEPT}: 使用 MediaWiki 概念展开抽象标签并映射回本地媒体库",
+        f"- {TOOL_SEARCH_TMDB}: 使用 TMDB 查询电影、剧集、演员等外部媒体信息",
     ]
     normalized_mode = _normalize_search_mode(search_mode)
     if normalized_mode == "hybrid":
         lines.append(f"- {TOOL_SEARCH_WEB}: 联网搜索最新信息")
     if _is_doc_graph_available():
         lines.append(f"- {TOOL_EXPAND_DOC_QUERY}: 使用知识图谱扩展文档查询（可获取相关概念）")
+    if _is_media_graph_available():
+        lines.append(f"- {TOOL_EXPAND_MEDIA_QUERY}: 使用知识图谱扩展媒体查询")
     return "\n".join(lines)
 
 
@@ -272,6 +306,168 @@ def _normalize_trace_id(trace_id: str = "") -> str:
 def _approx_tokens(text: str) -> int:
     value = str(text or "")
     return max(0, int(len(value) / 4))
+
+
+def _clip_text(value: Any, max_chars: int) -> str:
+    text = str(value or "")
+    if max_chars <= 0:
+        return ""
+    if len(text) <= max_chars:
+        return text
+    if max_chars <= 3:
+        return text[:max_chars]
+    return text[: max_chars - 3].rstrip() + "..."
+
+
+def _prompt_string_limit_for_key(key: str) -> int:
+    lowered = str(key or "").strip().lower()
+    if lowered in {"url", "path", "title", "display_title", "name", "date", "language", "media_type", "author"}:
+        return 120
+    if lowered in {"extract", "overview", "snippet", "content", "review", "summary"}:
+        return 220
+    return 160
+
+
+def _sanitize_for_prompt(
+    value: Any,
+    *,
+    key: str = "",
+    max_depth: int = 3,
+    max_list_items: int = 5,
+    max_dict_items: int = 12,
+) -> Any:
+    if max_depth <= 0:
+        return _clip_text(value, _prompt_string_limit_for_key(key))
+    if value is None or isinstance(value, (bool, int, float)):
+        return value
+    if isinstance(value, str):
+        return _clip_text(value, _prompt_string_limit_for_key(key))
+    if isinstance(value, dict):
+        trimmed: dict[str, Any] = {}
+        omitted = 0
+        for idx, (raw_key, raw_value) in enumerate(value.items()):
+            if idx >= max_dict_items:
+                omitted += 1
+                continue
+            child_key = str(raw_key or "").strip()
+            if child_key in {"trace_id", "trace_stage", "latency_ms", "query_profile", "html_text", "raw_html"}:
+                continue
+            trimmed[child_key] = _sanitize_for_prompt(
+                raw_value,
+                key=child_key,
+                max_depth=max_depth - 1,
+                max_list_items=max_list_items,
+                max_dict_items=max_dict_items,
+            )
+        if omitted > 0:
+            trimmed["_omitted_keys"] = omitted
+        return trimmed
+    if isinstance(value, list):
+        local_limit = max_list_items
+        lowered = str(key or "").strip().lower()
+        if lowered == "results":
+            local_limit = min(local_limit, 4)
+        elif lowered in {"links", "categories", "aliases", "countries", "authors", "queries"}:
+            local_limit = min(max(local_limit, 6), 8)
+        elif lowered == "search_results":
+            local_limit = min(local_limit, 3)
+        trimmed_list = [
+            _sanitize_for_prompt(
+                item,
+                key=key,
+                max_depth=max_depth - 1,
+                max_list_items=max_list_items,
+                max_dict_items=max_dict_items,
+            )
+            for item in value[:local_limit]
+        ]
+        if len(value) > local_limit:
+            trimmed_list.append({"_omitted_items": len(value) - local_limit})
+        return trimmed_list
+    return _clip_text(value, _prompt_string_limit_for_key(key))
+
+
+def _minimal_prompt_tool_payload(exec_result: ToolExecution) -> dict[str, Any]:
+    data = exec_result.data if isinstance(exec_result.data, dict) else {}
+    rows = data.get("results", []) if isinstance(data.get("results"), list) else []
+    payload: dict[str, Any] = {
+        "tool": exec_result.tool,
+        "status": exec_result.status,
+        "summary": _clip_text(exec_result.summary, 240),
+        "result_count": len(rows),
+    }
+    if exec_result.tool == TOOL_EXPAND_MEDIAWIKI_CONCEPT and isinstance(data, dict):
+        payload["concept"] = _clip_text(data.get("concept", ""), 120)
+        payload["filters"] = _sanitize_for_prompt(data.get("filters", {}), key="filters", max_depth=2, max_list_items=6)
+    return payload
+
+
+def _format_tool_result(exec_result: ToolExecution, *, max_chars: int = PROMPT_TOOL_RESULT_MAX_CHARS) -> str:
+    profiles = [
+        {"max_depth": 3, "max_list_items": 5, "max_dict_items": 12},
+        {"max_depth": 2, "max_list_items": 4, "max_dict_items": 10},
+        {"max_depth": 2, "max_list_items": 3, "max_dict_items": 8},
+    ]
+    for profile in profiles:
+        payload = {
+            "tool": exec_result.tool,
+            "status": exec_result.status,
+            "summary": _clip_text(exec_result.summary, 240),
+            "data": _sanitize_for_prompt(exec_result.data, key="data", **profile),
+        }
+        rendered = json.dumps(payload, ensure_ascii=False)
+        if len(rendered) <= max_chars:
+            return rendered
+    return json.dumps(_minimal_prompt_tool_payload(exec_result), ensure_ascii=False)
+
+
+def _build_tool_context_parts(tool_results: list[ToolExecution], *, max_total_chars: int) -> list[str]:
+    parts = ["工具返回结果："]
+    remaining = max_total_chars - len(parts[0])
+    rendered_count = 0
+    for index, result in enumerate(tool_results):
+        remaining_tools = max(1, len(tool_results) - index)
+        if remaining <= 80:
+            break
+        per_tool_budget = max(PROMPT_TOOL_RESULT_MIN_CHARS, min(PROMPT_TOOL_RESULT_MAX_CHARS, int(remaining / remaining_tools)))
+        block = _format_tool_result(result, max_chars=per_tool_budget)
+        if len(block) + 1 > remaining:
+            block = _format_tool_result(result, max_chars=max(PROMPT_TOOL_RESULT_MIN_CHARS, remaining - 32))
+        if len(block) + 1 > remaining:
+            break
+        parts.append(block)
+        rendered_count += 1
+        remaining -= len(block) + 1
+    omitted = max(0, len(tool_results) - rendered_count)
+    if omitted > 0 and remaining > 32:
+        parts.append(f"还有 {omitted} 个工具结果因上下文预算被省略。")
+    return parts
+
+
+def _clip_memory_context(memory_context: str) -> str:
+    return _clip_text(memory_context, PROMPT_MEMORY_MAX_CHARS)
+
+
+def _trim_history_for_prompt(history: list[dict[str, str]]) -> list[str]:
+    hist_lines: list[str] = []
+    for msg in (history or [])[-PROMPT_HISTORY_MAX_MESSAGES:]:
+        role = str(msg.get("role", "")).strip()
+        content = _clip_text(str(msg.get("content", "")).strip(), PROMPT_HISTORY_ITEM_MAX_CHARS)
+        if content:
+            hist_lines.append(f"{role}: {content}")
+    return hist_lines
+
+
+def _is_context_length_error(exc: Exception) -> bool:
+    text = str(exc or "")
+    lowered = text.lower()
+    return (
+        "context length" in lowered
+        or "n_keep" in lowered
+        or "too many tokens" in lowered
+        or "maximum context length" in lowered
+        or "the number of tokens to keep" in lowered
+    )
 
 
 def _resolve_query_profile(query: str) -> dict[str, Any]:
@@ -297,6 +493,11 @@ def _resolve_query_profile(query: str) -> dict[str, Any]:
         web_threshold_delta = LONG_QUERY_WEB_THRESHOLD_DELTA
         doc_vector_top_n_delta = LONG_QUERY_DOC_VECTOR_TOP_N_DELTA
         limit_delta = LONG_QUERY_LIMIT_DELTA
+
+    referential_followup_cues = ("这些", "这些媒体", "这些作品", "这些条目", "它们", "前面这些", "上面这些")
+    detail_followup_cues = ("具体细节", "细节信息", "详细信息", "作者", "出版方", "出版社", "渠道", "平台", "工作室")
+    if any(cue in str(query or "") for cue in referential_followup_cues) and any(cue in str(query or "") for cue in detail_followup_cues):
+        limit_delta = max(limit_delta, SHORT_QUERY_LIMIT_DELTA)
 
     raw_top_n = max(4, int(DOC_VECTOR_TOP_N + doc_vector_top_n_delta))
     scaled_top_n = max(4, int(round(raw_top_n * max(0.1, DOC_VECTOR_TOP_N_SCALE))))
@@ -445,6 +646,129 @@ LOCAL_LLM_FALLBACK_KEY = (
     os.getenv("NAV_DASHBOARD_LOCAL_LLM_API_KEY", "")
     or os.getenv("AI_SUMMARY_LOCAL_LLM_API_KEY", "local")
 ).strip() or "local"
+
+
+def _load_optional_core_settings() -> Any:
+    if get_settings is None:
+        return None
+    try:
+        return get_settings()
+    except Exception:
+        return None
+
+
+_CORE_SETTINGS = _load_optional_core_settings()
+
+
+def _first_configured_text(*values: Any) -> str:
+    for value in values:
+        text = str(value or "").strip()
+        if text:
+            return text
+    return ""
+
+
+def _build_mediawiki_user_agent() -> str:
+    explicit = _first_configured_text(
+        os.getenv("NAV_DASHBOARD_MEDIAWIKI_USER_AGENT", ""),
+        getattr(_CORE_SETTINGS, "mediawiki_user_agent", ""),
+    )
+    if explicit:
+        return explicit
+    app_name = _first_configured_text(
+        os.getenv("NAV_DASHBOARD_MEDIAWIKI_APP_NAME", ""),
+        "PersonalAIStackAgent/0.1",
+    )
+    site = _first_configured_text(
+        os.getenv("NAV_DASHBOARD_MEDIAWIKI_SITE_URL", ""),
+        "https://localhost.localdomain",
+    )
+    contact = _first_configured_text(
+        os.getenv("NAV_DASHBOARD_MEDIAWIKI_CONTACT", ""),
+        getattr(_CORE_SETTINGS, "mediawiki_contact", ""),
+    )
+    extra: list[str] = []
+    if site:
+        extra.append(site)
+    if contact:
+        extra.append(f"contact: {contact}")
+    if extra:
+        return f"{app_name} ({'; '.join(extra)})"
+    return f"{app_name} (nav_dashboard local deployment)"
+
+
+def _build_mediawiki_api_user_agent() -> str:
+    explicit = _first_configured_text(
+        os.getenv("NAV_DASHBOARD_MEDIAWIKI_API_USER_AGENT", ""),
+        getattr(_CORE_SETTINGS, "mediawiki_api_user_agent", ""),
+    )
+    if explicit:
+        return explicit
+    contact = _first_configured_text(
+        os.getenv("NAV_DASHBOARD_MEDIAWIKI_CONTACT", ""),
+        getattr(_CORE_SETTINGS, "mediawiki_contact", ""),
+    )
+    if contact:
+        return f"PersonalAIStackAgent/0.1 (contact: {contact})"
+    return "PersonalAIStackAgent/0.1"
+
+
+def _build_tmdb_headers() -> dict[str, str]:
+    headers = {
+        "accept": "application/json",
+        "User-Agent": "PersonalAIStackAgent/0.1",
+    }
+    if TMDB_READ_ACCESS_TOKEN:
+        headers["Authorization"] = f"Bearer {TMDB_READ_ACCESS_TOKEN}"
+    return headers
+
+
+MEDIAWIKI_ZH_API = _first_configured_text(
+    os.getenv("NAV_DASHBOARD_MEDIAWIKI_ZH_API_URL", ""),
+    getattr(_CORE_SETTINGS, "mediawiki_zh_api_url", ""),
+    "https://zh.wikipedia.org/w/api.php",
+).rstrip("?")
+MEDIAWIKI_EN_API = _first_configured_text(
+    os.getenv("NAV_DASHBOARD_MEDIAWIKI_EN_API_URL", ""),
+    getattr(_CORE_SETTINGS, "mediawiki_en_api_url", ""),
+    "https://en.wikipedia.org/w/api.php",
+).rstrip("?")
+MEDIAWIKI_TIMEOUT = float(
+    _first_configured_text(
+        os.getenv("NAV_DASHBOARD_MEDIAWIKI_TIMEOUT", ""),
+        getattr(_CORE_SETTINGS, "mediawiki_timeout", ""),
+        "20",
+    )
+    or "20"
+)
+MEDIAWIKI_USER_AGENT = _build_mediawiki_user_agent()
+MEDIAWIKI_API_USER_AGENT = _build_mediawiki_api_user_agent()
+TMDB_API_BASE_URL = _first_configured_text(
+    os.getenv("NAV_DASHBOARD_TMDB_API_BASE_URL", ""),
+    getattr(_CORE_SETTINGS, "tmdb_api_base_url", ""),
+    "https://api.themoviedb.org/3",
+).rstrip("/")
+TMDB_API_KEY = _first_configured_text(
+    os.getenv("NAV_DASHBOARD_TMDB_API_KEY", ""),
+    getattr(_CORE_SETTINGS, "tmdb_api_key", ""),
+)
+TMDB_READ_ACCESS_TOKEN = _first_configured_text(
+    os.getenv("NAV_DASHBOARD_TMDB_READ_ACCESS_TOKEN", ""),
+    getattr(_CORE_SETTINGS, "tmdb_read_access_token", ""),
+)
+TMDB_TIMEOUT = float(
+    _first_configured_text(
+        os.getenv("NAV_DASHBOARD_TMDB_TIMEOUT", ""),
+        getattr(_CORE_SETTINGS, "tmdb_timeout", ""),
+        "20",
+    )
+    or "20"
+)
+TMDB_LANGUAGE = _first_configured_text(
+    os.getenv("NAV_DASHBOARD_TMDB_LANGUAGE", ""),
+    getattr(_CORE_SETTINGS, "tmdb_language", ""),
+    "zh-CN",
+)
 
 
 @dataclass
@@ -663,14 +987,111 @@ def _memory_file_path(session_id: str) -> Path:
     return MEMORY_DIR / f"memory_{session_id}.json"
 
 
-def _derive_session_title(question: str, max_len: int = 24) -> str:
+def _derive_session_title(question: str, max_len: int | None = None) -> str:
     text = re.sub(r"\s+", " ", str(question or "").strip())
     if not text:
         return "新会话"
     text = text.strip("，。！？!?;；:：")
-    if len(text) <= max_len:
+    if max_len is None or max_len <= 0 or len(text) <= max_len:
         return text
     return text[:max_len].rstrip() + "..."
+
+
+def _sanitize_session_title(title: str, max_len: int | None = None) -> str:
+    text = re.sub(r"\s+", " ", str(title or "").strip())
+    text = text.strip("，。！？!?;；:：")
+    if not text:
+        return ""
+    if max_len is None or max_len <= 0 or len(text) <= max_len:
+        return text
+    return text[:max_len].rstrip() + "..."
+
+
+def _normalize_title_compare_key(text: str) -> str:
+    return re.sub(r"[^\w\u4e00-\u9fff]+", "", str(text or "").strip().lower())
+
+
+def _looks_like_weak_session_title(title: str, question: str) -> bool:
+    normalized_title = _normalize_title_compare_key(title)
+    normalized_question = _normalize_title_compare_key(question)
+    if not normalized_title:
+        return True
+    if normalized_question.startswith(normalized_title):
+        return True
+    weak_prefixes = (
+        "请",
+        "帮我",
+        "请帮我",
+        "比较",
+        "请比较",
+        "分析",
+        "请分析",
+        "解释",
+        "请解释",
+        "说明",
+        "请说明",
+    )
+    return any(str(title or "").strip().startswith(prefix) for prefix in weak_prefixes)
+
+
+def _build_answer_anchor_title(question: str, answer: str, max_len: int | None = None) -> str:
+    lines = [re.sub(r"^#{1,6}\s*", "", line).strip() for line in str(answer or "").splitlines()]
+    headings = [
+        line for line in lines
+        if line and line not in {"参考资料", "结论", "关键要点", "总结", "背景与关键机制", "典型使用场景及角色"}
+    ]
+    for heading in headings:
+        candidate = _sanitize_session_title(heading, max_len=max_len)
+        if candidate and not _looks_like_weak_session_title(candidate, question):
+            return candidate
+    return ""
+
+
+def _generate_local_session_title(question: str, answer: str, max_len: int | None = None) -> str:
+    title = ""
+    local_url = (os.getenv("NAV_DASHBOARD_LOCAL_LLM_URL", "") or os.getenv("AI_SUMMARY_LOCAL_LLM_URL", "")).strip()
+    local_model = (os.getenv("NAV_DASHBOARD_LOCAL_LLM_MODEL", "") or os.getenv("AI_SUMMARY_LOCAL_LLM_MODEL", "")).strip() or "qwen2.5-7b-instruct"
+    local_key = (os.getenv("NAV_DASHBOARD_LOCAL_LLM_API_KEY", "") or os.getenv("AI_SUMMARY_LOCAL_LLM_API_KEY", "local")).strip() or "local"
+    if local_url and local_model:
+        try:
+            title = ask_rag_script.generate_session_title(
+                question,
+                answer,
+                api_key=local_key,
+                api_url=local_url,
+                model=local_model,
+                timeout=20,
+            )
+        except Exception:
+            title = ""
+    normalized = _sanitize_session_title(title, max_len=max_len)
+    if normalized and not _looks_like_weak_session_title(normalized, question):
+        return normalized
+    answer_anchor = _build_answer_anchor_title(question, answer, max_len=max_len)
+    if answer_anchor:
+        return answer_anchor
+    fallback = _sanitize_session_title(question, max_len=max_len)
+    return fallback or "新会话"
+
+
+def _schedule_generated_session_title(session_id: str, question: str, answer: str, *, lock: bool = True) -> None:
+    sid = str(session_id or "").strip()
+    if not sid or not str(answer or "").strip():
+        return
+
+    def _run() -> None:
+        try:
+            session = get_session(sid)
+            if not session or bool(session.get("title_locked", False)):
+                return
+            title = _generate_local_session_title(question, answer)
+            if not title:
+                return
+            set_session_title(sid, title, lock=lock)
+        except Exception:
+            return
+
+    threading.Thread(target=_run, daemon=True, name=f"agent-title-{sid[:8]}").start()
 
 
 def _normalize_session(raw: object) -> dict[str, Any] | None:
@@ -682,6 +1103,7 @@ def _normalize_session(raw: object) -> dict[str, Any] | None:
     title = str(raw.get("title", "新会话")).strip() or "新会话"
     created_at = str(raw.get("created_at", "")).strip() or _now_iso()
     updated_at = str(raw.get("updated_at", "")).strip() or created_at
+    title_locked = bool(raw.get("title_locked", False))
     msgs_raw = raw.get("messages", [])
     messages: list[dict[str, Any]] = []
     if isinstance(msgs_raw, list):
@@ -699,9 +1121,10 @@ def _normalize_session(raw: object) -> dict[str, Any] | None:
             messages.append(normalized_message)
     return {
         "id": sid,
-        "title": title,
+        "title": _sanitize_session_title(title) or "新会话",
         "created_at": created_at,
         "updated_at": updated_at,
+        "title_locked": title_locked,
         "messages": messages,
     }
 
@@ -785,13 +1208,35 @@ def create_session(title: str = "新会话") -> dict[str, Any]:
         now = _now_iso()
         session = {
             "id": str(uuid4()),
-            "title": str(title or "新会话").strip() or "新会话",
+            "title": _sanitize_session_title(title) or "新会话",
             "created_at": now,
             "updated_at": now,
-            "messages": [{"role": "assistant", "text": "你好，我可以帮你并行查询文档与媒体记录。"}],
+            "title_locked": False,
+            "messages": [{"role": "system", "text": "你好，我可以帮你并行查询文档与媒体记录。"}],
         }
         _save_session(session)
     return session
+
+
+def set_session_title(session_id: str, title: str, lock: bool = True) -> dict[str, Any] | None:
+    sid = (session_id or "").strip()
+    if not sid:
+        return None
+    new_title = _sanitize_session_title(title)
+    if not new_title:
+        return None
+    with _LOCK:
+        path = _session_file_path(sid)
+        if not path.exists():
+            return None
+        session = _load_session_file(path)
+        if session is None:
+            return None
+        session["title"] = new_title
+        session["title_locked"] = bool(lock)
+        session["updated_at"] = _now_iso()
+        _save_session(session)
+        return session
 
 
 def get_session(session_id: str) -> dict[str, Any] | None:
@@ -989,7 +1434,1375 @@ def _has_media_intent_cues(query: str) -> bool:
     text = str(query or "").strip().lower()
     if not text:
         return False
-    return any(keyword in text for keyword in _MEDIA_INTENT_KEYWORDS)
+    return any(keyword in text for keyword in MEDIA_INTENT_KEYWORDS)
+
+
+def _strip_query_scaffolding(query: str) -> str:
+    text = str(query or "").strip()
+    if not text:
+        return ""
+    for pattern in MEDIAWIKI_FILLER_PATTERNS:
+        text = re.sub(pattern, " ", text, flags=re.IGNORECASE)
+    text = re.sub(r"\s+", " ", text)
+    return text.strip(" ，,。！？?；;：:")
+
+
+def _is_abstract_media_concept_query(query: str, classification: dict[str, Any] | None = None) -> bool:
+    text = _strip_query_scaffolding(query)
+    if not text:
+        return False
+    current = classification or {}
+    if bool(current.get("media_entity_confident")):
+        return False
+    concrete_region_hit = any(
+        alias in text and len(nationalities) == 1
+        for alias, nationalities in MEDIA_REGION_ALIASES.items()
+    )
+    if concrete_region_hit and not any(cue in text for cue in ("拉美", "拉丁美洲", "流派", "主义", "风格", "佳作", "冷门", "女性主义", "离散叙事", "魔幻现实主义", "后现代主义", "新浪潮")):
+        return False
+    if not (_has_media_intent_cues(text) or any(cue in text for cue in MEDIA_ABSTRACT_CONCEPT_CUES)):
+        return False
+    return any(cue in text for cue in MEDIA_ABSTRACT_CONCEPT_CUES if cue not in {"小说", "文学", "诗歌", "诗集", "散文", "作家"}) or any(
+        cue in text for cue in ("拉美", "拉丁美洲", "流派", "主义", "风格", "佳作", "冷门", "女性主义", "离散叙事", "魔幻现实主义", "后现代主义", "新浪潮")
+    )
+
+
+def _merge_filter_values(base: dict[str, list[str]], field: str, values: list[str]) -> None:
+    clean = [str(value).strip() for value in values if str(value).strip()]
+    if not clean:
+        return
+    current = [str(value).strip() for value in base.get(field, []) if str(value).strip()]
+    seen = {value.casefold() for value in current}
+    for value in clean:
+        key = value.casefold()
+        if key in seen:
+            continue
+        seen.add(key)
+        current.append(value)
+    if current:
+        base[field] = current
+
+
+def _infer_media_filters(query: str) -> dict[str, list[str]]:
+    text = str(query or "").strip()
+    if not text:
+        return {}
+
+    filters: dict[str, list[str]] = {}
+    if any(keyword in text for keyword in MEDIA_BOOKISH_CUES):
+        _merge_filter_values(filters, "media_type", ["book"])
+
+    for alias, nationalities in MEDIA_REGION_ALIASES.items():
+        if alias in text:
+            _merge_filter_values(filters, "nationality", nationalities)
+
+    for cue, categories in MEDIA_BOOK_CATEGORY_HINTS.items():
+        if cue in text:
+            _merge_filter_values(filters, "category", categories)
+
+    for cue, categories in MEDIA_VIDEO_CATEGORY_HINTS.items():
+        if cue in text:
+            _merge_filter_values(filters, "category", categories)
+            _merge_filter_values(filters, "media_type", ["video"])
+
+    if re.search(r"(?:^|[\s，,。！？?；;：:~\-－—]|\d)番(?:呢|吗|吧|剧)?(?:$|[\s，,。！？?；;：:~\-－—])", text):
+        _merge_filter_values(filters, "category", ["动画"])
+        _merge_filter_values(filters, "media_type", ["video"])
+
+    for year in re.findall(r"(20\d{2})年", text):
+        _merge_filter_values(filters, "year", [year])
+
+    return filters
+
+
+def _extract_year_from_date_range(date_range: Any) -> str:
+    if isinstance(date_range, list) and len(date_range) == 2:
+        start = str(date_range[0] or "").strip()
+        if len(start) >= 4 and start[:4].isdigit():
+            return start[:4]
+    return ""
+
+
+def _extract_media_time_hint(query: str) -> dict[str, Any]:
+    text = str(query or "").strip()
+    if not text:
+        return {}
+
+    half_match = re.search(r"(?:(?P<year>20\d{2})\s*年?)?\s*(?P<half>上半年|下半年)", text)
+    if half_match:
+        half = str(half_match.group("half") or "").strip()
+        return {
+            "raw": str(half_match.group(0) or "").strip(),
+            "year": str(half_match.group("year") or "").strip(),
+            "explicit_year": bool(half_match.group("year")),
+            "start_month": 1 if half == "上半年" else 7,
+            "end_month": 6 if half == "上半年" else 12,
+            "label": half,
+        }
+
+    range_match = re.search(r"(?:(?P<year>20\d{2})\s*年?)?\s*(?P<start>\d{1,2})(?:月)?\s*(?:到|至|[-~—－])\s*(?P<end>\d{1,2})月?", text)
+    if range_match:
+        start_month = max(1, min(12, int(range_match.group("start"))))
+        end_month = max(1, min(12, int(range_match.group("end"))))
+        if start_month > end_month:
+            start_month, end_month = end_month, start_month
+        return {
+            "raw": str(range_match.group(0) or "").strip(),
+            "year": str(range_match.group("year") or "").strip(),
+            "explicit_year": bool(range_match.group("year")),
+            "start_month": start_month,
+            "end_month": end_month,
+            "label": f"{start_month}-{end_month}月",
+        }
+
+    month_match = re.search(r"(?:(?P<year>20\d{2})\s*年?)?\s*(?P<month>\d{1,2})月", text)
+    if month_match:
+        month = max(1, min(12, int(month_match.group("month"))))
+        return {
+            "raw": str(month_match.group(0) or "").strip(),
+            "year": str(month_match.group("year") or "").strip(),
+            "explicit_year": bool(month_match.group("year")),
+            "start_month": month,
+            "end_month": month,
+            "label": f"{month}月",
+        }
+    return {}
+
+
+def _build_media_time_hint_text(query: str, fallback_year: str = "") -> str:
+    hint = _extract_media_time_hint(query)
+    if not hint:
+        return ""
+    year = str(hint.get("year") or fallback_year or "").strip()
+    start_month = int(hint.get("start_month") or 0)
+    end_month = int(hint.get("end_month") or 0)
+    label = str(hint.get("label") or "").strip()
+    if label in {"上半年", "下半年"}:
+        return f"{year}年{label}" if year else label
+    if start_month and end_month and start_month == end_month:
+        return f"{year}年{start_month}月" if year else f"{start_month}月"
+    if start_month and end_month:
+        return f"{year}年{start_month}-{end_month}月" if year else f"{start_month}-{end_month}月"
+    return f"{year}年{label}" if year and label else label
+
+
+def _month_last_day(year: int, month: int) -> int:
+    if month == 2:
+        leap = year % 400 == 0 or (year % 4 == 0 and year % 100 != 0)
+        return 29 if leap else 28
+    if month in {4, 6, 9, 11}:
+        return 30
+    return 31
+
+
+def _parse_media_date_window(query: str, fallback_year: str = "") -> dict[str, str]:
+    text = str(query or "").strip()
+    if not text:
+        return {}
+
+    hint = _extract_media_time_hint(text)
+    if not hint:
+        return {}
+
+    year_text = str(hint.get("year") or fallback_year or "").strip()
+    if not year_text.isdigit():
+        return {}
+
+    year = int(year_text)
+    start_month = max(1, min(12, int(hint.get("start_month") or 0)))
+    end_month = max(1, min(12, int(hint.get("end_month") or 0)))
+    if not start_month or not end_month:
+        return {}
+    return {
+        "start": f"{year:04d}-{start_month:02d}-01",
+        "end": f"{year:04d}-{end_month:02d}-{_month_last_day(year, end_month):02d}",
+    }
+
+
+def _looks_like_time_only_followup(query: str) -> bool:
+    text = str(query or "").strip().strip("？?。！!，,；;：:")
+    if not text:
+        return False
+    compact = re.sub(r"\s+", "", text)
+    if re.fullmatch(r"(?:20\d{2}年?)?(?:上半年|下半年)(?:看了哪些)?(?:的)?(?:番|番剧|动画|动漫|新番)?(?:呢)?", compact):
+        return True
+    if re.fullmatch(r"(?:20\d{2}年?)?\d{1,2}(?:月)?(?:到|至|[-~—－])\d{1,2}月(?:看了哪些)?(?:的)?(?:番|番剧|动画|动漫|新番)?(?:呢)?", compact):
+        return True
+    return bool(re.fullmatch(r"(?:20\d{2}年?)?\d{1,2}月(?:看了哪些)?(?:的)?(?:番|番剧|动画|动漫|新番)?(?:呢)?", compact))
+
+
+def _replace_time_window_in_query(previous_query: str, current_query: str) -> str:
+    previous = str(previous_query or "").strip()
+    current = str(current_query or "").strip().strip("？?。！!，,；;：:")
+    if not previous or not current:
+        return current or previous
+    previous_year = _extract_year_from_date_range(_parse_media_date_window(previous))
+    current_time_text = _build_media_time_hint_text(current, previous_year)
+    replacement = current_time_text or current.replace("呢", "")
+    replaced = re.sub(
+        r"20\d{2}年\s*\d{1,2}(?:月)?\s*(?:到|至|[-~—－])\s*\d{1,2}月|20\d{2}年\s*\d{1,2}月|20\d{2}年\s*(?:上半年|下半年)",
+        replacement,
+        previous,
+        count=1,
+    )
+    if replaced != previous:
+        return replaced
+    return f"{replacement} {previous}".strip()
+
+
+def _state_has_media_context(state: dict[str, Any] | None) -> bool:
+    current = state if isinstance(state, dict) else {}
+    media_type = str(current.get("media_type") or "").strip()
+    if media_type:
+        return True
+
+    filters = current.get("filters") if isinstance(current.get("filters"), dict) else {}
+    meaningful_filter_keys = {
+        "media_type",
+        "category",
+        "genre",
+        "author",
+        "authors",
+        "director",
+        "directors",
+        "actor",
+        "actors",
+        "nationality",
+        "platform",
+        "series",
+        "title",
+        "tag",
+        "tags",
+    }
+    for key, value in filters.items():
+        if key in meaningful_filter_keys and value:
+            return True
+
+    entities = current.get("entities") if isinstance(current.get("entities"), list) else []
+    if any(str(entity or "").strip() and not _looks_like_generic_media_scope(str(entity or "")) for entity in entities):
+        return True
+
+    entity = str(current.get("entity") or "").strip()
+    if entity and not _looks_like_generic_media_scope(entity):
+        return True
+
+    return False
+
+
+def _matches_media_date_window(item: dict[str, Any], date_window: dict[str, str] | None) -> bool:
+    if not date_window:
+        return True
+    raw_date = str(item.get("date") or "").strip()
+    start = str((date_window or {}).get("start") or "").strip()
+    end = str((date_window or {}).get("end") or "").strip()
+    if not raw_date or not start or not end:
+        return False
+    return start <= raw_date <= end
+
+
+def _resolved_media_type_label(filters: dict[str, list[str]], resolved_question: str) -> str:
+    media_types = [str(value).strip().lower() for value in filters.get("media_type", []) if str(value).strip()]
+    categories = [str(value).strip() for value in filters.get("category", []) if str(value).strip()]
+    if "video" in media_types and any(category == "动画" for category in categories):
+        return "anime"
+    if media_types:
+        return media_types[0]
+    if any(token in str(resolved_question or "") for token in ("动画", "动漫", "番", "番剧", "新番")):
+        return "anime"
+    return ""
+
+
+def _build_resolved_query_state(
+    original_question: str,
+    resolved_question: str,
+    query_classification: dict[str, Any],
+) -> dict[str, Any]:
+    filters = _infer_media_filters(resolved_question)
+    fallback_year = _extract_year_from_date_range(query_classification.get("previous_date_range"))
+    date_window = _parse_media_date_window(resolved_question, fallback_year)
+    carry_over = str(original_question or "").strip() != str(resolved_question or "").strip()
+    inherited_kind = ""
+    if carry_over and _looks_like_time_only_followup(original_question):
+        inherited_kind = "time_window_replace"
+    elif carry_over:
+        inherited_kind = "followup_expand"
+    if _is_collection_media_query(resolved_question) or date_window:
+        intent = "filter_search"
+        sort = "rating_desc"
+    elif bool(query_classification.get("media_entity_confident")):
+        intent = "entity_lookup"
+        sort = "relevance"
+    else:
+        intent = "general_lookup"
+        sort = "relevance"
+    return {
+        "intent": intent,
+        "media_type": _resolved_media_type_label(filters, resolved_question),
+        "filters": filters,
+        "date_range": [date_window.get("start", ""), date_window.get("end", "")] if date_window else [],
+        "sort": sort,
+        "carry_over_from_previous_turn": carry_over,
+        "inherited_context": {
+            "used": carry_over,
+            "kind": inherited_kind,
+        },
+    }
+
+
+def _find_previous_user_question(current_question: str, history: list[dict[str, str]]) -> str:
+    current = str(current_question or "").strip()
+    for item in reversed(history or []):
+        if not isinstance(item, dict):
+            continue
+        if str(item.get("role", "")).strip().lower() != "user":
+            continue
+        previous = str(item.get("content", "")).strip()
+        if not previous or previous == current:
+            continue
+        return previous
+    return ""
+
+
+def _build_conversation_state_snapshot(
+    question: str,
+    query_classification: dict[str, Any] | None = None,
+    resolved_query_state: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    text = str(question or "").strip()
+    if not text:
+        return {}
+    current = query_classification or {}
+    entities = [
+        str(item).strip()
+        for item in (current.get("media_entities") or _extract_media_entities(text))
+        if str(item).strip()
+    ]
+    state = resolved_query_state or _build_resolved_query_state(
+        text,
+        text,
+        {
+            "media_entity_confident": bool(current.get("media_entity_confident")) or bool(entities),
+        },
+    )
+    return {
+        "question": text,
+        "intent": str(state.get("intent", "") or ""),
+        "media_type": str(state.get("media_type", "") or ""),
+        "entity": entities[0] if entities else "",
+        "entities": entities,
+        "filters": state.get("filters", {}),
+        "date_range": state.get("date_range", []),
+        "sort": str(state.get("sort", "") or ""),
+    }
+
+
+def _has_state_value(value: Any) -> bool:
+    if isinstance(value, str):
+        return bool(value.strip())
+    if isinstance(value, (list, tuple, set, dict)):
+        return bool(value)
+    return value is not None
+
+
+def _state_value_signature(value: Any) -> str:
+    try:
+        return json.dumps(value, ensure_ascii=False, sort_keys=True)
+    except TypeError:
+        return repr(value)
+
+
+def _describe_inheritance_transition(before_value: Any, after_value: Any, detected_followup: bool) -> str:
+    if not detected_followup:
+        return "not_applicable"
+    before_present = _has_state_value(before_value)
+    after_present = _has_state_value(after_value)
+    if not before_present and not after_present:
+        return "unchanged_empty"
+    if _state_value_signature(before_value) == _state_value_signature(after_value):
+        return "carried_over" if before_present else "unchanged_empty"
+    if not before_present and after_present:
+        return "introduced"
+    if before_present and not after_present:
+        return "cleared"
+    return "overridden"
+
+
+def _build_state_diff(before_state: dict[str, Any], after_state: dict[str, Any]) -> dict[str, Any]:
+    diff: dict[str, Any] = {}
+    for field in ("intent", "media_type", "entity", "filters", "date_range", "sort"):
+        if _state_value_signature(before_state.get(field)) != _state_value_signature(after_state.get(field)):
+            diff[field] = after_state.get(field)
+    return diff
+
+
+def _build_followup_transition(
+    original_question: str,
+    resolved_question: str,
+    history: list[dict[str, str]],
+    query_classification: dict[str, Any],
+    resolved_query_state: dict[str, Any],
+) -> dict[str, Any]:
+    previous_trace = _find_previous_trace_context(history)
+    previous_trace_state = previous_trace.get("conversation_state_after") if isinstance(previous_trace.get("conversation_state_after"), dict) else {}
+    previous_trace_resolved_question = ""
+    if isinstance(previous_trace.get("query_understanding"), dict):
+        previous_trace_resolved_question = str(previous_trace.get("query_understanding", {}).get("resolved_question", "") or "").strip()
+    previous_question = _find_previous_user_question(original_question, history)
+    conversation_state_before = dict(previous_trace_state) if previous_trace_state else (_build_conversation_state_snapshot(previous_question) if previous_question else {})
+    conversation_state_after = _build_conversation_state_snapshot(
+        resolved_question,
+        query_classification=query_classification,
+        resolved_query_state=resolved_query_state,
+    )
+    has_previous_context = bool(previous_question) or bool(previous_trace_state) or bool(previous_trace_resolved_question)
+    detected_followup = has_previous_context and (
+        bool(resolved_query_state.get("carry_over_from_previous_turn"))
+        or _is_context_dependent_followup(original_question)
+    )
+    inheritance_applied = {
+        "intent": _describe_inheritance_transition(
+            conversation_state_before.get("intent"),
+            conversation_state_after.get("intent"),
+            detected_followup,
+        ),
+        "media_type": _describe_inheritance_transition(
+            conversation_state_before.get("media_type"),
+            conversation_state_after.get("media_type"),
+            detected_followup,
+        ),
+        "filters": _describe_inheritance_transition(
+            conversation_state_before.get("filters"),
+            conversation_state_after.get("filters"),
+            detected_followup,
+        ),
+        "date_range": _describe_inheritance_transition(
+            conversation_state_before.get("date_range"),
+            conversation_state_after.get("date_range"),
+            detected_followup,
+        ),
+        "sort": _describe_inheritance_transition(
+            conversation_state_before.get("sort"),
+            conversation_state_after.get("sort"),
+            detected_followup,
+        ),
+        "entity": _describe_inheritance_transition(
+            conversation_state_before.get("entity"),
+            conversation_state_after.get("entity"),
+            detected_followup,
+        ),
+    }
+    return {
+        "conversation_state_before": conversation_state_before,
+        "detected_followup": detected_followup,
+        "inheritance_applied": inheritance_applied,
+        "conversation_state_after": conversation_state_after,
+        "state_diff": _build_state_diff(conversation_state_before, conversation_state_after),
+    }
+
+
+def _build_planner_snapshot(
+    resolved_question: str,
+    query_classification: dict[str, Any],
+    resolved_query_state: dict[str, Any],
+    planned_tools: list[PlannedToolCall],
+) -> dict[str, Any]:
+    state_after = _build_conversation_state_snapshot(
+        resolved_question,
+        query_classification=query_classification,
+        resolved_query_state=resolved_query_state,
+    )
+    hard_filters: dict[str, Any] = {}
+    media_type = str(state_after.get("media_type", "") or "")
+    if media_type:
+        hard_filters["media_type"] = media_type
+    for field, values in (state_after.get("filters") or {}).items():
+        if not isinstance(values, list):
+            continue
+        clean_values = [str(value).strip() for value in values if str(value).strip()]
+        if not clean_values:
+            continue
+        if field == "media_type" and media_type:
+            continue
+        hard_filters[str(field)] = clean_values[0] if len(clean_values) == 1 else clean_values
+    date_range = state_after.get("date_range") or []
+    if date_range:
+        hard_filters["date_range"] = date_range
+    soft_constraints: dict[str, Any] = {}
+    sort = str(state_after.get("sort", "") or "")
+    if sort:
+        soft_constraints["sort"] = sort
+    entity = str(state_after.get("entity", "") or "")
+    intent = str(state_after.get("intent", "") or "")
+    query_text: str | None = entity or None
+    if query_text is None and intent != "filter_search":
+        query_text = resolved_question or None
+    followup_mode = str((resolved_query_state.get("inherited_context") or {}).get("kind", "") or "none")
+    return {
+        "intent": intent,
+        "hard_filters": hard_filters,
+        "soft_constraints": soft_constraints,
+        "query_text": query_text,
+        "followup_mode": followup_mode,
+        "planned_tools": [call.name for call in planned_tools],
+    }
+
+
+def _is_collection_media_query(query: str) -> bool:
+    text = str(query or "").strip()
+    if not text:
+        return False
+    if _has_media_title_marker(text):
+        return False
+    return any(cue in text for cue in MEDIA_COLLECTION_CUES)
+
+
+def _needs_filter_only_media_lookup(query: str, media_entities: list[str], filters: dict[str, list[str]], date_window: dict[str, str]) -> bool:
+    if media_entities:
+        return False
+    if date_window:
+        return True
+    if _is_collection_media_query(query) and filters:
+        return True
+    return False
+
+
+def _shape_media_row(row: dict[str, Any], *, score: float, retrieval_mode: str, retrieval_query: str, matched_entities: list[str]) -> dict[str, Any]:
+    return {
+        "id": row.get("id"),
+        "title": row.get("title"),
+        "media_type": row.get("media_type"),
+        "category": row.get("category"),
+        "author": row.get("author"),
+        "publisher": row.get("publisher"),
+        "channel": row.get("channel"),
+        "rating": row.get("rating"),
+        "date": row.get("date"),
+        "score": round(score, 6),
+        "semantic_score": 0.0,
+        "keyword_score": round(_safe_score(row.get("score")), 6),
+        "keyword_norm": 0.0,
+        "graph_prior": 0.0,
+        "graph_prior_raw": 0.0,
+        "title_boost": 0.0,
+        "url": row.get("url"),
+        "retrieval_mode": retrieval_mode,
+        "retrieval_query": retrieval_query,
+        "matched_entities": matched_entities,
+        "review": (str(row.get("review", ""))[:140] + "...") if str(row.get("review", "")) else "",
+    }
+
+
+def _split_agent_multi_tags(raw: Any) -> list[str]:
+    text = str(raw or "").strip()
+    if not text:
+        return []
+    return [part.strip() for part in re.split(r"[;；，,、\n]+", text) if part.strip()]
+
+
+def _validate_media_result_row(row: dict[str, Any], filters: dict[str, list[str]], date_window: dict[str, str]) -> list[str]:
+    reasons: list[str] = []
+    raw_date = str(row.get("date") or "").strip()
+    selected_media_types = {str(value).strip().lower() for value in filters.get("media_type", []) if str(value).strip()}
+    if selected_media_types:
+        media_type = str(row.get("media_type") or "").strip().lower()
+        if media_type not in selected_media_types:
+            reasons.append("media_type_mismatch")
+
+    selected_categories = {str(value).strip() for value in filters.get("category", []) if str(value).strip()}
+    if selected_categories:
+        category_tokens = set(_split_agent_multi_tags(row.get("category")))
+        if not category_tokens or category_tokens.isdisjoint(selected_categories):
+            reasons.append("category_mismatch")
+
+    selected_years = {str(value).strip() for value in filters.get("year", []) if str(value).strip()}
+    if selected_years:
+        row_year = raw_date[:4]
+        if not row_year:
+            reasons.append("missing_release_date")
+        elif row_year not in selected_years:
+            reasons.append("year_mismatch")
+
+    if date_window:
+        if not raw_date:
+            if "missing_release_date" not in reasons:
+                reasons.append("missing_release_date")
+        elif not _matches_media_date_window(row, date_window):
+            reasons.append("date_out_of_range")
+    return reasons
+
+
+def _apply_media_result_validator(
+    rows: list[dict[str, Any]],
+    *,
+    filters: dict[str, list[str]],
+    date_window: dict[str, str],
+) -> tuple[list[dict[str, Any]], dict[str, Any]]:
+    kept: list[dict[str, Any]] = []
+    dropped_by_reason: dict[str, int] = {}
+    for row in rows:
+        if not isinstance(row, dict):
+            continue
+        reasons = _validate_media_result_row(row, filters, date_window)
+        if reasons:
+            for reason in reasons:
+                dropped_by_reason[reason] = dropped_by_reason.get(reason, 0) + 1
+            continue
+        kept.append(row)
+    raw_count = len(rows)
+    kept_count = len(kept)
+    return kept, {
+        "raw_candidates_count": raw_count,
+        "post_filter_count": kept_count,
+        "dropped_by_validator": max(0, raw_count - kept_count),
+        "drop_reasons": dropped_by_reason,
+    }
+
+
+def _build_media_filter_queries(filters: dict[str, list[str]]) -> list[str]:
+    queries: list[str] = []
+    for field in ["nationality", "category", "author"]:
+        for value in filters.get(field, []):
+            clean = str(value).strip()
+            if clean and clean not in queries:
+                queries.append(clean)
+    return queries
+
+
+def _local_media_vocab_signature() -> tuple[tuple[str, int, int], ...]:
+    structured_dir = _WORKSPACE_ROOT / "library_tracker" / "data" / "structured"
+    entries: list[tuple[str, int, int]] = []
+    try:
+        for path in sorted(structured_dir.glob("*.json"), key=lambda item: item.name.lower()):
+            try:
+                stat = path.stat()
+                entries.append((str(path), int(stat.st_mtime_ns), int(stat.st_size)))
+            except Exception:
+                entries.append((str(path), 0, 0))
+    except Exception:
+        return ((str(structured_dir / "reading.json"), 0, 0),)
+    return tuple(entries) or ((str(structured_dir / "reading.json"), 0, 0),)
+
+
+def _load_local_media_vocab() -> dict[str, list[str]]:
+    signature = _local_media_vocab_signature()
+    cached_signature = _MEDIA_LIBRARY_VOCAB_CACHE.get("signature")
+    cached_data = _MEDIA_LIBRARY_VOCAB_CACHE.get("data") if isinstance(_MEDIA_LIBRARY_VOCAB_CACHE.get("data"), dict) else None
+    if cached_signature == signature and cached_data:
+        return cached_data
+
+    structured_dir = _WORKSPACE_ROOT / "library_tracker" / "data" / "structured"
+    nationalities: list[str] = []
+    authors: list[str] = []
+    categories: list[str] = []
+    titles: list[str] = []
+    seen_nat: set[str] = set()
+    seen_author: set[str] = set()
+    seen_category: set[str] = set()
+    seen_title: set[str] = set()
+
+    for path in sorted(structured_dir.glob("*.json"), key=lambda item: item.name.lower()):
+        try:
+            payload = json.loads(path.read_text(encoding="utf-8"))
+            records = payload.get("records", []) if isinstance(payload, dict) else []
+        except Exception:
+            records = []
+
+        for row in records:
+            if not isinstance(row, dict):
+                continue
+            title = str(row.get("title") or "").strip()
+            normalized_title = _normalize_media_title_for_match(title)
+            if title and normalized_title and normalized_title not in seen_title and 1 < len(normalized_title) <= 48:
+                seen_title.add(normalized_title)
+                titles.append(title)
+            nationality = str(row.get("nationality") or "").strip()
+            if nationality and nationality not in seen_nat:
+                seen_nat.add(nationality)
+                nationalities.append(nationality)
+            author = str(row.get("author") or "").strip()
+            if author and author not in seen_author:
+                seen_author.add(author)
+                authors.append(author)
+            for category in re.split(r"[;；，,、/]+", str(row.get("category") or "")):
+                clean_category = category.strip()
+                if clean_category and clean_category not in seen_category:
+                    seen_category.add(clean_category)
+                    categories.append(clean_category)
+
+    data = {
+        "nationalities": nationalities,
+        "authors": authors,
+        "categories": categories,
+        "titles": titles,
+    }
+    _MEDIA_LIBRARY_VOCAB_CACHE["signature"] = signature
+    _MEDIA_LIBRARY_VOCAB_CACHE["data"] = data
+    return data
+
+
+def _extract_media_entities_from_local_titles(query: str) -> list[str]:
+    normalized_query = _normalize_media_title_for_match(query)
+    if not normalized_query:
+        return []
+    vocab = _load_local_media_vocab()
+    matched: list[str] = []
+    for title in vocab.get("titles", []):
+        clean_title = str(title).strip()
+        normalized_title = _normalize_media_title_for_match(clean_title)
+        if not normalized_title or len(normalized_title) < 2:
+            continue
+        if normalized_title in normalized_query:
+            matched.append(clean_title)
+    matched.sort(key=lambda item: len(_normalize_media_title_for_match(item)), reverse=True)
+    dedup: list[str] = []
+    seen: set[str] = set()
+    for title in matched:
+        key = _normalize_media_title_for_match(title)
+        if key in seen:
+            continue
+        if any(key in _normalize_media_title_for_match(existing) for existing in dedup):
+            continue
+        seen.add(key)
+        dedup.append(title)
+        if len(dedup) >= 3:
+            break
+    return dedup
+
+
+def _build_mediawiki_headers() -> dict[str, str]:
+    headers = {
+        "User-Agent": MEDIAWIKI_USER_AGENT,
+        "Api-User-Agent": MEDIAWIKI_API_USER_AGENT,
+    }
+    return {key: value for key, value in headers.items() if str(value or "").strip()}
+
+
+def _mediawiki_action_request(api_url: str, params: dict[str, Any], trace_id: str = "") -> dict[str, Any]:
+    query_params = {
+        "format": "json",
+        "formatversion": 2,
+        "utf8": 1,
+        "errorformat": "plaintext",
+        "maxlag": 5,
+        **params,
+    }
+    if trace_id:
+        query_params["requestid"] = trace_id
+    url = f"{api_url}?{urlparse.urlencode(query_params, doseq=True)}"
+    return _http_json("GET", url, timeout=MEDIAWIKI_TIMEOUT, headers=_build_mediawiki_headers())
+
+
+def _clean_mediawiki_snippet(value: Any) -> str:
+    text = str(value or "")
+    text = re.sub(r"<style[\s\S]*?</style>", " ", text, flags=re.IGNORECASE)
+    text = re.sub(r"<script[\s\S]*?</script>", " ", text, flags=re.IGNORECASE)
+    text = re.sub(r"<!--([\s\S]*?)-->", " ", text)
+    text = re.sub(r"<[^>]+>", " ", text)
+    text = html.unescape(text)
+    text = re.sub(r"\s+", " ", text)
+    return text.strip()
+
+
+def _mediawiki_result_score(query: str, title: str, snippet: str) -> float:
+    q = str(query or "").strip().casefold()
+    t = str(title or "").strip().casefold()
+    score = 0.0
+    if q and t == q:
+        score += 3.0
+    elif q and q in t:
+        score += 1.4
+    elif t and q and t.replace(" ", "") == q.replace(" ", ""):
+        score += 2.0
+    if q and q in str(snippet or "").casefold():
+        score += 0.5
+    return score
+
+
+def _mediawiki_page_url(api_url: str, title: str) -> str:
+    parsed = urlparse.urlparse(api_url)
+    base = f"{parsed.scheme}://{parsed.netloc}"
+    return f"{base}/wiki/{urlparse.quote(str(title or '').replace(' ', '_'))}"
+
+
+def _build_mediawiki_concept_queries(query: str) -> list[str]:
+    base = _strip_query_scaffolding(query)
+    candidates: list[str] = []
+    for item in [base, str(query or "").strip()]:
+        clean = str(item or "").strip()
+        if clean and clean not in candidates:
+            candidates.append(clean)
+        for alias in MEDIAWIKI_QUERY_ALIASES.get(clean, []):
+            if alias and alias not in candidates:
+                candidates.append(alias)
+    for key, aliases in MEDIAWIKI_QUERY_ALIASES.items():
+        if key in base or key in str(query or ""):
+            for alias in [key, *aliases]:
+                if alias and alias not in candidates:
+                    candidates.append(alias)
+    return candidates[:6]
+
+
+def _strip_tmdb_query_scaffolding(query: str) -> str:
+    text = str(query or "").strip()
+    if not text:
+        return ""
+    text = re.sub(r"^(我(?:最近|刚刚|想|想要)?(?:看过|看了|在看|想看|想查|想找)?|帮我|请问|查一下|搜一下)", " ", text, flags=re.IGNORECASE)
+    text = re.sub(
+        r"(?:是谁演的|是谁导演的|讲了什么|讲什么|有哪些|有什么|资料|信息|介绍|简介|剧情简介|评价|评分|票房|上映时间|director|cast|actor|actress|writer)$",
+        " ",
+        text,
+        flags=re.IGNORECASE,
+    )
+    text = re.sub(r"(?:这部|这个|这本|这套)?(?:电影|影片|片子|电视剧|剧集|剧|动漫|动画|番剧|漫画|小说|书)?呢$", " ", text, flags=re.IGNORECASE)
+    text = re.sub(r"\s+", " ", text)
+    return text.strip(" ，,。！？?；;：:")
+
+
+def _is_context_dependent_followup(question: str) -> bool:
+    text = str(question or "").strip()
+    if not text:
+        return False
+    if not _looks_like_time_only_followup(text) and (_extract_media_entities(text) or _has_media_title_marker(text)):
+        return False
+    reference_scope_cues = (
+        "这些",
+        "这些媒体",
+        "这些作品",
+        "这些条目",
+        "这几部",
+        "这几本",
+        "这几条",
+        "这些番",
+        "它们",
+        "前面这些",
+        "上面这些",
+        "刚才这些",
+    )
+    detail_cues = (
+        "具体细节",
+        "细节信息",
+        "详细信息",
+        "详细资料",
+        "作者",
+        "出版方",
+        "出版社",
+        "发行方",
+        "发行商",
+        "渠道",
+        "平台",
+        "工作室",
+        "厂牌",
+        "制作公司",
+    )
+    has_reference_scope = any(cue in text for cue in reference_scope_cues)
+    has_detail_request = any(cue in text for cue in detail_cues)
+    if len(text) > 20 and not text.endswith("呢") and not (has_reference_scope or has_detail_request):
+        return False
+    return any(
+        cue in text
+        for cue in (
+            "呢",
+            "简介",
+            "剧情",
+            "介绍",
+            "讲了什么",
+            "评价",
+            "评分",
+            *reference_scope_cues,
+            *detail_cues,
+            "导演",
+            "演员",
+            "结局",
+            "时间",
+            "什么时候",
+            "优缺点",
+            "区别",
+            "差异",
+            "为什么",
+            "展开",
+            "详细",
+        )
+    )
+
+
+def _resolve_contextual_question(question: str, history: list[dict[str, str]]) -> str:
+    current = str(question or "").strip()
+    if not current or not _is_context_dependent_followup(current):
+        return current
+    previous_trace = _find_previous_trace_context(history)
+    previous = ""
+    if isinstance(previous_trace.get("query_understanding"), dict):
+        previous = str(previous_trace.get("query_understanding", {}).get("resolved_question", "") or "").strip()
+    if not previous and isinstance(previous_trace.get("conversation_state_after"), dict):
+        previous = str(previous_trace.get("conversation_state_after", {}).get("question", "") or "").strip()
+    if not previous:
+        previous = _find_previous_user_question(current, history)
+    if _looks_like_time_only_followup(current):
+        previous_state = previous_trace.get("conversation_state_after") if isinstance(previous_trace.get("conversation_state_after"), dict) else {}
+        previous_question = _find_previous_user_question(current, history)
+        rich_previous_trace = _find_previous_trace_context(history, require_media_context=True)
+        rich_previous = ""
+        if isinstance(rich_previous_trace.get("query_understanding"), dict):
+            rich_previous = str(rich_previous_trace.get("query_understanding", {}).get("resolved_question", "") or "").strip()
+        if not rich_previous and isinstance(rich_previous_trace.get("conversation_state_after"), dict):
+            rich_previous = str(rich_previous_trace.get("conversation_state_after", {}).get("question", "") or "").strip()
+        if previous_question and _is_context_dependent_followup(previous_question) and rich_previous and not _state_has_media_context(previous_state):
+            previous = f"{rich_previous} {previous_question}".strip()
+        elif rich_previous:
+            previous = rich_previous
+    if previous:
+        if _looks_like_time_only_followup(current):
+            return _replace_time_window_in_query(previous, current)
+        return f"{previous} {current}".strip()
+    return current
+
+
+def _should_route_tmdb(query: str, classification: dict[str, Any] | None = None) -> bool:
+    text = str(query or "").strip()
+    if not text:
+        return False
+    if _is_collection_media_query(text):
+        return False
+    lowered = text.casefold()
+    if any(cue in lowered for cue in ("文学", "小说", "诗歌", "散文", "作家", "读过", "阅读", "书")) and not any(cue in text for cue in TMDB_AUDIOVISUAL_CUES):
+        return False
+    if any(cue in text for cue in TMDB_AUDIOVISUAL_CUES):
+        return True
+    current = classification or {}
+    if any(cue in text for cue in ("剧情", "简介", "介绍", "讲了什么")) and bool(current.get("media_intent_cues")):
+        return not _is_abstract_media_concept_query(text, current)
+    return bool(current.get("media_entity_confident")) and bool(current.get("media_intent_cues")) and not _is_abstract_media_concept_query(text, current)
+
+
+def _guess_tmdb_search_path(query: str) -> str:
+    text = str(query or "")
+    has_person = any(cue in text for cue in TMDB_PERSON_CUES)
+    has_movie = any(cue in text for cue in TMDB_MOVIE_CUES)
+    has_tv = any(cue in text for cue in TMDB_TV_CUES)
+    if has_movie and not has_tv and not has_person:
+        return "search/movie"
+    if has_tv and not has_movie and not has_person:
+        return "search/tv"
+    if has_person and text.startswith(TMDB_PERSON_CUES) and not has_movie and not has_tv:
+        return "search/person"
+    return "search/multi"
+
+
+def _tmdb_media_url(media_type: str, item_id: Any) -> str:
+    clean_type = str(media_type or "").strip().lower()
+    clean_id = str(item_id or "").strip()
+    if not clean_id:
+        return ""
+    if clean_type not in {"movie", "tv", "person"}:
+        clean_type = "movie"
+    return f"https://www.themoviedb.org/{clean_type}/{urlparse.quote(clean_id)}"
+
+
+def _tmdb_request(path: str, params: dict[str, Any], trace_id: str = "") -> dict[str, Any]:
+    if not TMDB_API_KEY and not TMDB_READ_ACCESS_TOKEN:
+        raise RuntimeError("未配置 TMDB API 凭证")
+    query_params = dict(params)
+    if TMDB_API_KEY:
+        query_params.setdefault("api_key", TMDB_API_KEY)
+    url = f"{TMDB_API_BASE_URL}/{path.lstrip('/')}?{urlparse.urlencode(query_params, doseq=True)}"
+    headers = _build_tmdb_headers()
+    if trace_id:
+        headers["X-Trace-Id"] = trace_id
+    return _http_json("GET", url, timeout=TMDB_TIMEOUT, headers=headers)
+
+
+def _tmdb_result_score(query: str, row: dict[str, Any]) -> float:
+    title = str(row.get("title") or row.get("name") or "").strip()
+    q = _strip_tmdb_query_scaffolding(query).casefold()
+    t = title.casefold()
+    score = float(row.get("popularity", 0.0) or 0.0) * 0.01
+    vote_average = float(row.get("vote_average", 0.0) or 0.0)
+    score += vote_average * 0.1
+    if q and t == q:
+        score += 2.5
+    elif q and q in t:
+        score += 1.0
+    return round(score, 6)
+
+
+def _tool_search_tmdb_media(query: str, trace_id: str = "", *, limit: int = 5) -> ToolExecution:
+    if not TMDB_API_KEY and not TMDB_READ_ACCESS_TOKEN:
+        return ToolExecution(
+            tool=TOOL_SEARCH_TMDB,
+            status="empty",
+            summary="未配置 TMDB API 凭证",
+            data={"trace_id": trace_id, "trace_stage": "agent.tool.search_tmdb_media", "results": []},
+        )
+    search_path = _guess_tmdb_search_path(query)
+    media_entities = _extract_media_entities(query)
+    lookup = str(media_entities[0] or "").strip() if media_entities else ""
+    if not lookup:
+        lookup = _strip_tmdb_query_scaffolding(query) or str(query or "").strip()
+    payload = _tmdb_request(
+        search_path,
+        {
+            "query": lookup,
+            "language": TMDB_LANGUAGE,
+            "include_adult": "false",
+            "page": 1,
+        },
+        trace_id=trace_id,
+    )
+    rows = payload.get("results", []) if isinstance(payload, dict) else []
+    compact: list[dict[str, Any]] = []
+    for row in rows:
+        if not isinstance(row, dict):
+            continue
+        media_type = str(row.get("media_type") or "").strip().lower()
+        if search_path == "search/movie":
+            media_type = "movie"
+        elif search_path == "search/tv":
+            media_type = "tv"
+        elif search_path == "search/person":
+            media_type = "person"
+        if media_type not in {"movie", "tv", "person"}:
+            continue
+        item_id = row.get("id")
+        title = str(row.get("title") or row.get("name") or "").strip()
+        if not title or item_id in {None, ""}:
+            continue
+        compact.append(
+            {
+                "id": item_id,
+                "title": title,
+                "media_type": media_type,
+                "date": str(row.get("release_date") or row.get("first_air_date") or "").strip(),
+                "overview": _clip_text(row.get("overview", ""), 320),
+                "original_language": str(row.get("original_language") or "").strip(),
+                "vote_average": row.get("vote_average"),
+                "popularity": row.get("popularity"),
+                "known_for_department": str(row.get("known_for_department") or "").strip(),
+                "url": _tmdb_media_url(media_type, item_id),
+                "score": _tmdb_result_score(lookup, row),
+                "source": "tmdb",
+            }
+        )
+    compact.sort(key=lambda item: _safe_score(item.get("score")), reverse=True)
+    compact = compact[: max(1, int(limit))]
+    return ToolExecution(
+        tool=TOOL_SEARCH_TMDB,
+        status="ok" if compact else "empty",
+        summary=f"TMDB 命中 {len(compact)} 条结果（endpoint={search_path}）",
+        data={
+            "trace_id": trace_id,
+            "trace_stage": "agent.tool.search_tmdb_media",
+            "query": lookup,
+            "endpoint": search_path,
+            "results": compact,
+        },
+    )
+
+
+def _match_local_terms(haystacks: list[str], vocabulary: list[str], limit: int = 12) -> list[str]:
+    matched: list[str] = []
+    plain_haystacks = [str(item or "") for item in haystacks if str(item or "").strip()]
+    for value in vocabulary:
+        clean = str(value or "").strip()
+        if not clean:
+            continue
+        if any(clean in haystack for haystack in plain_haystacks):
+            matched.append(clean)
+        if len(matched) >= limit:
+            break
+    return matched
+
+
+def _concept_cache_key(query: str) -> str:
+    return _strip_query_scaffolding(query).casefold() or str(query or "").strip().casefold()
+
+
+def _get_cached_mediawiki_concept(query: str) -> dict[str, Any] | None:
+    key = _concept_cache_key(query)
+    with _MEDIAWIKI_CONCEPT_CACHE["lock"]:
+        cached = _MEDIAWIKI_CONCEPT_CACHE["entries"].get(key)
+        return dict(cached) if isinstance(cached, dict) else None
+
+
+def _set_cached_mediawiki_concept(query: str, data: dict[str, Any]) -> None:
+    key = _concept_cache_key(query)
+    with _MEDIAWIKI_CONCEPT_CACHE["lock"]:
+        _MEDIAWIKI_CONCEPT_CACHE["entries"][key] = dict(data)
+
+
+def _tool_search_mediawiki_action(query: str, trace_id: str = "", *, limit: int = 5, languages: list[str] | None = None) -> ToolExecution:
+    concept_queries = _build_mediawiki_concept_queries(query)
+    target_languages = languages or ["zh", "en"]
+    api_map = {"zh": MEDIAWIKI_ZH_API, "en": MEDIAWIKI_EN_API}
+    results: list[dict[str, Any]] = []
+
+    for lang in target_languages:
+        api_url = api_map.get(lang)
+        if not api_url:
+            continue
+        for candidate in concept_queries:
+            payload = _mediawiki_action_request(
+                api_url,
+                {
+                    "action": "query",
+                    "list": "search",
+                    "srsearch": candidate,
+                    "srlimit": min(max(1, int(limit)), 10),
+                    "srinfo": "totalhits|suggestion|rewrittenquery",
+                    "srprop": "snippet|titlesnippet|sectiontitle|wordcount|timestamp",
+                    "srenablerewrites": 1,
+                },
+                trace_id=trace_id,
+            )
+            query_data = payload.get("query", {}) if isinstance(payload.get("query"), dict) else {}
+            rows = query_data.get("search", []) if isinstance(query_data.get("search"), list) else []
+            for row in rows:
+                if not isinstance(row, dict):
+                    continue
+                title = str(row.get("title") or "").strip()
+                snippet = _clean_mediawiki_snippet(row.get("snippet"))
+                results.append(
+                    {
+                        "title": title,
+                        "snippet": snippet,
+                        "language": lang,
+                        "source": "mediawiki_action_query",
+                        "query": candidate,
+                        "wordcount": row.get("wordcount"),
+                        "timestamp": row.get("timestamp"),
+                        "url": _mediawiki_page_url(api_url, title) if title else "",
+                        "score": round(_mediawiki_result_score(candidate, title, snippet), 6),
+                    }
+                )
+            if rows:
+                break
+
+    dedup: dict[tuple[str, str], dict[str, Any]] = {}
+    for row in results:
+        key = (str(row.get("language") or ""), str(row.get("title") or ""))
+        current = dedup.get(key)
+        if current is None or _safe_score(row.get("score")) > _safe_score(current.get("score")):
+            dedup[key] = row
+    compact = sorted(dedup.values(), key=lambda item: _safe_score(item.get("score")), reverse=True)[:limit]
+    status = "ok" if compact else "empty"
+    return ToolExecution(
+        tool=TOOL_SEARCH_MEDIAWIKI,
+        status=status,
+        summary=f"MediaWiki 搜索命中 {len(compact)} 条",
+        data={
+            "trace_id": trace_id,
+            "trace_stage": "agent.tool.search_mediawiki_action",
+            "results": compact,
+            "queries": concept_queries,
+        },
+    )
+
+
+def _tool_parse_mediawiki_page(query: str, trace_id: str = "", *, preferred_language: str = "") -> ToolExecution:
+    language_order = [preferred_language] if preferred_language else []
+    for lang in ["zh", "en"]:
+        if lang not in language_order:
+            language_order.append(lang)
+    rows: list[dict[str, Any]] = []
+    payload: dict[str, Any] = {}
+    title = ""
+    lang = language_order[0] if language_order else "zh"
+    api_url = MEDIAWIKI_ZH_API if lang == "zh" else MEDIAWIKI_EN_API
+    score_value = 0.0
+
+    for candidate in _build_mediawiki_concept_queries(query):
+        for lang in language_order:
+            api_url = MEDIAWIKI_ZH_API if lang == "zh" else MEDIAWIKI_EN_API
+            try:
+                direct_payload = _mediawiki_action_request(
+                    api_url,
+                    {
+                        "action": "parse",
+                        "page": candidate,
+                        "prop": "text|links|categories|displaytitle|revid|iwlinks",
+                        "redirects": 1,
+                        "section": 0,
+                        "disableeditsection": 1,
+                        "disabletoc": 1,
+                    },
+                    trace_id=trace_id,
+                )
+            except Exception:
+                continue
+            parsed = direct_payload.get("parse", {}) if isinstance(direct_payload.get("parse"), dict) else {}
+            direct_title = str(parsed.get("title") or "").strip()
+            if direct_title:
+                payload = direct_payload
+                title = direct_title
+                rows = [{"title": direct_title, "language": lang, "score": 1.0, "url": _mediawiki_page_url(api_url, direct_title)}]
+                score_value = 1.0
+                break
+        if title:
+            break
+
+    if not title:
+        search_result = _tool_search_mediawiki_action(query, trace_id, limit=3, languages=language_order)
+        rows = search_result.data.get("results", []) if isinstance(search_result.data, dict) else []
+        if not rows:
+            return ToolExecution(
+                tool=TOOL_PARSE_MEDIAWIKI,
+                status="empty",
+                summary="MediaWiki 页面解析未找到候选条目",
+                data={"trace_id": trace_id, "trace_stage": "agent.tool.parse_mediawiki_page", "results": []},
+            )
+        target = rows[0]
+        lang = str(target.get("language") or "zh")
+        api_url = MEDIAWIKI_ZH_API if lang == "zh" else MEDIAWIKI_EN_API
+        title = str(target.get("title") or "").strip()
+        score_value = _safe_score(target.get("score"))
+        payload = _mediawiki_action_request(
+            api_url,
+            {
+                "action": "parse",
+                "page": title,
+                "prop": "text|links|categories|displaytitle|revid|iwlinks",
+                "redirects": 1,
+                "section": 0,
+                "disableeditsection": 1,
+                "disabletoc": 1,
+            },
+            trace_id=trace_id,
+        )
+
+    parsed = payload.get("parse", {}) if isinstance(payload.get("parse"), dict) else {}
+    html_text = ""
+    if isinstance(parsed.get("text"), str):
+        html_text = parsed.get("text") or ""
+    elif isinstance(parsed.get("text"), dict):
+        html_text = str(parsed.get("text", {}).get("*", "") or "")
+    plain_text = _clean_mediawiki_snippet(html_text)
+    links = []
+    for row in parsed.get("links", []) if isinstance(parsed.get("links"), list) else []:
+        if not isinstance(row, dict):
+            continue
+        link_title = str(row.get("title") or "").strip()
+        if link_title:
+            links.append(link_title)
+    categories = []
+    for row in parsed.get("categories", []) if isinstance(parsed.get("categories"), list) else []:
+        if not isinstance(row, dict):
+            continue
+        category = str(row.get("category") or row.get("*") or "").strip()
+        if category:
+            categories.append(category)
+    page = {
+        "title": title,
+        "display_title": _clean_mediawiki_snippet(parsed.get("displaytitle") or title) or title,
+        "language": lang,
+        "url": _mediawiki_page_url(api_url, title),
+        "extract": plain_text[:2400],
+        "links": links[:80],
+        "categories": categories[:40],
+        "source": "mediawiki_action_parse",
+        "score": score_value,
+    }
+    return ToolExecution(
+        tool=TOOL_PARSE_MEDIAWIKI,
+        status="ok",
+        summary=f"MediaWiki 页面解析成功: {title}",
+        data={
+            "trace_id": trace_id,
+            "trace_stage": "agent.tool.parse_mediawiki_page",
+            "results": [page],
+            "page": page,
+            "search_results": rows,
+        },
+    )
+
+
+def _tool_expand_mediawiki_concept(query: str, trace_id: str = "") -> ToolExecution:
+    cached = _get_cached_mediawiki_concept(query)
+    if cached is not None:
+        return ToolExecution(
+            tool=TOOL_EXPAND_MEDIAWIKI_CONCEPT,
+            status="ok",
+            summary=f"MediaWiki 概念展开缓存命中: {cached.get('concept', _strip_query_scaffolding(query))}",
+            data=cached,
+        )
+    if not _is_abstract_media_concept_query(query):
+        data = {
+            "trace_id": trace_id,
+            "trace_stage": "agent.tool.expand_mediawiki_concept",
+            "results": [],
+            "concept": _strip_query_scaffolding(query) or str(query or "").strip(),
+            "filters": {},
+            "authors": [],
+            "aliases": [],
+        }
+        return ToolExecution(tool=TOOL_EXPAND_MEDIAWIKI_CONCEPT, status="skipped", summary="当前问题不需要外部概念展开", data=data)
+
+    search_tool = _tool_search_mediawiki_action(query, trace_id, limit=4)
+    search_rows = search_tool.data.get("results", []) if isinstance(search_tool.data, dict) else []
+    pages: list[dict[str, Any]] = []
+    seen_pages: set[tuple[str, str]] = set()
+    for row in search_rows[:4]:
+        title = str(row.get("title") or "").strip()
+        language = str(row.get("language") or "").strip()
+        key = (language, title)
+        if not title or key in seen_pages:
+            continue
+        seen_pages.add(key)
+        parsed = _tool_parse_mediawiki_page(title, trace_id, preferred_language=language)
+        if parsed.status == "ok" and isinstance(parsed.data, dict):
+            page = parsed.data.get("page")
+            if isinstance(page, dict):
+                pages.append(page)
+        if len(pages) >= 2:
+            break
+
+    vocab = _load_local_media_vocab()
+    haystacks: list[str] = []
+    aliases: list[str] = []
+    result_rows: list[dict[str, Any]] = []
+    for page in pages:
+        haystacks.append(str(page.get("display_title") or ""))
+        haystacks.append(str(page.get("title") or ""))
+        haystacks.append(str(page.get("extract") or ""))
+        haystacks.extend([str(value) for value in page.get("links", []) if str(value).strip()])
+        haystacks.extend([str(value) for value in page.get("categories", []) if str(value).strip()])
+        for alias in [str(page.get("display_title") or "").strip(), str(page.get("title") or "").strip()]:
+            if alias and alias not in aliases:
+                aliases.append(alias)
+        result_rows.append(page)
+    for row in search_rows:
+        title = str(row.get("title") or "").strip()
+        if title and title not in aliases:
+            aliases.append(title)
+
+    matched_countries = _match_local_terms(haystacks, vocab.get("nationalities", []), limit=12)
+    matched_authors = _match_local_terms(haystacks, vocab.get("authors", []), limit=12)
+    matched_categories = _match_local_terms(haystacks, vocab.get("categories", []), limit=8)
+
+    filters: dict[str, list[str]] = {}
+    _merge_filter_values(filters, "nationality", matched_countries)
+    _merge_filter_values(filters, "category", matched_categories)
+    if any(keyword in str(query or "") for keyword in MEDIA_BOOKISH_CUES):
+        _merge_filter_values(filters, "media_type", ["book"])
+
+    concept = _strip_query_scaffolding(query) or str(query or "").strip()
+    data = {
+        "trace_id": trace_id,
+        "trace_stage": "agent.tool.expand_mediawiki_concept",
+        "results": result_rows,
+        "concept": concept,
+        "aliases": aliases[:10],
+        "countries": matched_countries,
+        "authors": matched_authors,
+        "categories": matched_categories,
+        "filters": filters,
+        "search_results": search_rows,
+    }
+    _set_cached_mediawiki_concept(query, data)
+    return ToolExecution(
+        tool=TOOL_EXPAND_MEDIAWIKI_CONCEPT,
+        status="ok" if result_rows or matched_countries or matched_authors else "empty",
+        summary=f"MediaWiki 概念展开完成（countries={len(matched_countries)}, authors={len(matched_authors)}, aliases={len(data['aliases'])}）",
+        data=data,
+    )
 
 
 def _is_compact_media_entity_list(entities: list[str]) -> bool:
@@ -1151,16 +2964,28 @@ def _classify_query_type(query: str, quota_state: dict[str, Any], query_profile:
         and not media_entity_confident
         and not media_intent_cues
     )
-    media_signal = media_entity_confident or (
-        classifier_label == CLASSIFIER_LABEL_MEDIA
-        and (media_intent_cues or short_media_surface)
-        and not disable_media_search
+    media_signal = (
+        media_entity_confident
+        or (media_intent_cues and not disable_media_search)
+        or (
+            classifier_label == CLASSIFIER_LABEL_MEDIA
+            and (media_intent_cues or short_media_surface)
+            and not disable_media_search
+        )
+    )
+    abstract_media_concept = _is_abstract_media_concept_query(query)
+    tmdb_candidate = _should_route_tmdb(
+        query,
+        {
+            "media_entity_confident": media_entity_confident,
+            "media_intent_cues": media_intent_cues,
+        },
     )
     strong_tech_signal = tech_score >= TECH_QUERY_DOC_SIM_THRESHOLD or classifier_label == CLASSIFIER_LABEL_TECH
 
     if media_signal and strong_tech_signal:
         query_type = QUERY_TYPE_MIXED
-    elif media_entity_confident:
+    elif media_entity_confident or abstract_media_concept:
         query_type = QUERY_TYPE_MEDIA
     elif tech_score >= TECH_QUERY_DOC_SIM_THRESHOLD:
         query_type = QUERY_TYPE_TECH
@@ -1168,7 +2993,7 @@ def _classify_query_type(query: str, quota_state: dict[str, Any], query_profile:
         query_type = QUERY_TYPE_TECH
     elif classifier_label == CLASSIFIER_LABEL_TECH:
         query_type = QUERY_TYPE_TECH
-    elif classifier_label == CLASSIFIER_LABEL_MEDIA and (media_entity_confident or media_intent_cues) and not disable_media_search:
+    elif media_signal:
         query_type = QUERY_TYPE_MEDIA
     else:
         query_type = QUERY_TYPE_GENERAL
@@ -1193,6 +3018,8 @@ def _classify_query_type(query: str, quota_state: dict[str, Any], query_profile:
         "disable_media_search": disable_media_search,
         "media_signal": media_signal,
         "strong_tech_signal": strong_tech_signal,
+        "abstract_media_concept": abstract_media_concept,
+        "tmdb_candidate": tmdb_candidate,
     }
 
 
@@ -1212,6 +3039,10 @@ def _build_router_decision_path(
         path.append("media_entity")
     elif bool(query_classification.get("media_signal")):
         path.append("media_intent")
+    if any(call.name == TOOL_EXPAND_MEDIAWIKI_CONCEPT for call in planned_tools):
+        path.append("external_concept_expand")
+    if any(call.name == TOOL_SEARCH_TMDB for call in planned_tools):
+        path.append("external_media_db")
 
     if doc_similarity >= TECH_QUERY_DOC_SIM_THRESHOLD:
         path.append("embedding_similarity_strong")
@@ -1248,16 +3079,40 @@ def _build_router_decision_path(
     return category, path
 
 
-def _build_tool_plan_from_query_type(question: str, query_type: str, search_mode: str) -> list[PlannedToolCall]:
+def _build_tool_plan_from_query_type(
+    question: str,
+    query_type: str,
+    search_mode: str,
+    query_classification: dict[str, Any] | None = None,
+) -> list[PlannedToolCall]:
     normalized_type = _normalize_query_type(query_type)
     normalized_mode = _normalize_search_mode(search_mode)
+    current = query_classification or {}
+    needs_concept_expand = _is_abstract_media_concept_query(question, current)
+    needs_tmdb = _should_route_tmdb(question, current)
     if normalized_type == QUERY_TYPE_MEDIA:
-        return [PlannedToolCall(name=TOOL_QUERY_MEDIA, query=question)]
+        plan: list[PlannedToolCall] = []
+        if needs_concept_expand:
+            plan.append(PlannedToolCall(name=TOOL_EXPAND_MEDIAWIKI_CONCEPT, query=question))
+        plan.append(PlannedToolCall(name=TOOL_QUERY_MEDIA, query=question))
+        if needs_tmdb:
+            plan.append(PlannedToolCall(name=TOOL_SEARCH_TMDB, query=question))
+        return plan
     if normalized_type == QUERY_TYPE_MIXED:
-        return [
-            PlannedToolCall(name=TOOL_QUERY_DOC_RAG, query=question),
-            PlannedToolCall(name=TOOL_QUERY_MEDIA, query=question),
-        ]
+        plan = []
+        if needs_concept_expand:
+            plan.append(PlannedToolCall(name=TOOL_EXPAND_MEDIAWIKI_CONCEPT, query=question))
+        plan.extend(
+            [
+                PlannedToolCall(name=TOOL_QUERY_DOC_RAG, query=question),
+                PlannedToolCall(name=TOOL_QUERY_MEDIA, query=question),
+            ]
+        )
+        if needs_tmdb:
+            plan.append(PlannedToolCall(name=TOOL_SEARCH_TMDB, query=question))
+        return plan
+    if needs_tmdb:
+        return [PlannedToolCall(name=TOOL_SEARCH_TMDB, query=question)]
     if normalized_type == QUERY_TYPE_TECH:
         return [PlannedToolCall(name=TOOL_QUERY_DOC_RAG, query=question)]
     if normalized_mode == "hybrid":
@@ -1372,22 +3227,40 @@ def _apply_reference_limits(tool_results: list[ToolExecution], search_mode: str,
             continue
 
         if result.tool == TOOL_QUERY_MEDIA:
-            filtered = _filter_rows(
-                rows,
-                media_limit,
-                media_keyword_threshold,
-                threshold_selector=lambda row: _media_threshold_selector(
+            threshold_pass_rows: list[dict[str, Any]] = []
+            threshold_dropped = 0
+            for row in rows:
+                if not isinstance(row, dict):
+                    continue
+                score = _score_value(row)
+                row_threshold = _media_threshold_selector(
                     row,
                     media_keyword_threshold,
                     media_vector_threshold,
-                ),
-            )
+                )
+                if score is None or score <= float(row_threshold):
+                    threshold_dropped += 1
+                    continue
+                cloned = dict(row)
+                cloned["score"] = float(score)
+                threshold_pass_rows.append(cloned)
+            threshold_pass_rows.sort(key=lambda x: float(x.get("score", 0.0)), reverse=True)
+            filtered = threshold_pass_rows[: max(1, int(media_limit))]
             summary = (
                 f"命中 {len(filtered)} 条媒体记录"
                 f"（keyword score>{media_keyword_threshold}; vector score>{media_vector_threshold}）"
             )
             data = dict(result.data)
             data["results"] = filtered
+            validation = dict(data.get("validation") or {}) if isinstance(data.get("validation"), dict) else {}
+            top_k_dropped = max(0, len(threshold_pass_rows) - len(filtered))
+            validation["returned_result_count"] = len(filtered)
+            validation["dropped_by_reference_limit"] = threshold_dropped + top_k_dropped
+            validation["reference_limit_drop_reasons"] = {
+                "below_score_threshold": threshold_dropped,
+                "top_k_truncation": top_k_dropped,
+            }
+            data["validation"] = validation
             shaped.append(ToolExecution(tool=result.tool, status=result.status, summary=summary, data=data))
             continue
 
@@ -1402,6 +3275,19 @@ def _apply_reference_limits(tool_results: list[ToolExecution], search_mode: str,
                 data = dict(result.data)
                 data["results"] = filtered
                 shaped.append(ToolExecution(tool=result.tool, status=result.status, summary=summary, data=data))
+            continue
+
+        if result.tool == TOOL_SEARCH_TMDB:
+            data = dict(result.data)
+            data["results"] = rows[: max(1, media_limit + 1)]
+            shaped.append(
+                ToolExecution(
+                    tool=result.tool,
+                    status=result.status,
+                    summary=f"TMDB 命中 {len(data['results'])} 条外部媒体结果",
+                    data=data,
+                )
+            )
             continue
 
         shaped.append(result)
@@ -1463,6 +3349,10 @@ def _parse_planned_tools(text: str, question: str, allowed_tool_names: list[str]
     default_tools = [PlannedToolCall(name=TOOL_QUERY_DOC_RAG, query=question), PlannedToolCall(name=TOOL_QUERY_MEDIA, query=question)]
     if any(k in lowered for k in ["最新", "今天", "新闻", "联网", "实时", "recent", "news"]):
         default_tools.append(PlannedToolCall(name=TOOL_SEARCH_WEB, query=question))
+    if _is_abstract_media_concept_query(question):
+        default_tools.insert(0, PlannedToolCall(name=TOOL_EXPAND_MEDIAWIKI_CONCEPT, query=question))
+    if _should_route_tmdb(question):
+        default_tools.append(PlannedToolCall(name=TOOL_SEARCH_TMDB, query=question))
     return default_tools
 
 
@@ -1757,9 +3647,54 @@ def _split_media_entities(raw: str) -> list[str]:
     return dedup
 
 
+def _looks_like_generic_media_scope(text: str) -> bool:
+    normalized = str(text or "").strip()
+    if not normalized:
+        return True
+    if normalized in {"我", "我的", "自己", "本人", "我们", "咱们", "咱"}:
+        return True
+    compact = re.sub(r"\s+", "", normalized)
+    if re.fullmatch(r"(?:20\d{2}年?)?\d{1,2}(?:月)?(?:到|至|[-~—－])\d{1,2}月(?:的)?(?:番|番剧|动画|动漫|新番)?", compact):
+        return True
+    if re.fullmatch(r"(?:20\d{2}年?)?\d{1,2}月(?:的)?(?:番|番剧|动画|动漫|新番)?", compact):
+        return True
+    if re.fullmatch(r"(?:20\d{2}年?)?(?:上半年|下半年)(?:的)?(?:番|番剧|动画|动漫|新番)?", compact):
+        return True
+    generic_markers = (
+        "有哪些",
+        "什么",
+        "简介",
+        "剧情",
+        "介绍",
+        "导演",
+        "演员",
+        "评分",
+        "时间",
+        "我阅读过",
+        "我读过",
+        "我看过",
+        "我玩过",
+        "番剧",
+        "动画",
+        "动漫",
+        "新番",
+        "评价比较高",
+        "评分比较高",
+        "文学",
+        "小说",
+        "诗歌",
+        "作家",
+    )
+    return any(marker in normalized for marker in generic_markers)
+
+
 def _extract_media_entities(query: str) -> list[str]:
     raw = (query or "").strip()
     if not raw:
+        return []
+    if _is_collection_media_query(raw):
+        return []
+    if _looks_like_time_only_followup(raw):
         return []
 
     normalized = raw
@@ -1770,10 +3705,10 @@ def _extract_media_entities(query: str) -> list[str]:
     match = re.search(r"(?:我)?对(?P<title>.+?)(?:的)?(?:评价|看法|评分|感受|印象|想法)", normalized)
     if match:
         entities = _split_media_entities(match.group("title"))
-        if entities:
+        if entities and not any(_looks_like_generic_media_scope(entity) for entity in entities):
             return entities
 
-    match = re.search(r"^(?P<title>.+?)(?:的)?(?:对比|比较|区别|差异)", normalized)
+    match = re.search(r"^(?P<title>.+?)(?:的)?(?:对比|比较(?!高)|区别|差异)", normalized)
     if match:
         entities = _split_media_entities(match.group("title"))
         if entities:
@@ -1782,13 +3717,23 @@ def _extract_media_entities(query: str) -> list[str]:
     match = re.search(r"^(?P<title>.+?)的(?:各个)?(?:主角|角色|剧情|介绍|评价|看法|分析|总结)", normalized)
     if match:
         entities = _split_media_entities(match.group("title"))
-        if entities:
+        if entities and not any(_looks_like_generic_media_scope(entity) for entity in entities):
+            return entities
+
+    match = re.search(r"^(?P<title>.+?)(?:这部|这个|这本|这套)?(?:电影|影片|片子|电视剧|剧集|剧|动漫|动画|番剧|漫画|小说|书)?呢$", normalized)
+    if match:
+        entities = _split_media_entities(match.group("title"))
+        if entities and not any(_looks_like_generic_media_scope(entity) for entity in entities):
             return entities
 
     if any(token in normalized for token in ["对比", "比较", "区别", "差异", "评价", "看法", "评分"]):
         entities = _split_media_entities(normalized)
-        if len(entities) >= 2:
+        if len(entities) >= 2 and not any(_looks_like_generic_media_scope(entity) for entity in entities):
             return entities
+
+    entities = _extract_media_entities_from_local_titles(normalized)
+    if entities and not any(_looks_like_generic_media_scope(entity) for entity in entities):
+        return entities
 
     return []
 
@@ -1796,6 +3741,31 @@ def _extract_media_entities(query: str) -> list[str]:
 def _extract_media_entity(query: str) -> str:
     entities = _extract_media_entities(query)
     return entities[0] if entities else ""
+
+
+def _find_previous_trace_context(history: list[dict[str, str]], require_media_context: bool = False) -> dict[str, Any]:
+    if get_trace_record is None:
+        return {}
+    for item in reversed(history or []):
+        if not isinstance(item, dict):
+            continue
+        if str(item.get("role", "")).strip().lower() != "assistant":
+            continue
+        trace_id = str(item.get("trace_id", "") or "").strip()
+        if not trace_id:
+            continue
+        try:
+            record = get_trace_record(trace_id)
+        except Exception:
+            record = None
+        if not isinstance(record, dict) or not record:
+            continue
+        if require_media_context:
+            state = record.get("conversation_state_after") if isinstance(record.get("conversation_state_after"), dict) else {}
+            if not _state_has_media_context(state):
+                continue
+        return record
+    return {}
 
 
 def _normalize_media_title_for_match(text: str) -> str:
@@ -1835,10 +3805,65 @@ def _media_title_match_boost_any(title: str, entities: list[str]) -> float:
     return max((_media_title_match_boost(title, entity) for entity in entities), default=0.0)
 
 
+def _build_answer_focus_hints(question: str, tool_results: list[ToolExecution]) -> str:
+    lines: list[str] = []
+    normalized_question = str(question or "")
+    wants_when = any(token in normalized_question for token in ["什么时候", "何时", "哪天", "哪一年", "观影时间", "时间"])
+    wants_summary = any(token in normalized_question for token in ["剧情", "简介", "介绍", "讲了什么"])
+
+    media_result = next((item for item in tool_results if item.tool == TOOL_QUERY_MEDIA), None)
+    tmdb_result = next((item for item in tool_results if item.tool == TOOL_SEARCH_TMDB), None)
+    mediawiki_result = next((item for item in tool_results if item.tool in {TOOL_SEARCH_MEDIAWIKI, TOOL_PARSE_MEDIAWIKI, TOOL_EXPAND_MEDIAWIKI_CONCEPT}), None)
+
+    if media_result and isinstance(media_result.data, dict):
+        exact_match = media_result.data.get("top_exact_match") if isinstance(media_result.data.get("top_exact_match"), dict) else None
+        if exact_match:
+            title = str(exact_match.get("title") or "").strip()
+            date = str(exact_match.get("date") or "").strip()
+            rating = exact_match.get("rating")
+            review = str(exact_match.get("review") or "").strip()
+            lines.append("本地知识库优先：如果命中明确媒体条目，先回答本地库中的观看日期、评分和个人短评，再补充外部信息。")
+            if title:
+                lines.append(f"本地精确命中标题：{title}")
+            if wants_when and date:
+                lines.append(f"本地记录的观看日期：{date}")
+            if rating not in {None, ""}:
+                lines.append(f"本地记录评分：{rating}")
+            if review:
+                lines.append(f"本地短评摘要：{_clip_text(review, 180)}")
+        elif media_result.data.get("media_entities"):
+            lines.append("如果本地媒体结果没有精确标题命中，不要把模糊匹配条目当作用户正在询问的那部作品。")
+
+    if wants_summary and tmdb_result and isinstance(tmdb_result.data, dict):
+        rows = tmdb_result.data.get("results", []) if isinstance(tmdb_result.data.get("results"), list) else []
+        if rows:
+            top = rows[0] if isinstance(rows[0], dict) else {}
+            overview = str(top.get("overview") or "").strip()
+            title = str(top.get("title") or "").strip()
+            if overview:
+                lines.append("外部参考仅作补充：TMDB 提供的是外部剧情简介，不属于你的本地知识库。")
+                if title:
+                    lines.append(f"TMDB 命中标题：{title}")
+                lines.append(f"TMDB 简介摘要：{_clip_text(overview, 220)}")
+
+    if mediawiki_result and isinstance(mediawiki_result.data, dict):
+        rows = mediawiki_result.data.get("results", []) if isinstance(mediawiki_result.data.get("results"), list) else []
+        if rows:
+            lines.append("若引用 Wiki，请明确标注为外部参考，不要表述成你的本地知识库内容。")
+
+    return "\n".join(lines).strip()
+
+
 def _tool_query_media_record(query: str, query_profile: dict[str, Any], trace_id: str = "") -> ToolExecution:
     rewritten_query = _rewrite_media_query(query)
     media_entities = _extract_media_entities(query)
     extracted_entity = media_entities[0] if media_entities else ""
+    inferred_filters = _infer_media_filters(query)
+    date_window = _parse_media_date_window(query)
+    mediawiki_concept = _get_cached_mediawiki_concept(query)
+    if mediawiki_concept is None and _is_abstract_media_concept_query(query):
+        concept_result = _tool_expand_mediawiki_concept(query, trace_id)
+        mediawiki_concept = concept_result.data if isinstance(concept_result.data, dict) else None
 
     graph_tool = _tool_expand_media_query(query) if _is_media_graph_available() else ToolExecution(
         tool=TOOL_EXPAND_MEDIA_QUERY,
@@ -1858,6 +3883,13 @@ def _tool_query_media_record(query: str, query_profile: dict[str, Any], trace_id
         for key, values in (graph_data.get("constraints") or {}).items()
         if isinstance(values, list)
     }
+    for field, values in inferred_filters.items():
+        _merge_filter_values(filters, field, values)
+    if isinstance(mediawiki_concept, dict):
+        for field, values in (mediawiki_concept.get("filters") or {}).items():
+            if isinstance(values, list):
+                _merge_filter_values(filters, str(field), [str(value).strip() for value in values if str(value).strip()])
+    filter_queries = _build_media_filter_queries(filters)
 
     keyword_queries: list[str] = []
     for entity in media_entities:
@@ -1870,6 +3902,20 @@ def _tool_query_media_record(query: str, query_profile: dict[str, Any], trace_id
         keyword_queries.append(extracted_entity)
     if rewritten_query and rewritten_query not in keyword_queries:
         keyword_queries.append(rewritten_query)
+    if isinstance(mediawiki_concept, dict):
+        aliases = mediawiki_concept.get("aliases", []) if isinstance(mediawiki_concept.get("aliases"), list) else []
+        authors = mediawiki_concept.get("authors", []) if isinstance(mediawiki_concept.get("authors"), list) else []
+        for alias in aliases:
+            clean_alias = str(alias).strip()
+            if clean_alias and clean_alias not in keyword_queries:
+                keyword_queries.append(clean_alias)
+        for author in authors:
+            clean_author = str(author).strip()
+            if clean_author and clean_author not in keyword_queries:
+                keyword_queries.append(clean_author)
+    for filter_query in filter_queries:
+        if filter_query not in keyword_queries:
+            keyword_queries.append(filter_query)
 
     vector_queries: list[str] = []
     for entity in media_entities:
@@ -1877,6 +3923,76 @@ def _tool_query_media_record(query: str, query_profile: dict[str, Any], trace_id
             vector_queries.append(entity)
     if not vector_queries and vector_query:
         vector_queries.append(vector_query)
+    if isinstance(mediawiki_concept, dict):
+        for alias in mediawiki_concept.get("aliases", []) if isinstance(mediawiki_concept.get("aliases"), list) else []:
+            clean_alias = str(alias).strip()
+            if clean_alias and clean_alias not in vector_queries:
+                vector_queries.append(clean_alias)
+    for filter_query in filter_queries:
+        if filter_query and filter_query not in vector_queries:
+            vector_queries.append(filter_query)
+
+    if _needs_filter_only_media_lookup(query, media_entities, filters, date_window):
+        fallback_payload = _http_json(
+            "POST",
+            f"{LIBRARY_TRACKER_BASE}/api/library/search",
+            payload={
+                "query": "",
+                "mode": "keyword",
+                "limit": 80,
+                "filters": filters,
+            },
+            headers={"X-Trace-Id": trace_id, "X-Trace-Stage": "agent.media.filter_window"},
+        )
+        fallback_rows = fallback_payload.get("results", []) if isinstance(fallback_payload, dict) else []
+        compact = [
+            _shape_media_row(
+                row,
+                score=max(_safe_score(row.get("rating")), _safe_score(row.get("score"))),
+                retrieval_mode="filter_only",
+                retrieval_query="",
+                matched_entities=media_entities,
+            )
+            for row in fallback_rows
+            if isinstance(row, dict) and _matches_media_date_window(row, date_window)
+        ]
+        compact, validation = _apply_media_result_validator(compact, filters=filters, date_window=date_window)
+        compact.sort(
+            key=lambda item: (
+                _safe_score(item.get("rating")),
+                str(item.get("date") or ""),
+                _safe_score(item.get("score")),
+            ),
+            reverse=True,
+        )
+        return ToolExecution(
+            tool=TOOL_QUERY_MEDIA,
+            status="ok",
+            summary=f"命中 {len(compact)} 条媒体记录（filter_only, date_window={json.dumps(date_window, ensure_ascii=False)}）",
+            data={
+                "trace_id": trace_id,
+                "trace_stage": "agent.tool.query_media_record",
+                "results": compact,
+                "query_profile": query_profile,
+                "media_entities": media_entities,
+                "top_exact_match": None,
+                "graph_expansion": {
+                    "status": graph_tool.status,
+                    "summary": graph_tool.summary,
+                    "expanded_query": vector_query,
+                    "constraints": filters,
+                },
+                "mediawiki_concept": mediawiki_concept or {},
+                "date_window": date_window,
+                "candidate_source_breakdown": {
+                    "local_filter_index": len(fallback_rows),
+                    "local_keyword_index": 0,
+                    "local_vector_index": 0,
+                    "web": 0,
+                },
+                "validation": validation,
+            },
+        )
 
     keyword_rows: list[dict[str, Any]] = []
     for q_item in keyword_queries:
@@ -1919,6 +4035,12 @@ def _tool_query_media_record(query: str, query_profile: dict[str, Any], trace_id
             cloned = dict(row)
             cloned["matched_query"] = q_item
             vector_rows.append(cloned)
+    candidate_source_breakdown = {
+        "local_filter_index": 0,
+        "local_keyword_index": len(keyword_rows),
+        "local_vector_index": len(vector_rows),
+        "web": 0,
+    }
     graph_degrees = _media_graph_degrees()
 
     merged: dict[str, dict[str, Any]] = {}
@@ -1983,7 +4105,10 @@ def _tool_query_media_record(query: str, query_profile: dict[str, Any], trace_id
                 "id": item.get("id"),
                 "title": item.get("title"),
                 "media_type": item.get("media_type"),
+                "category": item.get("category"),
                 "author": item.get("author"),
+                "publisher": item.get("publisher"),
+                "channel": item.get("channel"),
                 "rating": item.get("rating"),
                 "date": item.get("date"),
                 "score": round(score, 6),
@@ -2001,6 +4126,43 @@ def _tool_query_media_record(query: str, query_profile: dict[str, Any], trace_id
             }
         )
     compact.sort(key=lambda x: _safe_score(x.get("score")), reverse=True)
+    if media_entities:
+        compact = [row for row in compact if _safe_score(row.get("title_boost")) > 0]
+    compact, validation = _apply_media_result_validator(compact, filters=filters, date_window=date_window)
+    top_exact_match = None
+    if media_entities:
+        exact_matches = [
+            row for row in compact
+            if _media_title_match_boost_any(str(row.get("title") or ""), media_entities) >= 0.8
+        ]
+        if exact_matches:
+            top_exact_match = exact_matches[0]
+    if not compact and filters:
+        fallback_payload = _http_json(
+            "POST",
+            f"{LIBRARY_TRACKER_BASE}/api/library/search",
+            payload={
+                "query": "",
+                "mode": "keyword",
+                "limit": 8,
+                "filters": filters,
+            },
+            headers={"X-Trace-Id": trace_id, "X-Trace-Stage": "agent.media.filter_fallback"},
+        )
+        fallback_rows = fallback_payload.get("results", []) if isinstance(fallback_payload, dict) else []
+        for row in fallback_rows:
+            if not isinstance(row, dict):
+                continue
+            if _matches_media_date_window(row, date_window):
+                compact.append(
+                    _shape_media_row(
+                        row,
+                        score=_safe_score(row.get("rating")),
+                        retrieval_mode="filter_only",
+                        retrieval_query="",
+                        matched_entities=media_entities,
+                    )
+                )
     used_query = f"vector:{' || '.join(vector_queries or [vector_query])}"
     if keyword_queries:
         used_query += f" | keyword:{' || '.join(keyword_queries)}"
@@ -2016,12 +4178,17 @@ def _tool_query_media_record(query: str, query_profile: dict[str, Any], trace_id
             "results": compact,
             "query_profile": query_profile,
             "media_entities": media_entities,
+            "top_exact_match": top_exact_match,
             "graph_expansion": {
                 "status": graph_tool.status,
                 "summary": graph_tool.summary,
                 "expanded_query": vector_query,
                 "constraints": filters,
             },
+            "mediawiki_concept": mediawiki_concept or {},
+            "date_window": date_window,
+            "candidate_source_breakdown": candidate_source_breakdown,
+            "validation": validation,
         },
     )
 
@@ -2203,6 +4370,14 @@ def _execute_tool(call: PlannedToolCall, query_profile: dict[str, Any], trace_id
             result = _tool_expand_document_query(call.query)
         elif call.name == TOOL_EXPAND_MEDIA_QUERY:
             result = _tool_expand_media_query(call.query)
+        elif call.name == TOOL_SEARCH_MEDIAWIKI:
+            result = _tool_search_mediawiki_action(call.query, trace_id)
+        elif call.name == TOOL_PARSE_MEDIAWIKI:
+            result = _tool_parse_mediawiki_page(call.query, trace_id)
+        elif call.name == TOOL_EXPAND_MEDIAWIKI_CONCEPT:
+            result = _tool_expand_mediawiki_concept(call.query, trace_id)
+        elif call.name == TOOL_SEARCH_TMDB:
+            result = _tool_search_tmdb_media(call.query, trace_id)
         else:
             result = ToolExecution(tool=call.name, status="skipped", summary="未知工具", data={})
         latency_ms = round((_time.perf_counter() - _tool_t0) * 1000, 1)
@@ -2221,10 +4396,104 @@ def _plan_tool_calls(
     quota_state: dict[str, Any],
     search_mode: str,
 ) -> tuple[list[PlannedToolCall], dict[str, Any]]:
-    query_profile = _resolve_query_profile(question)
-    query_classification = _classify_query_type(question, quota_state, query_profile)
-    planned = _build_tool_plan_from_query_type(question, query_classification.get("query_type", QUERY_TYPE_GENERAL), search_mode)
+    resolved_question = _resolve_contextual_question(question, history)
+    query_profile = _resolve_query_profile(resolved_question)
+    query_classification = _classify_query_type(resolved_question, quota_state, query_profile)
+    planned = _build_tool_plan_from_query_type(
+        resolved_question,
+        query_classification.get("query_type", QUERY_TYPE_GENERAL),
+        search_mode,
+        query_classification,
+    )
+    previous_trace_context = _find_previous_trace_context(history, require_media_context=True)
+    previous_trace_state = previous_trace_context.get("conversation_state_after") if isinstance(previous_trace_context.get("conversation_state_after"), dict) else {}
+    query_classification["previous_date_range"] = previous_trace_state.get("date_range", []) if isinstance(previous_trace_state, dict) else []
+    resolved_query_state = _build_resolved_query_state(
+        question,
+        resolved_question,
+        query_classification,
+    )
+    followup_transition = _build_followup_transition(
+        question,
+        resolved_question,
+        history,
+        query_classification,
+        resolved_query_state,
+    )
+
+    original_question_text = str(question or "").strip()
+    followup_before_state = followup_transition.get("conversation_state_before") if isinstance(followup_transition.get("conversation_state_before"), dict) else {}
+    referential_media_followup = (
+        bool(followup_transition.get("detected_followup"))
+        and str(resolved_query_state.get("intent", "") or "") == "filter_search"
+        and (bool(followup_before_state.get("filters")) or bool(followup_before_state.get("media_type")))
+        and not _extract_media_entities(original_question_text)
+        and (
+            _question_requests_media_details(original_question_text)
+            or _question_requests_personal_evaluation(original_question_text)
+            or any(cue in original_question_text for cue in ("这些", "这些媒体", "这些作品", "这些条目", "它们", "前面这些", "上面这些"))
+        )
+    )
+    resolved_media_evaluation_followup = (
+        str(resolved_query_state.get("intent", "") or "") == "filter_search"
+        and _state_has_media_context(
+            {
+                "media_type": resolved_query_state.get("media_type"),
+                "filters": resolved_query_state.get("filters"),
+                "entity": query_classification.get("media_entity"),
+                "entities": query_classification.get("media_entities"),
+            }
+        )
+        and _question_requests_personal_evaluation(resolved_question, query_classification)
+    )
+    resolved_media_filter_query = (
+        str(resolved_query_state.get("intent", "") or "") == "filter_search"
+        and _state_has_media_context(
+            {
+                "media_type": resolved_query_state.get("media_type"),
+                "filters": resolved_query_state.get("filters"),
+                "entity": query_classification.get("media_entity"),
+                "entities": query_classification.get("media_entities"),
+            }
+        )
+        and (bool(resolved_query_state.get("date_range")) or _is_collection_media_query(resolved_question) or _looks_like_time_only_followup(original_question_text))
+    )
+    if referential_media_followup or resolved_media_evaluation_followup or resolved_media_filter_query:
+        query_classification["query_type"] = QUERY_TYPE_MEDIA
+        planned = _build_tool_plan_from_query_type(
+            resolved_question,
+            QUERY_TYPE_MEDIA,
+            search_mode,
+            query_classification,
+        )
+
+    query_classification["original_question"] = question
+    query_classification["resolved_question"] = resolved_question
+    query_classification["resolved_query_state"] = resolved_query_state
+    query_classification.update(followup_transition)
+    query_classification["planner_snapshot"] = _build_planner_snapshot(
+        resolved_question,
+        query_classification,
+        resolved_query_state,
+        planned,
+    )
     return planned, query_classification
+
+
+def _execute_tool_plan(calls: list[PlannedToolCall], query_profile: dict[str, Any], trace_id: str) -> list[ToolExecution]:
+    if not calls:
+        return []
+    prefetched = [call for call in calls if call.name == TOOL_EXPAND_MEDIAWIKI_CONCEPT]
+    concurrent = [call for call in calls if call.name != TOOL_EXPAND_MEDIAWIKI_CONCEPT]
+    results: list[ToolExecution] = []
+    for call in prefetched:
+        results.append(_execute_tool(call, query_profile, trace_id))
+    if concurrent:
+        with ThreadPoolExecutor(max_workers=max(1, len(concurrent))) as pool:
+            future_map = {pool.submit(_execute_tool, call, query_profile, trace_id): call for call in concurrent}
+            for future in as_completed(future_map):
+                results.append(future.result())
+    return results
 
 
 def _quota_exceeded(plan: list[PlannedToolCall], backend: str, quota_state: dict[str, Any]) -> list[dict[str, Any]]:
@@ -2259,18 +4528,6 @@ def _quota_exceeded(plan: list[PlannedToolCall], backend: str, quota_state: dict
     return exceeded
 
 
-def _format_tool_result(exec_result: ToolExecution) -> str:
-    return json.dumps(
-        {
-            "tool": exec_result.tool,
-            "status": exec_result.status,
-            "summary": exec_result.summary,
-            "data": exec_result.data,
-        },
-        ensure_ascii=False,
-    )
-
-
 def _summarize_answer(
     *,
     question: str,
@@ -2284,16 +4541,9 @@ def _summarize_answer(
     debug_sink: dict[str, Any] | None = None,
     llm_stats_sink: dict[str, Any] | None = None,
 ) -> str:
-    context_parts = ["工具返回结果："]
-    for result in tool_results:
-        context_parts.append(_format_tool_result(result))
-
-    hist_lines = []
-    for msg in (history or [])[-8:]:
-        role = str(msg.get("role", "")).strip()
-        content = str(msg.get("content", "")).strip()
-        if content:
-            hist_lines.append(f"{role}: {content}")
+    hist_lines = _trim_history_for_prompt(history)
+    clipped_memory_context = _clip_memory_context(memory_context)
+    answer_focus_hints = _build_answer_focus_hints(question, tool_results)
 
     normalized_search_mode = _normalize_search_mode(search_mode)
     has_web_tool = any(result.tool == TOOL_SEARCH_WEB for result in tool_results)
@@ -2307,58 +4557,88 @@ def _summarize_answer(
     if normalized_search_mode == "local_only" or not has_web_tool:
         system_prompt += "本轮未执行联网搜索，严禁写出“联网搜索”“网络搜索”“进行网络搜索”“经过搜索”等表述，也不要假装调用过外部 API。"
 
-    prompt_blocks = hist_lines + [f"当前问题: {question}"]
-    if memory_context:
-        prompt_blocks.extend(["", memory_context])
-    prompt_blocks.extend(["", *context_parts])
-    user_prompt = "\n".join(prompt_blocks)
-    context_tokens_est = _approx_tokens("\n".join(context_parts))
-    input_tokens_est = _approx_tokens(system_prompt) + _approx_tokens(user_prompt)
-    prompt_tokens_est = max(0, input_tokens_est - context_tokens_est)
-    if debug_sink is not None:
-        debug_sink["llm_request"] = {
+    budgets = [PROMPT_TOOL_CONTEXT_MAX_CHARS, PROMPT_TOOL_CONTEXT_RETRY_CHARS, 1800]
+    answer = ""
+    last_exc: Exception | None = None
+    total_calls = 0
+    total_input_tokens = 0
+    total_prompt_tokens = 0
+    total_context_tokens = 0
+    final_debug_request: dict[str, Any] | None = None
+
+    for budget in budgets:
+        context_parts = _build_tool_context_parts(tool_results, max_total_chars=budget)
+        prompt_blocks = hist_lines + [f"当前问题: {question}"]
+        if clipped_memory_context:
+            prompt_blocks.extend(["", clipped_memory_context])
+        if answer_focus_hints:
+            prompt_blocks.extend(["", "回答提示：", answer_focus_hints])
+        prompt_blocks.extend(["", *context_parts])
+        user_prompt = "\n".join(prompt_blocks)
+        context_tokens_est = _approx_tokens("\n".join(context_parts))
+        input_tokens_est = _approx_tokens(system_prompt) + _approx_tokens(user_prompt)
+        prompt_tokens_est = max(0, input_tokens_est - context_tokens_est)
+        final_debug_request = {
             "trace_id": trace_id,
             "trace_stage": "agent.llm.summarize",
             "backend": backend,
             "system_prompt": system_prompt,
             "user_prompt": user_prompt,
-            "memory_tokens_est": _approx_tokens(memory_context),
+            "memory_tokens_est": _approx_tokens(clipped_memory_context),
             "input_tokens_est": input_tokens_est,
             "prompt_tokens_est": prompt_tokens_est,
             "context_tokens_est": context_tokens_est,
+            "tool_context_budget_chars": budget,
         }
+        try:
+            total_calls += 1
+            total_input_tokens += input_tokens_est
+            total_prompt_tokens += prompt_tokens_est
+            total_context_tokens += context_tokens_est
+            answer = _llm_chat(
+                messages=[
+                    {"role": "system", "content": system_prompt},
+                    {"role": "user", "content": user_prompt},
+                ],
+                backend=backend,
+                quota_state=quota_state,
+            )
+            if normalized_search_mode == "local_only" and not has_web_tool and re.search(r"联网搜索|网络搜索|进行网络搜索|经过搜索", answer):
+                total_calls += 1
+                total_input_tokens += input_tokens_est
+                total_prompt_tokens += prompt_tokens_est
+                total_context_tokens += context_tokens_est
+                answer = _llm_chat(
+                    messages=[
+                        {
+                            "role": "system",
+                            "content": system_prompt + "你刚才错误声称做了联网搜索。现在请仅基于当前工具结果重写答案，不要提到网络或搜索引擎。",
+                        },
+                        {"role": "user", "content": user_prompt},
+                    ],
+                    backend=backend,
+                    quota_state=quota_state,
+                )
+            last_exc = None
+            break
+        except Exception as exc:  # noqa: BLE001
+            last_exc = exc
+            if _is_context_length_error(exc) and budget != budgets[-1]:
+                continue
+            raise
+
+    if last_exc is not None:
+        raise last_exc
+
+    if debug_sink is not None and final_debug_request is not None:
+        debug_sink["llm_request"] = final_debug_request
     if llm_stats_sink is not None:
         llm_stats_sink["backend"] = backend
-        llm_stats_sink["input_tokens_est"] = input_tokens_est
-        llm_stats_sink["prompt_tokens_est"] = prompt_tokens_est
-        llm_stats_sink["context_tokens_est"] = context_tokens_est
-        llm_stats_sink["memory_tokens_est"] = _approx_tokens(memory_context)
-        llm_stats_sink["calls"] = 1
-    answer = _llm_chat(
-        messages=[
-            {"role": "system", "content": system_prompt},
-            {"role": "user", "content": user_prompt},
-        ],
-        backend=backend,
-        quota_state=quota_state,
-    )
-    if normalized_search_mode == "local_only" and not has_web_tool and re.search(r"联网搜索|网络搜索|进行网络搜索|经过搜索", answer):
-        if llm_stats_sink is not None:
-            llm_stats_sink["calls"] = int(llm_stats_sink.get("calls", 1) or 1) + 1
-            llm_stats_sink["input_tokens_est"] = int(llm_stats_sink.get("input_tokens_est", 0) or 0) + input_tokens_est
-            llm_stats_sink["prompt_tokens_est"] = int(llm_stats_sink.get("prompt_tokens_est", 0) or 0) + prompt_tokens_est
-            llm_stats_sink["context_tokens_est"] = int(llm_stats_sink.get("context_tokens_est", 0) or 0) + context_tokens_est
-        answer = _llm_chat(
-            messages=[
-                {
-                    "role": "system",
-                    "content": system_prompt + "你刚才错误声称做了联网搜索。现在请仅基于当前工具结果重写答案，不要提到网络或搜索引擎。",
-                },
-                {"role": "user", "content": user_prompt},
-            ],
-            backend=backend,
-            quota_state=quota_state,
-        )
+        llm_stats_sink["input_tokens_est"] = total_input_tokens
+        llm_stats_sink["prompt_tokens_est"] = total_prompt_tokens
+        llm_stats_sink["context_tokens_est"] = total_context_tokens
+        llm_stats_sink["memory_tokens_est"] = _approx_tokens(clipped_memory_context)
+        llm_stats_sink["calls"] = total_calls
     if debug_sink is not None:
         debug_sink["llm_response"] = {
             "trace_id": trace_id,
@@ -2368,6 +4648,77 @@ def _summarize_answer(
     if llm_stats_sink is not None:
         llm_stats_sink["output_tokens_est"] = _approx_tokens(answer)
     return answer
+
+
+def _build_guardrail_flags(
+    query_classification: dict[str, Any],
+    media_validation: dict[str, Any],
+) -> dict[str, bool]:
+    original_question = str(query_classification.get("original_question", "") or "").strip()
+    resolved_state = query_classification.get("resolved_query_state") if isinstance(query_classification.get("resolved_query_state"), dict) else {}
+    carry_over = bool(resolved_state.get("carry_over_from_previous_turn"))
+    intent = str(resolved_state.get("intent", "") or "")
+    raw_candidates_count = int(media_validation.get("raw_candidates_count", 0) or 0)
+    dropped_by_validator = int(media_validation.get("dropped_by_validator", 0) or 0)
+    dropped_by_reference_limit = int(media_validation.get("dropped_by_reference_limit", 0) or 0)
+    returned_result_count = int(media_validation.get("returned_result_count", media_validation.get("post_filter_count", 0)) or 0)
+    short_ambiguous_surface = len(original_question) <= 12 and any(token in original_question for token in ("那个", "这个", "那部", "这部", "那本", "这本"))
+    low_confidence_understanding = bool(original_question) and not carry_over and (
+        (
+            len(original_question) <= 12
+            and not query_classification.get("media_entities")
+            and not resolved_state.get("filters")
+            and not resolved_state.get("media_type")
+        )
+        or short_ambiguous_surface
+    )
+    return {
+        "low_confidence_understanding": low_confidence_understanding,
+        "high_validator_drop_rate": raw_candidates_count > 0 and (dropped_by_validator / raw_candidates_count) >= 0.4,
+        "insufficient_valid_results": intent == "filter_search" and raw_candidates_count > 0 and returned_result_count <= 1,
+        "state_inheritance_ambiguous": bool(query_classification.get("detected_followup")) and not bool(resolved_state.get("carry_over_from_previous_turn")),
+        "answer_truncated_by_reference_limit": dropped_by_reference_limit > 0,
+    }
+
+
+def _build_error_taxonomy(
+    query_classification: dict[str, Any],
+    media_validation: dict[str, Any],
+    guardrail_flags: dict[str, bool],
+) -> dict[str, Any]:
+    validator_drop_reasons = media_validation.get("drop_reasons") if isinstance(media_validation.get("drop_reasons"), dict) else {}
+    dominant_validator_reason = ""
+    dominant_count = -1
+    for reason, count in validator_drop_reasons.items():
+        current_count = int(count or 0)
+        if current_count > dominant_count:
+            dominant_validator_reason = str(reason)
+            dominant_count = current_count
+
+    if guardrail_flags.get("state_inheritance_ambiguous"):
+        layer = "query_understanding"
+        primary_error_type = "state_inheritance_ambiguous"
+    elif guardrail_flags.get("low_confidence_understanding"):
+        layer = "query_understanding"
+        primary_error_type = "low_confidence_understanding"
+    elif dominant_validator_reason:
+        layer = "validation"
+        primary_error_type = dominant_validator_reason
+    elif guardrail_flags.get("insufficient_valid_results"):
+        layer = "retrieval"
+        primary_error_type = "insufficient_valid_results"
+    elif guardrail_flags.get("answer_truncated_by_reference_limit"):
+        layer = "answer_synthesis"
+        primary_error_type = "reference_limit_truncation"
+    else:
+        layer = "none"
+        primary_error_type = "none"
+
+    return {
+        "layer": layer,
+        "primary_error_type": primary_error_type,
+        "dominant_validator_reason": dominant_validator_reason,
+    }
 
 
 def _build_agent_trace_record(
@@ -2393,6 +4744,7 @@ def _build_agent_trace_record(
     llm_seconds: float,
 ) -> dict[str, Any]:
     _, llm_model, _, _ = _get_llm_profile(backend)
+    resolved_query_state = query_classification.get("resolved_query_state") if isinstance(query_classification.get("resolved_query_state"), dict) else {}
     decision_category, decision_path = _build_router_decision_path(
         query_classification=query_classification,
         search_mode=search_mode,
@@ -2406,9 +4758,21 @@ def _build_agent_trace_record(
         if isinstance(batch, dict)
     )
     executed_tool_depth = sum(1 for item in tool_results if str(item.status or "").strip().lower() != "skipped")
+    media_tool_data = next(
+        (item.data for item in tool_results if item.tool == TOOL_QUERY_MEDIA and isinstance(item.data, dict)),
+        {},
+    )
+    media_validation = media_tool_data.get("validation") if isinstance(media_tool_data.get("validation"), dict) else {}
+    candidate_source_breakdown = media_tool_data.get("candidate_source_breakdown") if isinstance(media_tool_data.get("candidate_source_breakdown"), dict) else {}
+    planner_snapshot = query_classification.get("planner_snapshot") if isinstance(query_classification.get("planner_snapshot"), dict) else {}
+    guardrail_flags = _build_guardrail_flags(query_classification, media_validation)
+    error_taxonomy = _build_error_taxonomy(query_classification, media_validation, guardrail_flags)
+    answer_guardrail_mode = query_classification.get("answer_guardrail_mode") if isinstance(query_classification.get("answer_guardrail_mode"), dict) else {}
     router = {
         "selected_tool": planned_tools[0].name if planned_tools else "",
         "planned_tools": [call.name for call in planned_tools],
+        "resolved_question": str(query_classification.get("resolved_question", "") or ""),
+        "detected_intent": str(resolved_query_state.get("intent", "") or ""),
         "decision_category": decision_category,
         "decision_path": decision_path,
         "planned_tool_depth": len(planned_tools),
@@ -2428,6 +4792,14 @@ def _build_agent_trace_record(
         "query_rewrite_status": str(doc_data.get("query_rewrite", {}).get("status", "") or ""),
         "query_rewrite_count": len(list(doc_data.get("query_rewrite", {}).get("queries") or [])),
         "graph_expansion_batches": 0,
+        "raw_candidates_count": int(media_validation.get("raw_candidates_count", 0) or 0),
+        "post_filter_count": int(media_validation.get("post_filter_count", 0) or 0),
+        "returned_result_count": int(media_validation.get("returned_result_count", 0) or 0),
+        "dropped_by_validator": int(media_validation.get("dropped_by_validator", 0) or 0),
+        "dropped_by_reference_limit": int(media_validation.get("dropped_by_reference_limit", 0) or 0),
+        "validator_drop_reasons": media_validation.get("drop_reasons", {}),
+        "reference_limit_drop_reasons": media_validation.get("reference_limit_drop_reasons", {}),
+        "candidate_source_breakdown": candidate_source_breakdown,
     }
     ranking = {
         "method": str(doc_data.get("rerank", {}).get("method", "") or ""),
@@ -2456,6 +4828,26 @@ def _build_agent_trace_record(
         "call_type": "benchmark_case" if benchmark_mode else ("chat_stream" if stream_mode else "chat"),
         "session_id": session_id,
         "search_mode": search_mode,
+        "conversation_state_before": query_classification.get("conversation_state_before", {}),
+        "detected_followup": bool(query_classification.get("detected_followup")),
+        "inheritance_applied": query_classification.get("inheritance_applied", {}),
+        "conversation_state_after": query_classification.get("conversation_state_after", {}),
+        "state_diff": query_classification.get("state_diff", {}),
+        "query_understanding": {
+            "original_question": str(query_classification.get("original_question", "") or ""),
+            "resolved_question": str(query_classification.get("resolved_question", "") or ""),
+            "detected_intent": str(resolved_query_state.get("intent", "") or ""),
+            "entities": list(query_classification.get("media_entities") or []),
+            "filters": resolved_query_state.get("filters", {}),
+            "date_range": resolved_query_state.get("date_range", []),
+            "inherited_context": resolved_query_state.get("inherited_context", {}),
+            "carry_over_from_previous_turn": bool(resolved_query_state.get("carry_over_from_previous_turn")),
+            "retrieval_plan": [call.name for call in planned_tools],
+        },
+        "planner_snapshot": planner_snapshot,
+        "guardrail_flags": guardrail_flags,
+        "error_taxonomy": error_taxonomy,
+        "answer_guardrail_mode": answer_guardrail_mode,
         "query_type": str(query_classification.get("query_type", QUERY_TYPE_GENERAL) or QUERY_TYPE_GENERAL),
         "query_profile": {
             "profile": str(query_profile.get("profile", "medium") or "medium"),
@@ -2509,6 +4901,8 @@ def _fallback_retrieval_answer(question: str, tool_results: list[ToolExecution],
     doc_result = next((x for x in tool_results if x.tool == TOOL_QUERY_DOC_RAG), None)
     media_result = next((x for x in tool_results if x.tool == TOOL_QUERY_MEDIA), None)
     web_result = next((x for x in tool_results if x.tool == TOOL_SEARCH_WEB), None)
+    mediawiki_concept_result = next((x for x in tool_results if x.tool == TOOL_EXPAND_MEDIAWIKI_CONCEPT), None)
+    tmdb_result = next((x for x in tool_results if x.tool == TOOL_SEARCH_TMDB), None)
 
     if doc_result and isinstance(doc_result.data, dict):
         rows = doc_result.data.get("results", [])
@@ -2546,6 +4940,31 @@ def _fallback_retrieval_answer(question: str, tool_results: list[ToolExecution],
                     lines.append(f"- {title}: {url}")
             lines.append("")
 
+    if mediawiki_concept_result and isinstance(mediawiki_concept_result.data, dict):
+        concept = str(mediawiki_concept_result.data.get("concept") or "").strip()
+        countries = mediawiki_concept_result.data.get("countries", []) if isinstance(mediawiki_concept_result.data.get("countries"), list) else []
+        authors = mediawiki_concept_result.data.get("authors", []) if isinstance(mediawiki_concept_result.data.get("authors"), list) else []
+        if concept and (countries or authors):
+            lines.append(f"概念展开结果：{concept}")
+            if countries:
+                lines.append(f"- 关联国家: {', '.join(str(item) for item in countries[:8])}")
+            if authors:
+                lines.append(f"- 关联作者: {', '.join(str(item) for item in authors[:8])}")
+            lines.append("")
+
+    if tmdb_result and isinstance(tmdb_result.data, dict):
+        rows = tmdb_result.data.get("results", [])
+        if rows:
+            lines.append("TMDB 外部媒体结果：")
+            for row in rows[:6]:
+                title = str(row.get("title", "")).strip()
+                media_type = str(row.get("media_type", "")).strip()
+                date = str(row.get("date", "")).strip()
+                if title:
+                    extra = " / ".join([x for x in [media_type, date] if x])
+                    lines.append(f"- {title}{(' (' + extra + ')') if extra else ''}")
+            lines.append("")
+
     if reason:
         if "Missing dependency: openai" in reason:
             lines.append("降级原因：当前环境未安装 `openai` 依赖，已切换到纯检索模式。")
@@ -2555,9 +4974,349 @@ def _fallback_retrieval_answer(question: str, tool_results: list[ToolExecution],
     return "\n".join(lines).strip()
 
 
+def _get_media_validation(tool_results: list[ToolExecution]) -> dict[str, Any]:
+    media_result = next((item for item in tool_results if item.tool == TOOL_QUERY_MEDIA and isinstance(item.data, dict)), None)
+    if media_result is None:
+        return {}
+    validation = media_result.data.get("validation") if isinstance(media_result.data.get("validation"), dict) else {}
+    return dict(validation)
+
+
+def _get_media_result_rows(tool_results: list[ToolExecution]) -> list[dict[str, Any]]:
+    media_result = next((item for item in tool_results if item.tool == TOOL_QUERY_MEDIA and isinstance(item.data, dict)), None)
+    if media_result is None:
+        return []
+    rows = media_result.data.get("results") if isinstance(media_result.data.get("results"), list) else []
+    return [row for row in rows if isinstance(row, dict)]
+
+
+def _format_guardrail_date_range(date_range: Any) -> str:
+    if not isinstance(date_range, list) or len(date_range) != 2:
+        return ""
+    start = str(date_range[0] or "").strip()
+    end = str(date_range[1] or "").strip()
+    if not start or not end:
+        return ""
+    return f"{start} 至 {end}"
+
+
+def _describe_planner_scope(planner_snapshot: dict[str, Any]) -> str:
+    hard_filters = planner_snapshot.get("hard_filters") if isinstance(planner_snapshot.get("hard_filters"), dict) else {}
+    media_type = str(hard_filters.get("media_type", "") or "").strip().lower()
+    category = hard_filters.get("category")
+    if media_type == "anime" or category == "动画" or (isinstance(category, list) and "动画" in category):
+        return "动画番剧"
+    if media_type == "video":
+        return "视频"
+    if media_type == "movie":
+        return "电影"
+    if media_type == "tv":
+        return "剧集"
+    if media_type == "book":
+        return "图书"
+    if media_type == "music":
+        return "音乐"
+    if media_type == "game":
+        return "游戏"
+    entity = str((planner_snapshot.get("query_text") or "") if isinstance(planner_snapshot, dict) else "").strip()
+    if entity:
+        return entity
+    return "筛选条件"
+
+
+def _build_followup_answer_note(query_classification: dict[str, Any]) -> str:
+    if not bool(query_classification.get("detected_followup")):
+        return ""
+    resolved_state = query_classification.get("resolved_query_state") if isinstance(query_classification.get("resolved_query_state"), dict) else {}
+    if not bool(resolved_state.get("carry_over_from_previous_turn")):
+        return ""
+    planner_snapshot = query_classification.get("planner_snapshot") if isinstance(query_classification.get("planner_snapshot"), dict) else {}
+    inheritance = query_classification.get("inheritance_applied") if isinstance(query_classification.get("inheritance_applied"), dict) else {}
+    parts: list[str] = []
+    scope = _describe_planner_scope(planner_snapshot)
+    if inheritance.get("media_type") == "carried_over" or inheritance.get("filters") in {"carried_over", "overridden"}:
+        parts.append(f"沿用了上一轮的{scope}约束")
+    date_range = _format_guardrail_date_range((query_classification.get("conversation_state_after") or {}).get("date_range"))
+    if inheritance.get("date_range") == "overridden" and date_range:
+        parts.append(f"将时间窗替换为 {date_range}")
+    elif inheritance.get("date_range") == "carried_over" and date_range:
+        parts.append(f"保留了时间窗 {date_range}")
+    if inheritance.get("entity") == "cleared":
+        parts.append("清除了上一轮的具体作品实体")
+    if not parts:
+        parts.append("沿用了上一轮的上下文")
+    return "处理说明：" + "，".join(parts) + "。"
+
+
+def _question_requests_personal_evaluation(question: str, query_classification: dict[str, Any] | None = None) -> bool:
+    text = str(question or "").strip()
+    if not text and isinstance(query_classification, dict):
+        text = str(query_classification.get("resolved_question", "") or "").strip()
+    lowered = text.lower()
+    if any(cue in text for cue in ("评价", "评分", "评论", "短评", "看法", "感受", "印象", "我的评价")):
+        return True
+    return any(cue in lowered for cue in ("review", "rating", "comment"))
+
+
+def _question_requests_media_details(question: str, query_classification: dict[str, Any] | None = None) -> bool:
+    text = str(question or "").strip()
+    if not text and isinstance(query_classification, dict):
+        text = str(query_classification.get("resolved_question", "") or "").strip()
+    lowered = text.lower()
+    detail_cues = (
+        "具体细节",
+        "细节信息",
+        "详细信息",
+        "详细资料",
+        "作者",
+        "出版方",
+        "出版社",
+        "发行方",
+        "发行商",
+        "渠道",
+        "平台",
+        "工作室",
+        "厂牌",
+        "制作公司",
+    )
+    if any(cue in text for cue in detail_cues):
+        return True
+    return any(cue in lowered for cue in ("author", "publisher", "channel", "platform", "studio", "detail"))
+
+
+def _format_media_rating(value: Any) -> str:
+    if value in {None, ""}:
+        return ""
+    try:
+        number = float(value)
+    except Exception:
+        return str(value).strip()
+    if number.is_integer():
+        return f"{int(number)}/10"
+    return f"{number:.1f}/10"
+
+
+def _build_media_row_detail_lines(row: dict[str, Any], *, include_review: bool, include_metadata: bool = False) -> list[str]:
+    title = str(row.get("title", "") or "").strip() or "未命名条目"
+    rating = _format_media_rating(row.get("rating"))
+    date = str(row.get("date", "") or "").strip()
+    media_type = str(row.get("media_type", "") or "").strip()
+    meta_parts = [part for part in [f"评分：{rating}" if rating else "", f"日期：{date}" if date else "", media_type] if part]
+    lines = [f"**{title}**"]
+    if meta_parts:
+        lines.append(f"- {' | '.join(meta_parts)}")
+    if include_metadata:
+        author = str(row.get("author", "") or "").strip()
+        publisher = str(row.get("publisher", "") or "").strip()
+        channel = str(row.get("channel", "") or "").strip()
+        category = str(row.get("category", "") or "").strip()
+        detail_parts = [
+            f"作者：{author}" if author else "",
+            f"出版方：{publisher}" if publisher else "",
+            f"渠道：{channel}" if channel else "",
+            f"分类：{category}" if category else "",
+        ]
+        detail_line = " | ".join(part for part in detail_parts if part)
+        if detail_line:
+            lines.append(f"- {detail_line}")
+    review = str(row.get("review", "") or "").strip()
+    if include_review:
+        if review:
+            lines.append(f"- 短评：{review}")
+        else:
+            lines.append("- 短评：未记录")
+    return lines
+
+
+def _build_structured_media_answer(
+    question: str,
+    query_classification: dict[str, Any],
+    tool_results: list[ToolExecution],
+    *,
+    include_guardrail_explanation: bool = False,
+    include_followup_note: bool = False,
+) -> str:
+    rows = _get_media_result_rows(tool_results)
+    if not rows:
+        return ""
+    query_type = str(query_classification.get("query_type", "") or "").strip().upper()
+    if query_type != QUERY_TYPE_MEDIA:
+        return ""
+    non_media_fact_tools = [
+        item for item in tool_results
+        if item.tool not in {TOOL_QUERY_MEDIA, TOOL_EXPAND_MEDIAWIKI_CONCEPT}
+        and isinstance(item.data, dict)
+        and isinstance(item.data.get("results"), list)
+        and item.data.get("results")
+    ]
+    if non_media_fact_tools:
+        return ""
+
+    resolved_state = query_classification.get("resolved_query_state") if isinstance(query_classification.get("resolved_query_state"), dict) else {}
+    resolved_question = str(query_classification.get("resolved_question", "") or question or "").strip()
+    intent = str(resolved_state.get("intent", "") or "").strip()
+    wants_review = _question_requests_personal_evaluation(resolved_question, query_classification)
+    wants_detail = _question_requests_media_details(resolved_question, query_classification)
+    if intent != "filter_search" and not wants_review and not wants_detail:
+        return ""
+
+    validation = _get_media_validation(tool_results)
+    returned_count = int(validation.get("returned_result_count", len(rows)) or 0)
+    planner_snapshot = query_classification.get("planner_snapshot") if isinstance(query_classification.get("planner_snapshot"), dict) else {}
+    scope = _describe_planner_scope(planner_snapshot)
+    lines: list[str] = []
+    followup_note = _build_followup_answer_note(query_classification)
+    if include_followup_note and followup_note:
+        lines.append(followup_note)
+
+    if include_guardrail_explanation:
+        if returned_count > 0:
+            lines.append(f"结果说明：按当前约束严格过滤后，仅找到 {returned_count} 条符合条件的结果。")
+        else:
+            lines.append("结果说明：按当前约束严格过滤后，未找到严格满足条件的结果。")
+        drop_reasons = validation.get("drop_reasons") if isinstance(validation.get("drop_reasons"), dict) else {}
+        missing_release_date = int(drop_reasons.get("missing_release_date", 0) or 0)
+        date_out_of_range = int(drop_reasons.get("date_out_of_range", 0) or 0)
+        if missing_release_date > 0:
+            lines.append(f"有 {missing_release_date} 条候选缺少完整日期，因此未纳入。")
+        if date_out_of_range > 0:
+            lines.append(f"有 {date_out_of_range} 条候选超出时间范围，因此已排除。")
+    elif returned_count > 0:
+        if wants_review and wants_detail:
+            lines.append(f"按当前条件，找到 {returned_count} 条符合条件的{scope}，下面列出你的评分、短评和条目细节。")
+        elif wants_review:
+            lines.append(f"按当前条件，找到 {returned_count} 条符合条件的{scope}，下面优先列出你的评分和短评。")
+        elif wants_detail:
+            lines.append(f"按当前条件，找到 {returned_count} 条符合条件的{scope}，下面列出条目的细节信息。")
+        else:
+            lines.append(f"按当前条件，找到 {returned_count} 条符合条件的{scope}。")
+
+    for index, row in enumerate(rows[: max(1, min(6, len(rows)))], start=1):
+        detail_lines = _build_media_row_detail_lines(row, include_review=wants_review, include_metadata=wants_detail)
+        if not detail_lines:
+            continue
+        first, *rest = detail_lines
+        lines.append(f"{index}. {first}")
+        for item in rest:
+            lines.append(f"   {item}")
+
+    return "\n".join(line for line in lines if str(line).strip()).strip()
+
+
+def _format_media_row_brief(row: dict[str, Any]) -> str:
+    title = str(row.get("title", "") or "").strip()
+    media_type = str(row.get("media_type", "") or "").strip()
+    date = str(row.get("date", "") or "").strip()
+    details = " / ".join(part for part in [media_type, date] if part)
+    if title and details:
+        return f"{title}（{details}）"
+    return title or details
+
+
+def _build_restricted_guardrail_answer(
+    question: str,
+    query_classification: dict[str, Any],
+    tool_results: list[ToolExecution],
+    guardrail_flags: dict[str, bool],
+) -> str:
+    structured = _build_structured_media_answer(
+        question,
+        query_classification,
+        tool_results,
+        include_guardrail_explanation=True,
+        include_followup_note=True,
+    )
+    if structured:
+        return structured
+
+    lines: list[str] = []
+    followup_note = _build_followup_answer_note(query_classification)
+    if followup_note:
+        lines.append(followup_note)
+    validation = _get_media_validation(tool_results)
+    rows = _get_media_result_rows(tool_results)
+    if guardrail_flags.get("low_confidence_understanding"):
+        lines.append("当前问题上下文不够明确，我无法安全判断要沿用哪一轮的对象或筛选条件，因此不直接给出结论。")
+        lines.append("请明确作品名、时间范围或媒体类型后再问一次。")
+        return "\n\n".join(lines).strip()
+
+    returned_count = int(validation.get("returned_result_count", len(rows)) or 0)
+    if returned_count > 0:
+        lines.append(f"结果说明：按当前约束严格过滤后，仅找到 {returned_count} 条符合条件的结果。")
+    else:
+        lines.append("结果说明：按当前约束严格过滤后，未找到严格满足条件的结果。")
+
+    drop_reasons = validation.get("drop_reasons") if isinstance(validation.get("drop_reasons"), dict) else {}
+    missing_release_date = int(drop_reasons.get("missing_release_date", 0) or 0)
+    date_out_of_range = int(drop_reasons.get("date_out_of_range", 0) or 0)
+    if missing_release_date > 0:
+        lines.append(f"有 {missing_release_date} 条候选缺少完整日期，因此未纳入。")
+    if date_out_of_range > 0:
+        lines.append(f"有 {date_out_of_range} 条候选超出时间范围，因此已排除。")
+    if rows:
+        lines.append("严格满足条件的结果：")
+        for row in rows[:4]:
+            brief = _format_media_row_brief(row)
+            if brief:
+                lines.append(f"- {brief}")
+    return "\n".join(lines).strip()
+
+
+def _build_guardrail_answer_mode(
+    question: str,
+    query_classification: dict[str, Any],
+    tool_results: list[ToolExecution],
+    guardrail_flags: dict[str, bool],
+) -> dict[str, Any]:
+    reasons: list[str] = []
+    annotation_lines: list[str] = []
+    if guardrail_flags.get("low_confidence_understanding"):
+        reasons.append("low_confidence_understanding")
+    if guardrail_flags.get("insufficient_valid_results"):
+        reasons.append("insufficient_valid_results")
+    if reasons:
+        return {
+            "mode": "restricted",
+            "reasons": reasons,
+            "answer": _build_restricted_guardrail_answer(question, query_classification, tool_results, guardrail_flags),
+            "annotations": [],
+        }
+
+    followup_note = _build_followup_answer_note(query_classification)
+    if followup_note:
+        annotation_lines.append(followup_note)
+    if guardrail_flags.get("answer_truncated_by_reference_limit"):
+        validation = _get_media_validation(tool_results)
+        returned_count = int(validation.get("returned_result_count", 0) or 0)
+        if returned_count > 0:
+            annotation_lines.append(f"结果说明：以下仅返回严格满足条件的 {returned_count} 条。")
+    mode = "annotated" if annotation_lines else "normal"
+    return {
+        "mode": mode,
+        "reasons": [],
+        "answer": "",
+        "annotations": annotation_lines,
+    }
+
+
+def _apply_guardrail_answer_mode(answer: str, answer_mode: dict[str, Any]) -> str:
+    mode = str(answer_mode.get("mode", "normal") or "normal")
+    if mode == "restricted":
+        return str(answer_mode.get("answer", "") or "").strip()
+    annotations = [str(item).strip() for item in (answer_mode.get("annotations") or []) if str(item).strip()]
+    body = str(answer or "").strip()
+    if annotations and body:
+        return "\n\n".join([*annotations, body]).strip()
+    if annotations:
+        return "\n\n".join(annotations).strip()
+    return body
+
+
 def _build_references_markdown(tool_results: list[ToolExecution], *, request_base_url: str = "") -> str:
     library_ref_base = _library_tracker_reference_base(request_base_url)
-    refs: list[tuple[float, str]] = []
+    doc_refs: list[tuple[float, str]] = []
+    media_refs: list[tuple[float, str]] = []
+    external_refs: list[tuple[float, str]] = []
 
     for result in tool_results:
         if not isinstance(result.data, dict):
@@ -2575,7 +5334,7 @@ def _build_references_markdown(tool_results: list[ToolExecution], *, request_bas
                 if not path or score is None:
                     continue
                 doc_uri = f"doc://{urlparse.quote(path)}"
-                refs.append((score, f"- [文档: {path} ({score:.4f})]({doc_uri})"))
+                doc_refs.append((score, f"- [本地文档: {path} ({score:.4f})]({doc_uri})"))
 
         elif result.tool == TOOL_QUERY_MEDIA:
             for row in rows:
@@ -2592,9 +5351,9 @@ def _build_references_markdown(tool_results: list[ToolExecution], *, request_bas
                     label += f" ({media_type})"
                 if item_id:
                     url = f"{library_ref_base}/?item={urlparse.quote(item_id)}"
-                    refs.append((score, f"- [{label} ({score:.4f})]({url})"))
+                    media_refs.append((score, f"- [本地媒体库: {title}{(' (' + media_type + ')') if media_type else ''} ({score:.4f})]({url})"))
                 else:
-                    refs.append((score, f"- {label} ({score:.4f})"))
+                    media_refs.append((score, f"- 本地媒体库: {label} ({score:.4f})"))
 
         elif result.tool == TOOL_SEARCH_WEB:
             for row in rows:
@@ -2605,13 +5364,57 @@ def _build_references_markdown(tool_results: list[ToolExecution], *, request_bas
                 score = _score_value(row)
                 if not url or score is None:
                     continue
-                refs.append((score, f"- [网页: {title} ({score:.4f})]({url})"))
+                external_refs.append((score, f"- [外部网页: {title} ({score:.4f})]({url})"))
 
-    if not refs:
+        elif result.tool in {TOOL_SEARCH_MEDIAWIKI, TOOL_PARSE_MEDIAWIKI, TOOL_EXPAND_MEDIAWIKI_CONCEPT}:
+            for row in rows:
+                if not isinstance(row, dict):
+                    continue
+                title = str(row.get("display_title") or row.get("title") or "Wikipedia").strip() or "Wikipedia"
+                url = str(row.get("url", "")).strip()
+                score = _score_value(row)
+                if not url:
+                    continue
+                label = f"外部 Wiki: {title}"
+                if score is None:
+                    external_refs.append((0.0, f"- [{label}]({url})"))
+                else:
+                    external_refs.append((score, f"- [{label} ({score:.4f})]({url})"))
+
+        elif result.tool == TOOL_SEARCH_TMDB:
+            for row in rows:
+                if not isinstance(row, dict):
+                    continue
+                title = str(row.get("title") or "TMDB").strip() or "TMDB"
+                media_type = str(row.get("media_type") or "").strip()
+                url = str(row.get("url", "")).strip()
+                score = _score_value(row)
+                if not url:
+                    continue
+                label = f"外部 TMDB: {title}"
+                if media_type:
+                    label += f" ({media_type})"
+                if score is None:
+                    external_refs.append((0.0, f"- [{label}]({url})"))
+                else:
+                    external_refs.append((score, f"- [{label} ({score:.4f})]({url})"))
+
+    if not doc_refs and not media_refs and not external_refs:
         return ""
 
-    lines = [item[1] for item in sorted(refs, key=lambda x: x[0], reverse=True)]
-    return "\n\n### 参考资料\n" + "\n".join(lines)
+    local_limit = max(1, int(MAX_REFERENCE_ITEMS))
+    external_limit = max(1, min(3, int(MAX_REFERENCE_ITEMS)))
+    sections: list[str] = []
+    if media_refs:
+        media_lines = [item[1] for item in sorted(media_refs, key=lambda x: x[0], reverse=True)[:local_limit]]
+        sections.append("### 本地媒体库参考\n" + "\n".join(media_lines))
+    if doc_refs:
+        doc_lines = [item[1] for item in sorted(doc_refs, key=lambda x: x[0], reverse=True)[:local_limit]]
+        sections.append("### 本地文档参考\n" + "\n".join(doc_lines))
+    if external_refs:
+        external_lines = [item[1] for item in sorted(external_refs, key=lambda x: x[0], reverse=True)[:external_limit]]
+        sections.append("### 外部参考\n" + "\n".join(external_lines))
+    return "\n\n" + "\n\n".join(sections)
 
 
 def run_agent_round(
@@ -2648,11 +5451,15 @@ def run_agent_round(
 
         session = get_session(sid)
         if session and str(session.get("title", "")).strip() in {"", "新会话"}:
-            session["title"] = _derive_session_title(q)
-            session["updated_at"] = _now_iso()
-            _save_session(session)
+            if not bool(session.get("title_locked", False)):
+                session["title"] = _derive_session_title(q)
+                session["updated_at"] = _now_iso()
+                _save_session(session)
         if session and isinstance(session.get("messages"), list):
-            hist = [{"role": str(m.get("role", "")), "content": str(m.get("text", ""))} for m in session.get("messages", [])]
+            hist = [
+                {"role": str(m.get("role", "")), "content": str(m.get("text", "")), "trace_id": str(m.get("trace_id", ""))}
+                for m in session.get("messages", [])
+            ]
 
     normalized_search_mode = _normalize_search_mode(search_mode)
     query_profile = _resolve_query_profile(q)
@@ -2700,12 +5507,8 @@ def run_agent_round(
     if not benchmark_mode:
         append_message(sid, "user", q)
 
-    tool_results: list[ToolExecution] = []
     _tool_exec_t0 = _wall_time.perf_counter()
-    with ThreadPoolExecutor(max_workers=max(1, len(allowed_plan))) as pool:
-        future_map = {pool.submit(_execute_tool, call, query_profile, resolved_trace_id): call for call in allowed_plan}
-        for future in as_completed(future_map):
-            tool_results.append(future.result())
+    tool_results = _execute_tool_plan(allowed_plan, query_profile, resolved_trace_id)
     _tool_execution_seconds = _wall_time.perf_counter() - _tool_exec_t0
 
     # Keep planner order in final report.
@@ -2749,7 +5552,15 @@ def run_agent_round(
 
     media_tool_result = next((r for r in tool_results if r.tool == TOOL_QUERY_MEDIA), None)
     media_rows = media_tool_result.data.get("results", []) if (media_tool_result and isinstance(media_tool_result.data, dict)) else []
-    if any(call.name == TOOL_QUERY_MEDIA for call in allowed_plan) and not media_rows:
+    media_validation = _get_media_validation(tool_results)
+    guardrail_flags = _build_guardrail_flags(query_classification, media_validation)
+    answer_mode = _build_guardrail_answer_mode(q, query_classification, tool_results, guardrail_flags)
+    query_classification["guardrail_flags"] = guardrail_flags
+    query_classification["answer_guardrail_mode"] = {
+        "mode": answer_mode.get("mode", "normal"),
+        "reasons": list(answer_mode.get("reasons") or []),
+    }
+    if not benchmark_mode and any(call.name == TOOL_QUERY_MEDIA for call in allowed_plan) and not media_rows:
         _log_agent_media_miss(q, query_profile)
 
     # Quota accounting: only count actual API calls (not cache hits).
@@ -2804,29 +5615,51 @@ def run_agent_round(
     debug_trace["memory_tokens_est"] = _approx_tokens(memory_context)
     _llm_stats: dict[str, Any] = {}
     _llm_t0 = _wall_time.perf_counter()
-    try:
-        answer = _summarize_answer(
-            question=q,
-            history=hist,
-            memory_context=memory_context,
-            tool_results=tool_results,
-            backend=backend,
-            search_mode=normalized_search_mode,
-            quota_state=quota_state,
-            trace_id=resolved_trace_id,
-            debug_sink=debug_trace if debug else None,
-            llm_stats_sink=_llm_stats,
-        )
-    except Exception as exc:  # noqa: BLE001
-        # If local model is unavailable, provide a retrieval-only fallback reply.
-        if (backend or "local").strip().lower() == "local":
-            degraded_to_retrieval = True
-            degrade_reason = str(exc)
-            answer = _fallback_retrieval_answer(q, tool_results, reason=degrade_reason)
-            _llm_stats["output_tokens_est"] = _approx_tokens(answer)
-        else:
-            raise
+    structured_media_answer = _build_structured_media_answer(q, query_classification, tool_results)
+    if str(answer_mode.get("mode", "normal") or "normal") == "restricted":
+        answer = str(answer_mode.get("answer", "") or "").strip()
+        _llm_stats["backend"] = backend
+        _llm_stats["calls"] = 0
+        _llm_stats["input_tokens_est"] = 0
+        _llm_stats["prompt_tokens_est"] = 0
+        _llm_stats["context_tokens_est"] = 0
+        _llm_stats["memory_tokens_est"] = _approx_tokens(memory_context)
+        _llm_stats["output_tokens_est"] = _approx_tokens(answer)
+    elif structured_media_answer:
+        answer = structured_media_answer
+        _llm_stats["backend"] = backend
+        _llm_stats["calls"] = 0
+        _llm_stats["input_tokens_est"] = 0
+        _llm_stats["prompt_tokens_est"] = 0
+        _llm_stats["context_tokens_est"] = 0
+        _llm_stats["memory_tokens_est"] = _approx_tokens(memory_context)
+        _llm_stats["output_tokens_est"] = _approx_tokens(answer)
+    else:
+        try:
+            answer = _summarize_answer(
+                question=q,
+                history=hist,
+                memory_context=memory_context,
+                tool_results=tool_results,
+                backend=backend,
+                search_mode=normalized_search_mode,
+                quota_state=quota_state,
+                trace_id=resolved_trace_id,
+                debug_sink=debug_trace if debug else None,
+                llm_stats_sink=_llm_stats,
+            )
+        except Exception as exc:  # noqa: BLE001
+            # If local model is unavailable, provide a retrieval-only fallback reply.
+            if (backend or "local").strip().lower() == "local":
+                degraded_to_retrieval = True
+                degrade_reason = str(exc)
+                answer = _fallback_retrieval_answer(q, tool_results, reason=degrade_reason)
+                _llm_stats["output_tokens_est"] = _approx_tokens(answer)
+            else:
+                raise
     _llm_seconds = _wall_time.perf_counter() - _llm_t0
+    answer = _apply_guardrail_answer_mode(answer, answer_mode)
+    _llm_stats["output_tokens_est"] = _approx_tokens(answer)
 
     references_md = _build_references_markdown(tool_results, request_base_url=request_base_url)
     final_answer = answer
@@ -2836,6 +5669,7 @@ def run_agent_round(
     if not benchmark_mode:
         append_message(sid, "assistant", final_answer, trace_id=resolved_trace_id)
         _update_memory_for_session(sid)
+        _schedule_generated_session_title(sid, q, final_answer, lock=True)
     if debug:
         debug_trace["final_answer_tokens_est"] = _approx_tokens(final_answer)
         _write_debug_record(sid, debug_trace)
@@ -2867,35 +5701,34 @@ def run_agent_round(
         except Exception:
             pass
 
-    _write_agent_trace_record(
-        _build_agent_trace_record(
-            trace_id=resolved_trace_id,
-            session_id=sid,
-            backend=backend,
-            search_mode=normalized_search_mode,
-            benchmark_mode=benchmark_mode,
-            stream_mode=False,
-            query_profile=query_profile,
-            query_classification=query_classification,
-            planned_tools=planned,
-            tool_results=tool_results,
-            doc_data=_doc_data,
-            timings={
-                "vector_recall_seconds": _doc_vector_recall_s,
-                "rerank_seconds": _doc_rerank_s,
-                "no_context": _agent_no_context,
-                "no_context_reason": _agent_no_context_reason,
-                "doc_score_threshold": _doc_threshold,
-            },
-            llm_stats=_llm_stats,
-            degraded_to_retrieval=degraded_to_retrieval,
-            degrade_reason=degrade_reason,
-            wall_clock_seconds=_wall_time.perf_counter() - _wall_t0,
-            planning_seconds=_planning_seconds,
-            tool_execution_seconds=_tool_execution_seconds,
-            llm_seconds=_llm_seconds,
-        )
+    trace_record = _build_agent_trace_record(
+        trace_id=resolved_trace_id,
+        session_id=sid,
+        backend=backend,
+        search_mode=normalized_search_mode,
+        benchmark_mode=benchmark_mode,
+        stream_mode=False,
+        query_profile=query_profile,
+        query_classification=query_classification,
+        planned_tools=planned,
+        tool_results=tool_results,
+        doc_data=_doc_data,
+        timings={
+            "vector_recall_seconds": _doc_vector_recall_s,
+            "rerank_seconds": _doc_rerank_s,
+            "no_context": _agent_no_context,
+            "no_context_reason": _agent_no_context_reason,
+            "doc_score_threshold": _doc_threshold,
+        },
+        llm_stats=_llm_stats,
+        degraded_to_retrieval=degraded_to_retrieval,
+        degrade_reason=degrade_reason,
+        wall_clock_seconds=_wall_time.perf_counter() - _wall_t0,
+        planning_seconds=_planning_seconds,
+        tool_execution_seconds=_tool_execution_seconds,
+        llm_seconds=_llm_seconds,
     )
+    _write_agent_trace_record(trace_record)
 
     return {
         "requires_confirmation": False,
@@ -2906,6 +5739,15 @@ def run_agent_round(
         "search_mode": normalized_search_mode,
         "query_profile": query_profile,
         "query_classification": query_classification,
+        "conversation_state_before": trace_record.get("conversation_state_before", {}),
+        "detected_followup": bool(trace_record.get("detected_followup")),
+        "inheritance_applied": trace_record.get("inheritance_applied", {}),
+        "conversation_state_after": trace_record.get("conversation_state_after", {}),
+        "state_diff": trace_record.get("state_diff", {}),
+        "planner_snapshot": trace_record.get("planner_snapshot", {}),
+        "guardrail_flags": trace_record.get("guardrail_flags", {}),
+        "error_taxonomy": trace_record.get("error_taxonomy", {}),
+        "answer_guardrail_mode": query_classification.get("answer_guardrail_mode", {}),
         "degraded_to_retrieval": degraded_to_retrieval,
         "degrade_reason": degrade_reason,
         "planned_tools": [{"name": c.name, "query": c.query} for c in planned],
@@ -2979,11 +5821,15 @@ def run_agent_round_stream(
 
             session = get_session(sid)
             if session and str(session.get("title", "")).strip() in {"", "新会话"}:
-                session["title"] = _derive_session_title(q)
-                session["updated_at"] = _now_iso()
-                _save_session(session)
+                if not bool(session.get("title_locked", False)):
+                    session["title"] = _derive_session_title(q)
+                    session["updated_at"] = _now_iso()
+                    _save_session(session)
             if session and isinstance(session.get("messages"), list):
-                hist = [{"role": str(m.get("role", "")), "content": str(m.get("text", ""))} for m in session.get("messages", [])]
+                hist = [
+                    {"role": str(m.get("role", "")), "content": str(m.get("text", "")), "trace_id": str(m.get("trace_id", ""))}
+                    for m in session.get("messages", [])
+                ]
 
         normalized_search_mode = _normalize_search_mode(search_mode)
         query_profile = _resolve_query_profile(q)
@@ -3043,20 +5889,16 @@ def run_agent_round_stream(
 
         yield {"type": "progress", "trace_id": resolved_trace_id, "message": f"正在并行执行 {len(allowed_plan)} 个工具..."}
 
-        tool_results: list[ToolExecution] = []
         _tool_exec_t0 = _wall_time.perf_counter()
-        with ThreadPoolExecutor(max_workers=max(1, len(allowed_plan))) as pool:
-            future_map = {pool.submit(_execute_tool, call, query_profile, resolved_trace_id): call for call in allowed_plan}
-            for future in as_completed(future_map):
-                result = future.result()
-                tool_results.append(result)
-                yield {
-                    "type": "tool_done",
-                    "trace_id": resolved_trace_id,
-                    "tool": result.tool,
-                    "status": result.status,
-                    "summary": result.summary,
-                }
+        tool_results = _execute_tool_plan(allowed_plan, query_profile, resolved_trace_id)
+        for result in tool_results:
+            yield {
+                "type": "tool_done",
+                "trace_id": resolved_trace_id,
+                "tool": result.tool,
+                "status": result.status,
+                "summary": result.summary,
+            }
         _tool_execution_seconds = _wall_time.perf_counter() - _tool_exec_t0
 
         # Keep planner order in final report.
@@ -3098,7 +5940,15 @@ def run_agent_round_stream(
 
         media_tool_result = next((r for r in tool_results if r.tool == TOOL_QUERY_MEDIA), None)
         media_rows = media_tool_result.data.get("results", []) if (media_tool_result and isinstance(media_tool_result.data, dict)) else []
-        if any(call.name == TOOL_QUERY_MEDIA for call in allowed_plan) and not media_rows:
+        media_validation = _get_media_validation(tool_results)
+        guardrail_flags = _build_guardrail_flags(query_classification, media_validation)
+        answer_mode = _build_guardrail_answer_mode(q, query_classification, tool_results, guardrail_flags)
+        query_classification["guardrail_flags"] = guardrail_flags
+        query_classification["answer_guardrail_mode"] = {
+            "mode": answer_mode.get("mode", "normal"),
+            "reasons": list(answer_mode.get("reasons") or []),
+        }
+        if not benchmark_mode and any(call.name == TOOL_QUERY_MEDIA for call in allowed_plan) and not media_rows:
             _log_agent_media_miss(q, query_profile)
 
         web_calls = sum(
@@ -3153,28 +6003,50 @@ def run_agent_round_stream(
         debug_trace["memory_tokens_est"] = _approx_tokens(memory_context)
         _llm_stats: dict[str, Any] = {}
         _llm_t0 = _wall_time.perf_counter()
-        try:
-            answer = _summarize_answer(
-                question=q,
-                history=hist,
-                memory_context=memory_context,
-                tool_results=tool_results,
-                backend=backend,
-                search_mode=normalized_search_mode,
-                quota_state=quota_state,
-                trace_id=resolved_trace_id,
-                debug_sink=debug_trace if debug else None,
-                llm_stats_sink=_llm_stats,
-            )
-        except Exception as exc:  # noqa: BLE001
-            if (backend or "local").strip().lower() == "local":
-                degraded_to_retrieval = True
-                degrade_reason = str(exc)
-                answer = _fallback_retrieval_answer(q, tool_results, reason=degrade_reason)
-                _llm_stats["output_tokens_est"] = _approx_tokens(answer)
-            else:
-                raise
+        structured_media_answer = _build_structured_media_answer(q, query_classification, tool_results)
+        if str(answer_mode.get("mode", "normal") or "normal") == "restricted":
+            answer = str(answer_mode.get("answer", "") or "").strip()
+            _llm_stats["backend"] = backend
+            _llm_stats["calls"] = 0
+            _llm_stats["input_tokens_est"] = 0
+            _llm_stats["prompt_tokens_est"] = 0
+            _llm_stats["context_tokens_est"] = 0
+            _llm_stats["memory_tokens_est"] = _approx_tokens(memory_context)
+            _llm_stats["output_tokens_est"] = _approx_tokens(answer)
+        elif structured_media_answer:
+            answer = structured_media_answer
+            _llm_stats["backend"] = backend
+            _llm_stats["calls"] = 0
+            _llm_stats["input_tokens_est"] = 0
+            _llm_stats["prompt_tokens_est"] = 0
+            _llm_stats["context_tokens_est"] = 0
+            _llm_stats["memory_tokens_est"] = _approx_tokens(memory_context)
+            _llm_stats["output_tokens_est"] = _approx_tokens(answer)
+        else:
+            try:
+                answer = _summarize_answer(
+                    question=q,
+                    history=hist,
+                    memory_context=memory_context,
+                    tool_results=tool_results,
+                    backend=backend,
+                    search_mode=normalized_search_mode,
+                    quota_state=quota_state,
+                    trace_id=resolved_trace_id,
+                    debug_sink=debug_trace if debug else None,
+                    llm_stats_sink=_llm_stats,
+                )
+            except Exception as exc:  # noqa: BLE001
+                if (backend or "local").strip().lower() == "local":
+                    degraded_to_retrieval = True
+                    degrade_reason = str(exc)
+                    answer = _fallback_retrieval_answer(q, tool_results, reason=degrade_reason)
+                    _llm_stats["output_tokens_est"] = _approx_tokens(answer)
+                else:
+                    raise
         _llm_seconds = _wall_time.perf_counter() - _llm_t0
+        answer = _apply_guardrail_answer_mode(answer, answer_mode)
+        _llm_stats["output_tokens_est"] = _approx_tokens(answer)
 
         references_md = _build_references_markdown(tool_results, request_base_url=request_base_url)
         final_answer = answer
@@ -3184,6 +6056,7 @@ def run_agent_round_stream(
         if not benchmark_mode:
             append_message(sid, "assistant", final_answer, trace_id=resolved_trace_id)
             _update_memory_for_session(sid)
+            _schedule_generated_session_title(sid, q, final_answer, lock=True)
         if debug:
             debug_trace["final_answer_tokens_est"] = _approx_tokens(final_answer)
             _write_debug_record(sid, debug_trace)
@@ -3214,35 +6087,34 @@ def run_agent_round_stream(
             except Exception:
                 pass
 
-        _write_agent_trace_record(
-            _build_agent_trace_record(
-                trace_id=resolved_trace_id,
-                session_id=sid,
-                backend=backend,
-                search_mode=normalized_search_mode,
-                benchmark_mode=benchmark_mode,
-                stream_mode=True,
-                query_profile=query_profile,
-                query_classification=query_classification,
-                planned_tools=planned,
-                tool_results=tool_results,
-                doc_data=_doc_data,
-                timings={
-                    "vector_recall_seconds": _doc_vector_recall_s,
-                    "rerank_seconds": _doc_rerank_s,
-                    "no_context": _agent_no_context,
-                    "no_context_reason": _agent_no_context_reason,
-                    "doc_score_threshold": _doc_threshold,
-                },
-                llm_stats=_llm_stats,
-                degraded_to_retrieval=degraded_to_retrieval,
-                degrade_reason=degrade_reason,
-                wall_clock_seconds=_wall_time.perf_counter() - _wall_t0,
-                planning_seconds=_planning_seconds,
-                tool_execution_seconds=_tool_execution_seconds,
-                llm_seconds=_llm_seconds,
-            )
+        trace_record = _build_agent_trace_record(
+            trace_id=resolved_trace_id,
+            session_id=sid,
+            backend=backend,
+            search_mode=normalized_search_mode,
+            benchmark_mode=benchmark_mode,
+            stream_mode=True,
+            query_profile=query_profile,
+            query_classification=query_classification,
+            planned_tools=planned,
+            tool_results=tool_results,
+            doc_data=_doc_data,
+            timings={
+                "vector_recall_seconds": _doc_vector_recall_s,
+                "rerank_seconds": _doc_rerank_s,
+                "no_context": _agent_no_context,
+                "no_context_reason": _agent_no_context_reason,
+                "doc_score_threshold": _doc_threshold,
+            },
+            llm_stats=_llm_stats,
+            degraded_to_retrieval=degraded_to_retrieval,
+            degrade_reason=degrade_reason,
+            wall_clock_seconds=_wall_time.perf_counter() - _wall_t0,
+            planning_seconds=_planning_seconds,
+            tool_execution_seconds=_tool_execution_seconds,
+            llm_seconds=_llm_seconds,
         )
+        _write_agent_trace_record(trace_record)
 
         yield {
             "type": "done",
@@ -3256,6 +6128,15 @@ def run_agent_round_stream(
                 "search_mode": normalized_search_mode,
                 "query_profile": query_profile,
                 "query_classification": query_classification,
+                "conversation_state_before": trace_record.get("conversation_state_before", {}),
+                "detected_followup": bool(trace_record.get("detected_followup")),
+                "inheritance_applied": trace_record.get("inheritance_applied", {}),
+                "conversation_state_after": trace_record.get("conversation_state_after", {}),
+                "state_diff": trace_record.get("state_diff", {}),
+                "planner_snapshot": trace_record.get("planner_snapshot", {}),
+                "guardrail_flags": trace_record.get("guardrail_flags", {}),
+                "error_taxonomy": trace_record.get("error_taxonomy", {}),
+                "answer_guardrail_mode": query_classification.get("answer_guardrail_mode", {}),
                 "degraded_to_retrieval": degraded_to_retrieval,
                 "degrade_reason": degrade_reason,
                 "planned_tools": [{"name": c.name, "query": c.query} for c in planned],

@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import math
 import os
 import re
 import sys
@@ -27,6 +28,7 @@ if str(WORKSPACE_ROOT) not in sys.path:
     sys.path.insert(0, str(WORKSPACE_ROOT))
 
 from api_config import API_BASE_URL, API_KEY, EMBEDDING_MODEL, MODEL, TAVILY_API_KEY, TIMEOUT
+from core_service.config import get_settings
 try:
     from core_service.llm_client import chat_completion, stream_chat_completion_text
 except ModuleNotFoundError:
@@ -103,6 +105,10 @@ from rag_knowledge_graph import expand_query_by_graph, sync_rag_graph
 
 
 DEEPSEEK_AUDIT_DIR = PROJECT_ROOT / "data" / "deepseek_api_audit"
+_CORE_SETTINGS = get_settings()
+DEFAULT_RESPONSE_MAX_TOKENS_WITH_CONTEXT = int(_CORE_SETTINGS.rag_response_max_tokens_with_context)
+DEFAULT_RESPONSE_MAX_TOKENS_NO_CONTEXT = int(_CORE_SETTINGS.rag_response_max_tokens_no_context)
+DEFAULT_LOCAL_ONLY_READ_WEB_CACHE = bool(_CORE_SETTINGS.rag_local_only_read_web_cache)
 DEFAULT_VECTOR_TOP_N = int(os.getenv("AI_SUMMARY_VECTOR_TOP_N", "10"))
 DEFAULT_RERANK_TOP_K = int(os.getenv("AI_SUMMARY_RERANK_TOP_K", "5"))
 DEFAULT_ENABLE_RERANK = os.getenv("AI_SUMMARY_ENABLE_RERANK", "1").strip().lower() not in {
@@ -112,6 +118,28 @@ DEFAULT_ENABLE_RERANK = os.getenv("AI_SUMMARY_ENABLE_RERANK", "1").strip().lower
     "off",
 }
 DEFAULT_RERANKER_MODEL = os.getenv("AI_SUMMARY_RERANKER_MODEL", "BAAI/bge-reranker-base").strip() or "BAAI/bge-reranker-base"
+DEFAULT_MAX_CONTEXT_DOCS = int(os.getenv("AI_SUMMARY_MAX_CONTEXT_DOCS", "6") or "6")
+DEFAULT_ENABLE_RERANK_TOP1_GUARD = os.getenv("AI_SUMMARY_ENABLE_RERANK_TOP1_GUARD", "1").strip().lower() not in {
+    "0",
+    "false",
+    "no",
+    "off",
+}
+DEFAULT_RERANK_GUARD_MAX_TOP1_DROP = float(os.getenv("AI_SUMMARY_RERANK_GUARD_MAX_TOP1_DROP", "0.03") or "0.03")
+DEFAULT_RERANK_GUARD_MAX_TOP1_DROP_RATIO = float(os.getenv("AI_SUMMARY_RERANK_GUARD_MAX_TOP1_DROP_RATIO", "0.08") or "0.08")
+DEFAULT_RERANK_FUSION_ALPHA = float(os.getenv("AI_SUMMARY_RERANK_FUSION_ALPHA", "0.35") or "0.35")
+DEFAULT_ENABLE_DYNAMIC_RERANK_ALPHA = os.getenv("AI_SUMMARY_ENABLE_DYNAMIC_RERANK_ALPHA", "1").strip().lower() not in {
+    "0",
+    "false",
+    "no",
+    "off",
+}
+DEFAULT_DYNAMIC_RERANK_ALPHA_DIFF_SCALE = float(os.getenv("AI_SUMMARY_DYNAMIC_RERANK_ALPHA_DIFF_SCALE", "5.0") or "5.0")
+DEFAULT_DYNAMIC_RERANK_ALPHA_DIFF_CENTER = float(os.getenv("AI_SUMMARY_DYNAMIC_RERANK_ALPHA_DIFF_CENTER", "0.05") or "0.05")
+DEFAULT_RERANK_TOP1_GAP_THRESHOLD = float(os.getenv("AI_SUMMARY_RERANK_TOP1_GAP_THRESHOLD", "0.10") or "0.10")
+DEFAULT_RERANK_STRONG_TOP1_THRESHOLD = float(os.getenv("AI_SUMMARY_RERANK_STRONG_TOP1_THRESHOLD", "0.60") or "0.60")
+DEFAULT_SHORT_QUERY_RERANK_CANDIDATE_K = int(os.getenv("AI_SUMMARY_SHORT_QUERY_RERANK_CANDIDATE_K", "3") or "3")
+DEFAULT_SHORT_QUERY_MAX_CHARS = int(os.getenv("AI_SUMMARY_SHORT_QUERY_MAX_CHARS", "16") or "16")
 DEFAULT_ENABLE_QUERY_REWRITE = os.getenv("AI_SUMMARY_ENABLE_QUERY_REWRITE", "1").strip().lower() not in {
     "0",
     "false",
@@ -163,7 +191,7 @@ def _write_deepseek_audit_log(entry: dict[str, Any]) -> None:
         return
 
 
-def _parse_args() -> argparse.Namespace:
+def _parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     script_dir = Path(__file__).resolve().parent
     root_dir = script_dir.parent
     default_index_dir = os.getenv(
@@ -182,8 +210,73 @@ def _parse_args() -> argparse.Namespace:
     parser.add_argument("--enable-rerank", default="true" if DEFAULT_ENABLE_RERANK else "false", help="Enable reranking: true/false")
     parser.add_argument("--rerank-top-k", type=int, default=max(1, DEFAULT_RERANK_TOP_K), help="Top K kept after reranking")
     parser.add_argument("--reranker-model", default=DEFAULT_RERANKER_MODEL, help="Cross-encoder reranker model")
+    parser.add_argument(
+        "--enable-rerank-top1-guard",
+        default="true" if DEFAULT_ENABLE_RERANK_TOP1_GUARD else "false",
+        help="Protect against rerank swaps that materially lower the original vector top1 score: true/false",
+    )
+    parser.add_argument(
+        "--rerank-guard-max-top1-drop",
+        type=float,
+        default=max(0.0, DEFAULT_RERANK_GUARD_MAX_TOP1_DROP),
+        help="Maximum allowed absolute vector-score drop when rerank changes top1 before guard restores the original top1",
+    )
+    parser.add_argument(
+        "--rerank-guard-max-top1-drop-ratio",
+        type=float,
+        default=max(0.0, DEFAULT_RERANK_GUARD_MAX_TOP1_DROP_RATIO),
+        help="Maximum allowed relative vector-score drop ratio when rerank changes top1 before guard restores the original top1",
+    )
+    parser.add_argument(
+        "--rerank-fusion-alpha",
+        type=float,
+        default=min(1.0, max(0.0, DEFAULT_RERANK_FUSION_ALPHA)),
+        help="Weight assigned to normalized rerank score when fusing rerank and vector score (0..1)",
+    )
+    parser.add_argument(
+        "--enable-dynamic-rerank-alpha",
+        default="true" if DEFAULT_ENABLE_DYNAMIC_RERANK_ALPHA else "false",
+        help="Adapt rerank fusion alpha per query using rerank confidence and vector-gap confidence: true/false",
+    )
+    parser.add_argument(
+        "--dynamic-rerank-alpha-diff-scale",
+        type=float,
+        default=DEFAULT_DYNAMIC_RERANK_ALPHA_DIFF_SCALE,
+        help="Sigmoid scale applied to rerank soft-diff when adapting fusion alpha",
+    )
+    parser.add_argument(
+        "--dynamic-rerank-alpha-diff-center",
+        type=float,
+        default=DEFAULT_DYNAMIC_RERANK_ALPHA_DIFF_CENTER,
+        help="Soft-diff midpoint used by the adaptive fusion alpha sigmoid",
+    )
+    parser.add_argument(
+        "--rerank-top1-gap-threshold",
+        type=float,
+        default=max(0.0, DEFAULT_RERANK_TOP1_GAP_THRESHOLD),
+        help="Block rerank top1 swaps when baseline vector top1-top2 gap exceeds this threshold",
+    )
+    parser.add_argument(
+        "--rerank-strong-top1-threshold",
+        type=float,
+        default=max(0.0, DEFAULT_RERANK_STRONG_TOP1_THRESHOLD),
+        help="Treat vector top1 as strong when its score exceeds this threshold; strong top1 swaps are blocked when the gap is also large",
+    )
+    parser.add_argument(
+        "--short-query-rerank-candidate-k",
+        type=int,
+        default=max(1, DEFAULT_SHORT_QUERY_RERANK_CANDIDATE_K),
+        help="For short queries, only rerank this many top vector candidates",
+    )
+    parser.add_argument(
+        "--short-query-max-chars",
+        type=int,
+        default=max(1, DEFAULT_SHORT_QUERY_MAX_CHARS),
+        help="Queries at or below this length are treated as short for conservative reranking",
+    )
     parser.add_argument("--similarity-threshold", type=float, default=0.5, help="Minimum similarity score to include document (0.0-1.0)")
     parser.add_argument("--max-context-chars", type=int, default=20000, help="Max total context chars")
+    parser.add_argument("--max-context-docs", type=int, default=max(1, DEFAULT_MAX_CONTEXT_DOCS), help="Maximum number of retrieved references included in context")
     parser.add_argument(
         "--max-chars-per-doc",
         type=int,
@@ -241,7 +334,14 @@ def _parse_args() -> argparse.Namespace:
         action="store_true",
         help="When local LLM endpoint is unavailable, degrade to retrieval-only local answer",
     )
-    return parser.parse_args()
+    return parser.parse_args(argv)
+
+
+def build_runtime_args(**overrides: Any) -> argparse.Namespace:
+    args = _parse_args([])
+    for key, value in overrides.items():
+        setattr(args, key, value)
+    return args
 
 
 def _parse_bool_arg(value: object, *, default: bool = False) -> bool:
@@ -567,6 +667,296 @@ def _result_identity(item: dict[str, Any]) -> str:
     return str(item.get("relative_path") or item.get("path") or item.get("file_path") or "").strip()
 
 
+def _vector_score(item: dict[str, Any]) -> float:
+    return float(item.get("vector_score", item.get("score", 0.0)) or 0.0)
+
+
+def _minmax_normalize(values: list[float]) -> list[float]:
+    if not values:
+        return []
+    if len(values) == 1:
+        return [1.0]
+    min_value = min(values)
+    max_value = max(values)
+    spread = max_value - min_value
+    if spread <= 1e-9:
+        return [1.0 for _ in values]
+    return [(value - min_value) / spread for value in values]
+
+
+def _softmax_normalize(values: list[float]) -> list[float]:
+    if not values:
+        return []
+    if len(values) == 1:
+        return [1.0]
+    max_value = max(values)
+    exp_values = [math.exp(max(-50.0, min(50.0, value - max_value))) for value in values]
+    total = sum(exp_values) or 1.0
+    return [value / total for value in exp_values]
+
+
+def _sigmoid(value: float) -> float:
+    clipped = max(-50.0, min(50.0, float(value)))
+    return 1.0 / (1.0 + math.exp(-clipped))
+
+
+def _is_short_query(query: str, *, max_chars: int) -> bool:
+    normalized = str(query or "").strip()
+    if not normalized:
+        return False
+    return len(normalized) <= max(1, int(max_chars)) and not _should_rewrite_query(normalized)
+
+
+def _select_rerank_candidate_count(
+    *,
+    query: str,
+    row_count: int,
+    top_k: int,
+    short_query_candidate_k: int,
+    short_query_max_chars: int,
+) -> tuple[int, str]:
+    if row_count <= 0:
+        return 0, "empty"
+    requested = max(1, min(int(row_count), int(top_k)))
+    if _is_short_query(query, max_chars=short_query_max_chars):
+        return max(1, min(requested, int(short_query_candidate_k))), "short"
+    return requested, "default"
+
+
+def _apply_rerank_score_fusion(ranked_rows: list[dict[str, Any]], *, fusion_alpha: float) -> list[dict[str, Any]]:
+    alpha = min(1.0, max(0.0, float(fusion_alpha)))
+    vector_values = [_vector_score(row) for row in ranked_rows]
+    rerank_values = [float(row.get("rerank_score", 0.0) or 0.0) for row in ranked_rows]
+    vector_norm = _minmax_normalize(vector_values)
+    rerank_norm = _softmax_normalize(rerank_values)
+
+    fused_rows: list[dict[str, Any]] = []
+    for row, vector_score_norm, rerank_score_norm in zip(ranked_rows, vector_norm, rerank_norm):
+        item = dict(row)
+        item["vector_norm_score"] = float(vector_score_norm)
+        item["rerank_norm_score"] = float(rerank_score_norm)
+        item["final_score"] = float(alpha * rerank_score_norm + (1.0 - alpha) * vector_score_norm)
+        fused_rows.append(item)
+    return fused_rows
+
+
+def _compute_dynamic_fusion_alpha(
+    *,
+    baseline_rows: list[dict[str, Any]],
+    rerank_norm_scores: list[float],
+    base_alpha: float,
+    enabled: bool,
+    gap_threshold: float,
+    diff_scale: float,
+    diff_center: float,
+) -> dict[str, Any]:
+    baseline_top1 = _vector_score(baseline_rows[0]) if baseline_rows else 0.0
+    baseline_top2 = _vector_score(baseline_rows[1]) if len(baseline_rows) > 1 else 0.0
+    vector_gap = max(0.0, baseline_top1 - baseline_top2)
+    sorted_rerank = sorted((float(score or 0.0) for score in rerank_norm_scores), reverse=True)
+    rerank_soft_top1 = sorted_rerank[0] if sorted_rerank else 1.0
+    rerank_soft_top2 = sorted_rerank[1] if len(sorted_rerank) > 1 else 0.0
+    rerank_soft_diff = max(0.0, rerank_soft_top1 - rerank_soft_top2)
+    normalized_base_alpha = min(1.0, max(0.0, float(base_alpha)))
+    normalized_gap_threshold = max(0.0, float(gap_threshold))
+
+    if not enabled:
+        return {
+            "base_alpha": normalized_base_alpha,
+            "effective_alpha": normalized_base_alpha,
+            "dynamic_alpha_enabled": False,
+            "vector_gap": vector_gap,
+            "rerank_soft_top1": rerank_soft_top1,
+            "rerank_soft_top2": rerank_soft_top2,
+            "rerank_soft_diff": rerank_soft_diff,
+            "confidence_factor": 1.0,
+            "alpha_reason": "disabled",
+        }
+
+    if vector_gap >= normalized_gap_threshold:
+        return {
+            "base_alpha": normalized_base_alpha,
+            "effective_alpha": 0.0,
+            "dynamic_alpha_enabled": True,
+            "vector_gap": vector_gap,
+            "rerank_soft_top1": rerank_soft_top1,
+            "rerank_soft_top2": rerank_soft_top2,
+            "rerank_soft_diff": rerank_soft_diff,
+            "confidence_factor": 0.0,
+            "alpha_reason": f"vector_gap_block:{vector_gap:.4f}>={normalized_gap_threshold:.4f}",
+        }
+
+    confidence_factor = _sigmoid(float(diff_scale) * (rerank_soft_diff - float(diff_center)))
+    effective_alpha = normalized_base_alpha * confidence_factor
+    return {
+        "base_alpha": normalized_base_alpha,
+        "effective_alpha": effective_alpha,
+        "dynamic_alpha_enabled": True,
+        "vector_gap": vector_gap,
+        "rerank_soft_top1": rerank_soft_top1,
+        "rerank_soft_top2": rerank_soft_top2,
+        "rerank_soft_diff": rerank_soft_diff,
+        "confidence_factor": confidence_factor,
+        "alpha_reason": (
+            f"sigmoid(diff={rerank_soft_diff:.4f},scale={float(diff_scale):.2f},center={float(diff_center):.4f})"
+        ),
+    }
+
+
+def _apply_rerank_top1_guard(
+    *,
+    baseline_rows: list[dict[str, Any]],
+    ranked_rows: list[dict[str, Any]],
+    top_k: int,
+    enabled: bool,
+    max_drop: float,
+    max_drop_ratio: float,
+    top1_gap_threshold: float,
+    strong_top1_threshold: float,
+) -> tuple[list[dict[str, Any]], dict[str, Any]]:
+    guard_info: dict[str, Any] = {
+        "enabled": bool(enabled),
+        "triggered": False,
+        "reason": "",
+        "before_path": "",
+        "after_path": "",
+        "before_vector_score": None,
+        "after_vector_score": None,
+        "vector_delta": None,
+        "vector_drop": None,
+        "vector_drop_ratio": None,
+        "baseline_gap": None,
+        "swap_blocked_by_gap": False,
+        "top1_gap_threshold": max(0.0, float(top1_gap_threshold)),
+        "strong_top1_threshold": max(0.0, float(strong_top1_threshold)),
+    }
+    if not baseline_rows or not ranked_rows:
+        return ranked_rows[: max(1, int(top_k))], guard_info
+
+    before_item = baseline_rows[0]
+    after_item = ranked_rows[0]
+    before_path = _result_identity(before_item)
+    after_path = _result_identity(after_item)
+    before_score = _vector_score(before_item)
+    after_score = _vector_score(after_item)
+    second_score = _vector_score(baseline_rows[1]) if len(baseline_rows) > 1 else 0.0
+    baseline_gap = max(0.0, before_score - second_score)
+    vector_delta = after_score - before_score
+    vector_drop = max(0.0, before_score - after_score)
+    vector_drop_ratio = (vector_drop / before_score) if before_score > 1e-9 else 0.0
+    guard_info.update(
+        {
+            "before_path": before_path,
+            "after_path": after_path,
+            "before_vector_score": before_score,
+            "after_vector_score": after_score,
+            "vector_delta": vector_delta,
+            "vector_drop": vector_drop,
+            "vector_drop_ratio": vector_drop_ratio,
+            "baseline_gap": baseline_gap,
+        }
+    )
+    if not enabled or not before_path or not after_path or before_path == after_path:
+        return ranked_rows[: max(1, int(top_k))], guard_info
+
+    if before_score >= max(0.0, strong_top1_threshold) and baseline_gap >= max(0.0, top1_gap_threshold):
+        original_top1 = next((row for row in ranked_rows if _result_identity(row) == before_path), None)
+        if original_top1 is None:
+            original_top1 = dict(before_item)
+            original_top1["vector_score"] = _vector_score(original_top1)
+            original_top1["score"] = _vector_score(original_top1)
+        guarded_rows = [dict(original_top1)]
+        guarded_rows.extend(dict(row) for row in ranked_rows if _result_identity(row) != before_path)
+        guard_info["triggered"] = True
+        guard_info["swap_blocked_by_gap"] = True
+        guard_info["reason"] = (
+            f"swap_blocked: strong_vector_top1 gap={baseline_gap:.4f} "
+            f"thresholds=({max(0.0, top1_gap_threshold):.4f}, {max(0.0, strong_top1_threshold):.4f})"
+        )
+        return guarded_rows[: max(1, int(top_k))], guard_info
+
+    if vector_drop <= 0:
+        return ranked_rows[: max(1, int(top_k))], guard_info
+
+    if vector_drop <= max(0.0, max_drop) and vector_drop_ratio <= max(0.0, max_drop_ratio):
+        return ranked_rows[: max(1, int(top_k))], guard_info
+
+    original_top1 = next((row for row in ranked_rows if _result_identity(row) == before_path), None)
+    if original_top1 is None:
+        original_top1 = dict(before_item)
+        original_top1["vector_score"] = _vector_score(original_top1)
+        original_top1["score"] = _vector_score(original_top1)
+
+    guarded_rows = [dict(original_top1)]
+    guarded_rows.extend(dict(row) for row in ranked_rows if _result_identity(row) != before_path)
+    guard_info["triggered"] = True
+    guard_info["reason"] = (
+        f"swap_blocked: vector_drop={vector_drop:.4f} ratio={vector_drop_ratio:.4f} "
+        f"limits=({max(0.0, max_drop):.4f}, {max(0.0, max_drop_ratio):.4f})"
+    )
+    return guarded_rows[: max(1, int(top_k))], guard_info
+
+
+def _finalize_reranked_rows(
+    *,
+    baseline_rows: list[dict[str, Any]],
+    ranked_rows: list[dict[str, Any]],
+    top_k: int,
+    status: str,
+    guard_enabled: bool,
+    guard_max_drop: float,
+    guard_max_drop_ratio: float,
+    fusion_alpha: float,
+    dynamic_alpha_enabled: bool,
+    dynamic_alpha_diff_scale: float,
+    dynamic_alpha_diff_center: float,
+    top1_gap_threshold: float,
+    strong_top1_threshold: float,
+) -> tuple[list[dict[str, Any]], str, dict[str, Any]]:
+    rerank_norm_scores = _softmax_normalize([float(row.get("rerank_score", 0.0) or 0.0) for row in ranked_rows])
+    alpha_info = _compute_dynamic_fusion_alpha(
+        baseline_rows=baseline_rows,
+        rerank_norm_scores=rerank_norm_scores,
+        base_alpha=fusion_alpha,
+        enabled=dynamic_alpha_enabled,
+        gap_threshold=top1_gap_threshold,
+        diff_scale=dynamic_alpha_diff_scale,
+        diff_center=dynamic_alpha_diff_center,
+    )
+    fused_rows = _apply_rerank_score_fusion(ranked_rows, fusion_alpha=float(alpha_info.get("effective_alpha", fusion_alpha) or 0.0))
+    sorted_rows = sorted(
+        fused_rows,
+        key=lambda x: (
+            float(x.get("final_score", x.get("rerank_score", 0.0)) or 0.0),
+            float(x.get("rerank_score", 0.0) or 0.0),
+            _vector_score(x),
+        ),
+        reverse=True,
+    )
+    final_rows, guard_info = _apply_rerank_top1_guard(
+        baseline_rows=baseline_rows,
+        ranked_rows=sorted_rows,
+        top_k=top_k,
+        enabled=guard_enabled,
+        max_drop=guard_max_drop,
+        max_drop_ratio=guard_max_drop_ratio,
+        top1_gap_threshold=top1_gap_threshold,
+        strong_top1_threshold=strong_top1_threshold,
+    )
+    guard_info["fusion_alpha"] = float(alpha_info.get("effective_alpha", fusion_alpha) or 0.0)
+    guard_info["fusion_alpha_base"] = float(alpha_info.get("base_alpha", fusion_alpha) or 0.0)
+    guard_info["dynamic_alpha_enabled"] = bool(alpha_info.get("dynamic_alpha_enabled"))
+    guard_info["rerank_soft_top1"] = alpha_info.get("rerank_soft_top1")
+    guard_info["rerank_soft_top2"] = alpha_info.get("rerank_soft_top2")
+    guard_info["rerank_soft_diff"] = alpha_info.get("rerank_soft_diff")
+    guard_info["rerank_confidence_factor"] = alpha_info.get("confidence_factor")
+    guard_info["fusion_alpha_reason"] = str(alpha_info.get("alpha_reason", "") or "")
+    final_status = status
+    if guard_info.get("triggered"):
+        final_status = f"{status}|top1_guard"
+    return final_rows, final_status, guard_info
+
+
 def _rerank_local_rows(
     *,
     query: str,
@@ -575,15 +965,45 @@ def _rerank_local_rows(
     top_k: int,
     reranker_model: str,
     embedding_model: str,
+    guard_enabled: bool,
+    guard_max_drop: float,
+    guard_max_drop_ratio: float,
+    fusion_alpha: float,
+    dynamic_alpha_enabled: bool,
+    dynamic_alpha_diff_scale: float,
+    dynamic_alpha_diff_center: float,
+    top1_gap_threshold: float,
+    strong_top1_threshold: float,
+    short_query_candidate_k: int,
+    short_query_max_chars: int,
     reranker_server_url: str = "",
-) -> tuple[list[dict[str, Any]], str, float, float]:
-    """Returns (rows, status, infer_seconds, load_seconds).
+) -> tuple[list[dict[str, Any]], str, float, float, dict[str, Any]]:
+    """Returns (rows, status, infer_seconds, load_seconds, guard_info).
 
     infer_seconds = time spent only inside reranker.predict() / sidecar call
     load_seconds  = time cold-loading the model (0 if sidecar is used or cache hit)
     """
     if not rows:
-        return [], "empty_input", 0.0, 0.0
+        return [], "empty_input", 0.0, 0.0, {"enabled": bool(guard_enabled), "triggered": False, "reason": "empty_input"}
+
+    candidate_count, candidate_profile = _select_rerank_candidate_count(
+        query=query,
+        row_count=len(rows),
+        top_k=top_k,
+        short_query_candidate_k=short_query_candidate_k,
+        short_query_max_chars=short_query_max_chars,
+    )
+    candidate_rows = [dict(row) for row in rows[:candidate_count]]
+    tail_rows = [dict(row) for row in rows[candidate_count:]]
+
+    if not candidate_rows:
+        return [], "empty_candidates", 0.0, 0.0, {
+            "enabled": bool(guard_enabled),
+            "triggered": False,
+            "reason": "empty_candidates",
+            "candidate_count": 0,
+            "candidate_profile": candidate_profile,
+        }
 
     # ─ Path A: delegate to the in-process reranker sidecar (zero cold-load) ─
     if reranker_server_url:
@@ -591,7 +1011,7 @@ def _rerank_local_rows(
             from urllib import request as _urlreq  # noqa: PLC0415
 
             pairs: list[tuple[str, str]] = [
-                (query, _build_rerank_text(row, documents_dir)) for row in rows
+                (query, _build_rerank_text(row, documents_dir)) for row in candidate_rows
             ]
             body = json.dumps(
                 {"model": reranker_model, "pairs": pairs}, ensure_ascii=False
@@ -613,14 +1033,31 @@ def _rerank_local_rows(
 
             scores = result["scores"]
             ranked_rows: list[dict[str, Any]] = []
-            for row, score in zip(rows, scores):
+            for row, score in zip(candidate_rows, scores):
                 item = dict(row)
                 item["vector_score"] = float(item.get("vector_score", item.get("score", 0.0)))
                 item["rerank_score"] = float(score)
                 item["score"] = float(item.get("vector_score", item.get("score", 0.0)))
                 ranked_rows.append(item)
-            ranked_rows.sort(key=lambda x: float(x.get("rerank_score", 0.0)), reverse=True)
-            return ranked_rows[: max(1, int(top_k))], "sidecar", _infer_elapsed, 0.0
+            reranked_candidates, final_status, guard_info = _finalize_reranked_rows(
+                baseline_rows=candidate_rows,
+                ranked_rows=ranked_rows,
+                top_k=candidate_count,
+                status="sidecar",
+                guard_enabled=guard_enabled,
+                guard_max_drop=guard_max_drop,
+                guard_max_drop_ratio=guard_max_drop_ratio,
+                fusion_alpha=fusion_alpha,
+                dynamic_alpha_enabled=dynamic_alpha_enabled,
+                dynamic_alpha_diff_scale=dynamic_alpha_diff_scale,
+                dynamic_alpha_diff_center=dynamic_alpha_diff_center,
+                top1_gap_threshold=top1_gap_threshold,
+                strong_top1_threshold=strong_top1_threshold,
+            )
+            guard_info["candidate_count"] = candidate_count
+            guard_info["candidate_profile"] = candidate_profile
+            final_rows = reranked_candidates + tail_rows
+            return final_rows, final_status, _infer_elapsed, 0.0, guard_info
         except Exception as _sidecar_exc:  # noqa: BLE001
             print(f"PROGRESS: 重排 sidecar 调用失败（{_sidecar_exc}），正在降级为本地模型加载...", flush=True)
             # fall through to local model load
@@ -635,7 +1072,7 @@ def _rerank_local_rows(
         _load_elapsed = time.perf_counter() - _load_t0
 
         pairs = []
-        for row in rows:
+        for row in candidate_rows:
             doc_text = _build_rerank_text(row, documents_dir)
             pairs.append((query, doc_text))
 
@@ -644,19 +1081,36 @@ def _rerank_local_rows(
         _infer_elapsed = time.perf_counter() - _infer_t0
 
         ranked_rows = []
-        for row, score in zip(rows, scores):
+        for row, score in zip(candidate_rows, scores):
             item = dict(row)
             item["vector_score"] = float(item.get("vector_score", item.get("score", 0.0)))
             item["rerank_score"] = float(score)
             item["score"] = float(item.get("vector_score", item.get("score", 0.0)))
             ranked_rows.append(item)
 
-        ranked_rows.sort(key=lambda x: float(x.get("rerank_score", 0.0)), reverse=True)
-        return ranked_rows[: max(1, int(top_k))], "ok", _infer_elapsed, _load_elapsed
+        reranked_candidates, final_status, guard_info = _finalize_reranked_rows(
+            baseline_rows=candidate_rows,
+            ranked_rows=ranked_rows,
+            top_k=candidate_count,
+            status="ok",
+            guard_enabled=guard_enabled,
+            guard_max_drop=guard_max_drop,
+            guard_max_drop_ratio=guard_max_drop_ratio,
+            fusion_alpha=fusion_alpha,
+            dynamic_alpha_enabled=dynamic_alpha_enabled,
+            dynamic_alpha_diff_scale=dynamic_alpha_diff_scale,
+            dynamic_alpha_diff_center=dynamic_alpha_diff_center,
+            top1_gap_threshold=top1_gap_threshold,
+            strong_top1_threshold=strong_top1_threshold,
+        )
+        guard_info["candidate_count"] = candidate_count
+        guard_info["candidate_profile"] = candidate_profile
+        final_rows = reranked_candidates + tail_rows
+        return final_rows, final_status, _infer_elapsed, _load_elapsed, guard_info
     except Exception as cross_exc:  # noqa: BLE001
         try:
             normalized_model = _normalize_embedding_model_value(embedding_model)
-            texts = [_build_rerank_text(row, documents_dir) for row in rows]
+            texts = [_build_rerank_text(row, documents_dir) for row in candidate_rows]
             vectors = _embed_texts_local([query] + texts, model=normalized_model, batch_size=32)
             query_vec = vectors[0]
             doc_vecs = vectors[1:]
@@ -666,7 +1120,7 @@ def _rerank_local_rows(
 
             qn = _norm(query_vec) or 1e-12
             ranked_rows: list[dict[str, Any]] = []
-            for row, vec in zip(rows, doc_vecs):
+            for row, vec in zip(candidate_rows, doc_vecs):
                 dn = _norm(vec) or 1e-12
                 score = sum(a * b for a, b in zip(query_vec, vec)) / (qn * dn)
                 item = dict(row)
@@ -675,11 +1129,40 @@ def _rerank_local_rows(
                 item["score"] = float(item.get("vector_score", item.get("score", 0.0)))
                 ranked_rows.append(item)
 
-            ranked_rows.sort(key=lambda x: float(x.get("rerank_score", 0.0)), reverse=True)
-            return ranked_rows[: max(1, int(top_k))], f"fallback_embedding:{cross_exc}", 0.0, 0.0
+            reranked_candidates, final_status, guard_info = _finalize_reranked_rows(
+                baseline_rows=candidate_rows,
+                ranked_rows=ranked_rows,
+                top_k=candidate_count,
+                status=f"fallback_embedding:{cross_exc}",
+                guard_enabled=guard_enabled,
+                guard_max_drop=guard_max_drop,
+                guard_max_drop_ratio=guard_max_drop_ratio,
+                fusion_alpha=fusion_alpha,
+                dynamic_alpha_enabled=dynamic_alpha_enabled,
+                dynamic_alpha_diff_scale=dynamic_alpha_diff_scale,
+                dynamic_alpha_diff_center=dynamic_alpha_diff_center,
+                top1_gap_threshold=top1_gap_threshold,
+                strong_top1_threshold=strong_top1_threshold,
+            )
+            guard_info["candidate_count"] = candidate_count
+            guard_info["candidate_profile"] = candidate_profile
+            final_rows = reranked_candidates + tail_rows
+            return final_rows, final_status, 0.0, 0.0, guard_info
         except Exception as embed_exc:  # noqa: BLE001
             fallback = sorted(rows, key=lambda x: float(x.get("score", 0.0)), reverse=True)
-            return fallback[: max(1, int(top_k))], f"failed:{cross_exc}; fallback_failed:{embed_exc}", 0.0, 0.0
+            return (
+                fallback[: max(1, int(top_k))],
+                f"failed:{cross_exc}; fallback_failed:{embed_exc}",
+                0.0,
+                0.0,
+                {
+                    "enabled": bool(guard_enabled),
+                    "triggered": False,
+                    "reason": "fallback_vector_order",
+                    "candidate_count": candidate_count,
+                    "candidate_profile": candidate_profile,
+                },
+            )
 
 
 def _is_local_llm_unavailable_error(message: str) -> bool:
@@ -781,6 +1264,7 @@ def _search_web_tavily(
     query: str,
     max_results: int,
     tavily_api_key: str,
+    allow_network: bool = True,
 ) -> tuple[list[dict[str, Any]], str]:
     key = (tavily_api_key or "").strip() or os.getenv("TAVILY_API_KEY", "").strip()
     if not key:
@@ -796,6 +1280,9 @@ def _search_web_tavily(
             return _cached, "cache_hit"
     except Exception:
         _wcache = None
+
+    if not allow_network:
+        return [], "disabled_cache_only"
 
     try:
         from langchain_tavily import TavilySearch
@@ -891,6 +1378,7 @@ def _load_context(
     results: list[dict[str, Any]],
     documents_dir: Path,
     max_context_chars: int,
+    max_context_docs: int,
     max_chars_per_doc: int,
     similarity_threshold: float = 0.0,
     context_mode: str = "topic",
@@ -919,7 +1407,7 @@ def _load_context(
 
     mode = (context_mode or "topic").strip().lower()
 
-    for i, item in enumerate(filtered_results, start=1):
+    for i, item in enumerate(filtered_results[: max(1, int(max_context_docs))], start=1):
         if mode == "topic":
             segment, used_doc = _build_topic_context_segment(item, i)
             segment = segment + "\n"
@@ -964,6 +1452,7 @@ def _append_web_context(
     used_docs: list[dict[str, Any]],
     web_results: list[dict[str, Any]],
     max_context_chars: int,
+    max_context_docs: int,
 ) -> tuple[str, list[dict[str, Any]]]:
     if not web_results:
         return context_text, used_docs
@@ -973,7 +1462,8 @@ def _append_web_context(
     next_index = len(used_docs) + 1
     docs = list(used_docs)
 
-    for item in web_results:
+    remaining_slots = max(0, int(max_context_docs) - len(docs))
+    for item in web_results[:remaining_slots]:
         title = str(item.get("title", "")).strip() or "web_result"
         url = str(item.get("url", "")).strip() or ""
         content = str(item.get("content", "")).strip()
@@ -1013,6 +1503,7 @@ def _load_context_hybrid(
     rows: list[dict[str, Any]],
     documents_dir: Path,
     max_context_chars: int,
+    max_context_docs: int,
     max_chars_per_doc: int,
     similarity_threshold: float = 0.0,
     context_mode: str = "topic",
@@ -1039,6 +1530,8 @@ def _load_context_hybrid(
     idx = 1
 
     for item in sorted_rows:
+        if len(used_docs) >= max(1, int(max_context_docs)):
+            break
         source = str(item.get("source", "local")).strip().lower()
         score = float(item.get("score", 0.0))
 
@@ -1119,6 +1612,7 @@ def _ask_llm(
     call_type: str = "answer",
     memory_context: str = "",
     stream: bool = False,
+    stream_callback: Any = None,
     trace_id: str = "",
     debug_trace: dict[str, Any] | None = None,
     llm_stats_sink: dict[str, Any] | None = None,
@@ -1126,7 +1620,7 @@ def _ask_llm(
     if not api_url or not api_key or not model:
         raise RuntimeError("Missing API settings: api_url/api_key/model are required")
 
-    response_max_tokens = 900 if context_text.strip() else 1100
+    response_max_tokens = DEFAULT_RESPONSE_MAX_TOKENS_WITH_CONTEXT if context_text.strip() else DEFAULT_RESPONSE_MAX_TOKENS_NO_CONTEXT
 
     system_prompt = (
         "你是一个知识助手，回答原则“\n"
@@ -1198,6 +1692,7 @@ def _ask_llm(
     if llm_stats_sink is not None:
         llm_stats_sink["api_url"] = api_url
         llm_stats_sink["model"] = model
+        llm_stats_sink["response_max_tokens"] = response_max_tokens
         llm_stats_sink["input_tokens_est"] = input_tokens_est
         llm_stats_sink["prompt_tokens_est"] = prompt_tokens_est
         llm_stats_sink["context_tokens_est"] = context_tokens_est
@@ -1229,6 +1724,7 @@ def _ask_llm(
                         "call_type": call_type,
                         "stream": True,
                         "request_messages": request_messages,
+                        "response_max_tokens": response_max_tokens,
                         "response_text": "",
                         "error": str(exc),
                     }
@@ -1239,8 +1735,11 @@ def _ask_llm(
         try:
             for content in response_stream:
                 answer_chunks.append(content)
-                # Output chunk as JSON on a single line so embedded newlines are preserved.
-                print(f"STREAM_CHUNK_JSON: {json.dumps(content, ensure_ascii=False)}", flush=True)
+                if callable(stream_callback):
+                    stream_callback(str(content))
+                else:
+                    # Output chunk as JSON on a single line so embedded newlines are preserved.
+                    print(f"STREAM_CHUNK_JSON: {json.dumps(content, ensure_ascii=False)}", flush=True)
         except Exception as exc:  # noqa: BLE001
             if should_audit:
                 _write_deepseek_audit_log(
@@ -1254,6 +1753,7 @@ def _ask_llm(
                         "call_type": call_type,
                         "stream": True,
                         "request_messages": request_messages,
+                        "response_max_tokens": response_max_tokens,
                         "response_text": "".join(answer_chunks),
                         "error": str(exc),
                     }
@@ -1263,13 +1763,24 @@ def _ask_llm(
         answer = "".join(answer_chunks).strip()
         if not answer:
             raise RuntimeError("LLM response text is empty")
+        output_tokens_est = _approx_tokens(answer)
+        truncation_suspected = (
+            output_tokens_est >= max(200, int(response_max_tokens * 0.9))
+            and not re.search(r"[。！？.!?）)】\]」』>]\s*$", answer)
+        )
+        if truncation_suspected:
+            answer += "\n\n_[回答可能因长度上限被截断，可继续追问“继续”获取后续内容]_"
+            output_tokens_est = _approx_tokens(answer)
         if debug_trace is not None:
             debug_trace["llm_response"] = {
                 "trace_id": request_id,
-                "output_tokens_est": _approx_tokens(answer),
+                "response_max_tokens": response_max_tokens,
+                "output_tokens_est": output_tokens_est,
+                "truncation_suspected": truncation_suspected,
             }
         if llm_stats_sink is not None:
-            llm_stats_sink["output_tokens_est"] = _approx_tokens(answer)
+            llm_stats_sink["output_tokens_est"] = output_tokens_est
+            llm_stats_sink["truncation_suspected"] = truncation_suspected
         if should_audit:
             _write_deepseek_audit_log(
                 {
@@ -1282,6 +1793,9 @@ def _ask_llm(
                     "call_type": call_type,
                     "stream": True,
                     "request_messages": request_messages,
+                    "response_max_tokens": response_max_tokens,
+                    "output_tokens_est": output_tokens_est,
+                    "truncation_suspected": truncation_suspected,
                     "response_text": answer,
                     "error": "",
                 }
@@ -1312,11 +1826,20 @@ def _ask_llm(
                         "call_type": call_type,
                         "stream": False,
                         "request_messages": request_messages,
+                        "response_max_tokens": response_max_tokens,
                         "response_text": "",
                         "error": str(exc),
                     }
                 )
             raise RuntimeError(str(exc)) from exc
+        output_tokens_est = _approx_tokens(answer)
+        truncation_suspected = (
+            output_tokens_est >= max(200, int(response_max_tokens * 0.9))
+            and not re.search(r"[。！？.!?）)】\]」』>]\s*$", answer)
+        )
+        if truncation_suspected:
+            answer += "\n\n_[回答可能因长度上限被截断，可继续追问“继续”获取后续内容]_"
+            output_tokens_est = _approx_tokens(answer)
         if should_audit:
             _write_deepseek_audit_log(
                 {
@@ -1329,6 +1852,9 @@ def _ask_llm(
                     "call_type": call_type,
                     "stream": False,
                     "request_messages": request_messages,
+                    "response_max_tokens": response_max_tokens,
+                    "output_tokens_est": output_tokens_est,
+                    "truncation_suspected": truncation_suspected,
                     "response_text": answer,
                     "error": "",
                 }
@@ -1336,25 +1862,35 @@ def _ask_llm(
         if debug_trace is not None:
             debug_trace["llm_response"] = {
                 "trace_id": request_id,
-                "output_tokens_est": _approx_tokens(answer),
+                "response_max_tokens": response_max_tokens,
+                "output_tokens_est": output_tokens_est,
+                "truncation_suspected": truncation_suspected,
             }
         if llm_stats_sink is not None:
-            llm_stats_sink["output_tokens_est"] = _approx_tokens(answer)
+            llm_stats_sink["output_tokens_est"] = output_tokens_est
+            llm_stats_sink["truncation_suspected"] = truncation_suspected
         return answer
 
 
-def _fallback_session_title(question: str, max_len: int = 16) -> str:
+def _fallback_session_title(question: str, max_len: int | None = None) -> str:
     normalized = " ".join((question or "").split())
+    normalized = re.sub(r"^(请|帮我|请帮我|麻烦|比较|请比较|分析|请分析|解释|请解释|说明|请说明)\s*", "", normalized)
+    normalized = normalized.strip("，。！？!?；;:： ")
     if not normalized:
         return "未命名会话"
+    if max_len is None or max_len <= 0 or len(normalized) <= max_len:
+        return normalized
     return normalized[:max_len]
 
 
 def _generate_session_title(question: str, answer: str, api_key: str, api_url: str, model: str, timeout: int) -> str:
-    """Use LLM to generate a concise 15-character session title."""
+    """Use LLM to generate an informative session title without hard truncation."""
 
     title_prompt = (
-        f"请根据以下问答生成一个15字以内的简短标题，直接输出标题即可，不要加引号或其他说明。\n\n"
+        f"请根据以下问答生成一个信息密度高、不要照抄提问开头的中文标题。"
+        f"保留关键限定词，一般 10 到 20 字即可。"
+        f"如果问题是在比较多个对象，请优先总结比较主题或对象类别。"
+        f"直接输出标题，不要加引号、句号或其他说明。\n\n"
         f"问题：{question[:200]}\n"
         f"回答：{answer[:300]}\n\n"
         f"标题："
@@ -1375,35 +1911,60 @@ def _generate_session_title(question: str, answer: str, api_key: str, api_url: s
         )
         # Remove quotes if LLM added them.
         title = title.strip('"\'《》〈〉')
-        if title and len(title) <= 30:
-            return title[:15]
+        if title:
+            return title
     except Exception:
         pass
     
-    return _fallback_session_title(question, 15)
+    return _fallback_session_title(question)
 
 
-def main() -> None:
-    _configure_stdio_utf8()
-    args = _parse_args()
+def generate_session_title(question: str, answer: str, *, api_key: str, api_url: str, model: str, timeout: int) -> str:
+    return _generate_session_title(question, answer, api_key=api_key, api_url=api_url, model=model, timeout=timeout)
 
+
+def _emit_progress(args: argparse.Namespace, message: str, progress_callback: Any = None) -> None:
+    if not getattr(args, "stream", False):
+        return
+    text = str(message or "").strip()
+    if not text:
+        return
+    if callable(progress_callback):
+        progress_callback(text)
+        return
+    print(f"PROGRESS: {text}", flush=True)
+
+
+def _emit_stream_chunk(args: argparse.Namespace, content: str, stream_callback: Any = None) -> None:
+    if not getattr(args, "stream", False):
+        return
+    text = str(content or "")
+    if not text:
+        return
+    if callable(stream_callback):
+        stream_callback(text)
+        return
+    print(f"STREAM_CHUNK_JSON: {json.dumps(text, ensure_ascii=False)}", flush=True)
+
+
+def run_rag_query(
+    args: argparse.Namespace,
+    *,
+    progress_callback: Any = None,
+    stream_callback: Any = None,
+) -> dict[str, Any]:
     # Propagate embedding sidecar URL to rag_vector_index via env var.
     _embed_server_url = str(getattr(args, "embed_server_url", "") or "").strip()
     if _embed_server_url:
         os.environ["_RAG_EMBED_SIDECAR_URL"] = _embed_server_url
 
-    question = (args.question or "").strip()
-    if not question:
-        question = sys.stdin.read().strip()
+    question = (getattr(args, "question", "") or "").strip()
     if not question:
         raise RuntimeError("Question is empty")
 
     t0 = time.perf_counter()
-    
-    # Output progress for GUI streaming mode.
-    if args.stream:
-        print("PROGRESS: 正在检查索引并准备检索...", flush=True)
-    
+    _emit_progress(args, "正在检查索引并准备检索...", progress_callback)
+
     search_mode = (args.search_mode or "hybrid").strip().lower()
     debug_enabled = _parse_bool_arg(getattr(args, "debug", False), default=False)
     trace_id = str(getattr(args, "trace_id", "") or "").strip() or f"trace_{uuid4().hex[:16]}"
@@ -1412,16 +1973,18 @@ def main() -> None:
     rewrite_count = max(1, int(getattr(args, "query_rewrite_count", DEFAULT_QUERY_REWRITE_COUNT)))
     vector_top_n = max(1, int(args.vector_top_n))
     rerank_top_k = max(1, int(args.rerank_top_k))
+    allow_local_only_web_cache = DEFAULT_LOCAL_ONLY_READ_WEB_CACHE
     if search_mode == "local_only":
         final_local_top_k = max(1, int(args.top_k))
-        web_top_k = 0
+        web_top_k = 3 if allow_local_only_web_cache else 0
+        allow_web_network = False
     else:
         final_local_top_k = rerank_top_k
         web_top_k = 3
+        allow_web_network = True
     max_context_chars = max(1000, int(args.max_context_chars))
+    max_context_docs = max(1, int(getattr(args, "max_context_docs", DEFAULT_MAX_CONTEXT_DOCS) or DEFAULT_MAX_CONTEXT_DOCS))
 
-    # Pre-warm the embedding model so cold-start cost is paid before any timed section.
-    # _LOCAL_EMBED_MODEL_CACHE in rag_vector_index keeps the encoder alive for this process.
     _embed_warmup_t0 = time.perf_counter()
     try:
         _embed_texts_local(["热启动"], model=args.embedding_model, batch_size=1)
@@ -1433,8 +1996,7 @@ def main() -> None:
     rewrite_queries = [question]
     rewrite_status = "disabled"
     if enable_query_rewrite and _should_rewrite_query(question):
-        if args.stream:
-            print("PROGRESS: 正在改写查询并扩展检索词...", flush=True)
+        _emit_progress(args, "正在改写查询并扩展检索词...", progress_callback)
         rewrite_queries, rewrite_status = _rewrite_queries_with_local_llm(
             question=question,
             memory_context=str(args.memory_context or ""),
@@ -1442,11 +2004,9 @@ def main() -> None:
             timeout=int(args.timeout),
         )
     elif enable_query_rewrite:
-        # Query is short and simple — rewrite would add no value.
         rewrite_status = "skipped:simple_query"
     rewrite_elapsed = round(time.perf_counter() - rewrite_t0, 3)
-    if args.stream:
-        print("PROGRESS: 正在进行图谱扩展并准备向量召回...", flush=True)
+    _emit_progress(args, "正在进行图谱扩展并准备向量召回...", progress_callback)
 
     per_query_rows: list[tuple[str, list[dict[str, Any]]]] = []
     timings: dict[str, Any] = {
@@ -1462,17 +2022,13 @@ def main() -> None:
     expanded_batches: list[dict[str, Any]] = []
     retrieval_queries: list[tuple[str, str]] = []
 
-    # Lazy-build the knowledge graph from index metadata.
-    # Requires metadata.json to already exist (written by the vector index build below).
-    # Triggers if: graph file missing, or graph is essentially empty (< 200 bytes means no nodes).
     _graph_file = Path(args.index_dir) / "knowledge_graph_rag.json"
     _meta_file = Path(args.index_dir) / "metadata.json"
     _graph_needs_build = _meta_file.exists() and (
         not _graph_file.exists() or _graph_file.stat().st_size < 200
     )
     if _graph_needs_build:
-        if args.stream:
-            print("PROGRESS: 首次构建知识图谱索引（只需一次）...", flush=True)
+        _emit_progress(args, "首次构建知识图谱索引（只需一次）...", progress_callback)
         try:
             sync_rag_graph(Path(args.index_dir), only_missing=True, use_llm=False)
         except Exception:
@@ -1492,8 +2048,7 @@ def main() -> None:
             }
         )
 
-    if args.stream:
-        print(f"PROGRESS: 正在进行向量召回（检索批次 {len(retrieval_queries)}）...", flush=True)
+    _emit_progress(args, f"正在进行向量召回（检索批次 {len(retrieval_queries)}）...", progress_callback)
 
     for rewrite_query, expanded_query in retrieval_queries:
         one_results, one_timing = search_vector_index_with_diagnostics(
@@ -1511,7 +2066,6 @@ def main() -> None:
         per_query_rows.append((rewrite_query, rows))
         for key in ("prepare_index", "embed_query", "faiss_search", "total"):
             timings[key] = float(timings.get(key, 0.0)) + float(one_timing.get(key, 0.0) or 0.0)
-        # Propagate embed cache hit flag: 1.0 if ANY batch query hit the embedding cache
         timings["embed_cache_hit"] = max(
             float(timings.get("embed_cache_hit", 0.0)),
             float(one_timing.get("embed_cache_hit", 0.0) or 0.0),
@@ -1526,60 +2080,87 @@ def main() -> None:
     rerank_status = "disabled"
     _rerank_infer_s = 0.0
     _rerank_load_s = 0.0
+    rerank_guard_enabled = _parse_bool_arg(
+        getattr(args, "enable_rerank_top1_guard", DEFAULT_ENABLE_RERANK_TOP1_GUARD),
+        default=DEFAULT_ENABLE_RERANK_TOP1_GUARD,
+    )
+    rerank_guard_info: dict[str, Any] = {"enabled": rerank_guard_enabled, "triggered": False, "reason": "disabled"}
 
     if enable_rerank:
-        if args.stream:
-            print(f"PROGRESS: 已向量召回 {len(results)} 个候选，正在重排本地结果...", flush=True)
-        reranked_local_rows, rerank_status, _rerank_infer_s, _rerank_load_s = _rerank_local_rows(
+        _emit_progress(args, f"已向量召回 {len(results)} 个候选，正在重排本地结果...", progress_callback)
+        reranked_local_rows, rerank_status, _rerank_infer_s, _rerank_load_s, rerank_guard_info = _rerank_local_rows(
             query=question,
             rows=rerank_input_rows,
             documents_dir=Path(args.documents_dir),
             top_k=final_local_top_k,
             reranker_model=str(args.reranker_model or DEFAULT_RERANKER_MODEL).strip(),
             embedding_model=str(args.embedding_model or EMBEDDING_MODEL or "BAAI/bge-base-zh-v1.5").strip(),
+            guard_enabled=rerank_guard_enabled,
+            guard_max_drop=float(getattr(args, "rerank_guard_max_top1_drop", DEFAULT_RERANK_GUARD_MAX_TOP1_DROP) or 0.0),
+            guard_max_drop_ratio=float(getattr(args, "rerank_guard_max_top1_drop_ratio", DEFAULT_RERANK_GUARD_MAX_TOP1_DROP_RATIO) or 0.0),
+            fusion_alpha=float(getattr(args, "rerank_fusion_alpha", DEFAULT_RERANK_FUSION_ALPHA) or DEFAULT_RERANK_FUSION_ALPHA),
+            dynamic_alpha_enabled=_parse_bool_arg(getattr(args, "enable_dynamic_rerank_alpha", DEFAULT_ENABLE_DYNAMIC_RERANK_ALPHA), default=DEFAULT_ENABLE_DYNAMIC_RERANK_ALPHA),
+            dynamic_alpha_diff_scale=float(getattr(args, "dynamic_rerank_alpha_diff_scale", DEFAULT_DYNAMIC_RERANK_ALPHA_DIFF_SCALE) or DEFAULT_DYNAMIC_RERANK_ALPHA_DIFF_SCALE),
+            dynamic_alpha_diff_center=float(getattr(args, "dynamic_rerank_alpha_diff_center", DEFAULT_DYNAMIC_RERANK_ALPHA_DIFF_CENTER) or DEFAULT_DYNAMIC_RERANK_ALPHA_DIFF_CENTER),
+            top1_gap_threshold=float(getattr(args, "rerank_top1_gap_threshold", DEFAULT_RERANK_TOP1_GAP_THRESHOLD) or 0.0),
+            strong_top1_threshold=float(getattr(args, "rerank_strong_top1_threshold", DEFAULT_RERANK_STRONG_TOP1_THRESHOLD) or 0.0),
+            short_query_candidate_k=int(getattr(args, "short_query_rerank_candidate_k", DEFAULT_SHORT_QUERY_RERANK_CANDIDATE_K) or DEFAULT_SHORT_QUERY_RERANK_CANDIDATE_K),
+            short_query_max_chars=int(getattr(args, "short_query_max_chars", DEFAULT_SHORT_QUERY_MAX_CHARS) or DEFAULT_SHORT_QUERY_MAX_CHARS),
             reranker_server_url=str(getattr(args, "reranker_server_url", "") or "").strip(),
         )
-        if args.stream:
-            _rerank_total = round(_rerank_infer_s + _rerank_load_s, 2)
-            print(f"PROGRESS: 重排完成（{rerank_status}，{_rerank_total}s），共保留 {len(reranked_local_rows)} 条", flush=True)
+        _rerank_total = round(_rerank_infer_s + _rerank_load_s, 2)
+        _emit_progress(args, f"重排完成（{rerank_status}，{_rerank_total}s），共保留 {len(reranked_local_rows)} 条", progress_callback)
     else:
-        reranked_local_rows = sorted(rerank_input_rows, key=lambda x: float(x.get("score", 0.0)), reverse=True)[
-            :final_local_top_k
-        ]
-    # rerank_seconds = pure reranker.predict() inference time (excludes model cold-load)
-    # reranker_load_seconds = model load from disk (0 when cached in warm process; non-zero for subprocess cold-start)
+        reranked_local_rows = sorted(rerank_input_rows, key=lambda x: float(x.get("score", 0.0)), reverse=True)[:final_local_top_k]
+
     timings["rerank_seconds"] = round(_rerank_infer_s, 3)
     timings["reranker_load_seconds"] = round(_rerank_load_s, 3)
     _top1_path_before = _result_identity(local_rows[0]) if local_rows else ""
     _top1_path_after = _result_identity(reranked_local_rows[0]) if reranked_local_rows else ""
+    _top1_vector_score_before = float(local_rows[0].get("score", 0.0) or 0.0) if local_rows else 0.0
     _top1_rerank_score_after = 0.0
     _top1_vector_score_after = 0.0
+    _top1_final_score_after = 0.0
     if reranked_local_rows:
-        _top1_rerank_score_after = float(
-            reranked_local_rows[0].get("rerank_score", reranked_local_rows[0].get("score", 0.0)) or 0.0
-        )
-        _top1_vector_score_after = float(
-            reranked_local_rows[0].get("vector_score", reranked_local_rows[0].get("score", 0.0)) or 0.0
-        )
+        _top1_rerank_score_after = float(reranked_local_rows[0].get("rerank_score", reranked_local_rows[0].get("score", 0.0)) or 0.0)
+        _top1_vector_score_after = float(reranked_local_rows[0].get("vector_score", reranked_local_rows[0].get("score", 0.0)) or 0.0)
+        _top1_final_score_after = float(reranked_local_rows[0].get("final_score", reranked_local_rows[0].get("rerank_score", reranked_local_rows[0].get("score", 0.0))) or 0.0)
+    _top1_vector_delta = _top1_vector_score_after - _top1_vector_score_before
     _top1_identity_changed = None
     _top1_rank_shift = None
     if _top1_path_before and _top1_path_after:
         _top1_identity_changed = 1 if _top1_path_before != _top1_path_after else 0
-        _before_rank_after_top1 = next(
-            (idx + 1 for idx, row in enumerate(local_rows) if _result_identity(row) == _top1_path_after),
-            None,
-        )
+        _before_rank_after_top1 = next((idx + 1 for idx, row in enumerate(local_rows) if _result_identity(row) == _top1_path_after), None)
         if _before_rank_after_top1 is not None:
-            # Positive means moved up in ranking (e.g. 7 -> 2 gives +5).
             _top1_rank_shift = float(_before_rank_after_top1 - 1)
-    # Record top1 score after reranking (cross-encoder score for neural rerank; cosine sim for fallback)
     timings["local_top1_score_after_rerank"] = _top1_rerank_score_after
     timings["local_top1_vector_score_after_rerank"] = _top1_vector_score_after
     timings["local_top1_rerank_score_after_rerank"] = _top1_rerank_score_after
+    timings["local_top1_final_score_after_rerank"] = _top1_final_score_after
+    timings["local_top1_vector_score_delta_after_rerank"] = _top1_vector_delta
     timings["local_top1_identity_changed"] = _top1_identity_changed
     timings["local_top1_rank_shift"] = _top1_rank_shift
     timings["local_top1_path_before_rerank"] = _top1_path_before
     timings["local_top1_path_after_rerank"] = _top1_path_after
+    timings["local_rerank_guard_enabled"] = 1 if rerank_guard_info.get("enabled") else 0
+    timings["local_rerank_guard_triggered"] = 1 if rerank_guard_info.get("triggered") else 0
+    timings["local_rerank_guard_reason"] = str(rerank_guard_info.get("reason", "") or "")
+    timings["local_rerank_guard_vector_drop"] = rerank_guard_info.get("vector_drop")
+    timings["local_rerank_guard_vector_drop_ratio"] = rerank_guard_info.get("vector_drop_ratio")
+    timings["local_rerank_guard_baseline_gap"] = rerank_guard_info.get("baseline_gap")
+    timings["local_rerank_guard_swap_blocked_by_gap"] = 1 if rerank_guard_info.get("swap_blocked_by_gap") else 0
+    timings["local_rerank_candidate_count"] = float(rerank_guard_info.get("candidate_count", len(rerank_input_rows)) or 0)
+    timings["local_rerank_candidate_profile"] = str(rerank_guard_info.get("candidate_profile", "") or "")
+    timings["local_rerank_fusion_alpha"] = float(rerank_guard_info.get("fusion_alpha", getattr(args, "rerank_fusion_alpha", DEFAULT_RERANK_FUSION_ALPHA)) or 0.0)
+    timings["local_rerank_fusion_alpha_base"] = float(rerank_guard_info.get("fusion_alpha_base", getattr(args, "rerank_fusion_alpha", DEFAULT_RERANK_FUSION_ALPHA)) or 0.0)
+    timings["local_rerank_dynamic_alpha_enabled"] = 1 if rerank_guard_info.get("dynamic_alpha_enabled") else 0
+    timings["local_rerank_rerank_soft_top1"] = rerank_guard_info.get("rerank_soft_top1")
+    timings["local_rerank_rerank_soft_top2"] = rerank_guard_info.get("rerank_soft_top2")
+    timings["local_rerank_rerank_soft_diff"] = rerank_guard_info.get("rerank_soft_diff")
+    timings["local_rerank_confidence_factor"] = rerank_guard_info.get("rerank_confidence_factor")
+    timings["local_rerank_fusion_alpha_reason"] = str(rerank_guard_info.get("fusion_alpha_reason", "") or "")
+    timings["local_rerank_top1_gap_threshold"] = float(rerank_guard_info.get("top1_gap_threshold", getattr(args, "rerank_top1_gap_threshold", DEFAULT_RERANK_TOP1_GAP_THRESHOLD)) or 0.0)
+    timings["local_rerank_strong_top1_threshold"] = float(rerank_guard_info.get("strong_top1_threshold", getattr(args, "rerank_strong_top1_threshold", DEFAULT_RERANK_STRONG_TOP1_THRESHOLD)) or 0.0)
 
     debug_trace: dict[str, Any] = {
         "timestamp": datetime.now().isoformat(timespec="seconds"),
@@ -1594,12 +2175,14 @@ def main() -> None:
         "similarity_threshold": local_threshold,
         "vector_top_n": vector_top_n,
         "rerank_top_k": final_local_top_k,
+        "rerank_fusion_alpha": timings["local_rerank_fusion_alpha"],
         "enable_rerank": enable_rerank,
         "reranker_model": str(args.reranker_model or DEFAULT_RERANKER_MODEL).strip(),
         "vector_query_batches": vector_query_batches,
         "vector_candidates": local_rows,
         "threshold_candidates": threshold_rows,
         "reranked_local": reranked_local_rows,
+        "rerank_guard": rerank_guard_info,
     }
 
     timings["rerank_status"] = rerank_status
@@ -1614,13 +2197,14 @@ def main() -> None:
     web_results: list[dict[str, Any]] = []
     web_status = "disabled"
     if web_top_k > 0:
-        if args.stream:
-            print("PROGRESS: 正在联网补充相关资料...", flush=True)
+        message = "正在读取本地 Web 缓存..." if not allow_web_network else "正在联网补充相关资料..."
+        _emit_progress(args, message, progress_callback)
         tavily_key = os.getenv("TAVILY_API_KEY", "").strip() or (TAVILY_API_KEY or "").strip()
         web_results, web_status = _search_web_tavily(
             query=question,
             max_results=web_top_k,
             tavily_api_key=tavily_key,
+            allow_network=allow_web_network,
         )
     hybrid_rows: list[dict[str, Any]] = []
     for item in reranked_local_rows:
@@ -1636,14 +2220,14 @@ def main() -> None:
         row["source"] = "web"
         hybrid_rows.append(row)
 
-    if args.stream:
-        print("PROGRESS: 正在装载上下文片段...", flush=True)
+    _emit_progress(args, "正在装载上下文片段...", progress_callback)
 
     context_t0 = time.perf_counter()
     context_text, used_docs = _load_context_hybrid(
         rows=hybrid_rows,
         documents_dir=Path(args.documents_dir),
         max_context_chars=max_context_chars,
+        max_context_docs=max_context_docs,
         max_chars_per_doc=max(500, int(args.max_chars_per_doc)),
         similarity_threshold=local_threshold,
         context_mode=str(args.context_mode or "topic"),
@@ -1654,20 +2238,15 @@ def main() -> None:
     debug_trace["web_results"] = web_results
     debug_trace["used_context_docs"] = used_docs
     debug_trace["context_tokens_est"] = _approx_tokens(context_text)
-    
-    if args.stream:
-        filtered_count = len(
-            [
-                r for r in reranked_local_rows
-                if float(r.get("vector_score", r.get("score", 0.0)) or 0.0) >= local_threshold
-            ]
-        )
-        print(
-            f"PROGRESS: 本地候选 {len(results)} -> 重排保留 {len(reranked_local_rows)}（阈值后可用 {filtered_count}），联网补充 {len(web_results)} 个结果，上下文已加载（{len(context_text)} 字符），正在请求模型生成回答...",
-            flush=True,
-        )
-    
-    # Exactly one external/local LLM call when available.
+    debug_trace["max_context_docs"] = max_context_docs
+
+    filtered_count = len([r for r in reranked_local_rows if float(r.get("vector_score", r.get("score", 0.0)) or 0.0) >= local_threshold])
+    _emit_progress(
+        args,
+        f"本地候选 {len(results)} -> 重排保留 {len(reranked_local_rows)}（阈值后可用 {filtered_count}），联网补充 {len(web_results)} 个结果，上下文已加载（{len(context_text)} 字符），正在请求模型生成回答...",
+        progress_callback,
+    )
+
     llm_stats: dict[str, Any] = {}
     llm_t0 = time.perf_counter()
     try:
@@ -1681,6 +2260,7 @@ def main() -> None:
             call_type=str(args.call_type or "answer"),
             memory_context=str(args.memory_context or ""),
             stream=args.stream,
+            stream_callback=stream_callback,
             trace_id=trace_id,
             debug_trace=debug_trace if debug_enabled else None,
             llm_stats_sink=llm_stats,
@@ -1689,13 +2269,11 @@ def main() -> None:
         if args.allow_local_fallback and _is_local_llm_unavailable_error(str(exc)):
             answer = _build_local_fallback_answer(question=question, used_docs=used_docs)
             llm_stats["output_tokens_est"] = _approx_tokens(answer)
-            if args.stream:
-                print(f"STREAM_CHUNK_JSON: {json.dumps(answer, ensure_ascii=False)}", flush=True)
+            _emit_stream_chunk(args, answer, stream_callback)
         else:
             raise
     llm_elapsed = round(time.perf_counter() - llm_t0, 6)
 
-    # Session title is always local (no external API call).
     session_title = _fallback_session_title(question)
 
     payload = {
@@ -1716,6 +2294,7 @@ def main() -> None:
         "reranker_model": str(args.reranker_model or DEFAULT_RERANKER_MODEL).strip(),
         "graph_expansion_batches": expanded_batches,
         "used_context_docs": used_docs,
+        "max_context_docs": max_context_docs,
         "timings": timings,
         "llm": {
             "model": str(args.model or "").strip(),
@@ -1731,13 +2310,28 @@ def main() -> None:
     if debug_enabled:
         debug_trace["timings"] = timings
         payload["debug_trace"] = debug_trace
+    return payload
+
+
+def main() -> None:
+    _configure_stdio_utf8()
+    args = _parse_args()
+
+    question = (args.question or "").strip()
+    if not question:
+        question = sys.stdin.read().strip()
+    if not question:
+        raise RuntimeError("Question is empty")
+    args.question = question
+
+    payload = run_rag_query(args)
 
     if args.output_json:
         out = Path(args.output_json)
         out.parent.mkdir(parents=True, exist_ok=True)
         out.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
 
-    print(answer)
+    print(str(payload.get("answer", "")))
 
 
 if __name__ == "__main__":

@@ -38,9 +38,12 @@ core_service (共享模块)
 ### 2.1 `nav_dashboard` 的 Agent 协调链路
 
 1. 对用户问题做意图分析与配额检查。
-2. 由 LLM 或回退规则规划工具调用（文档检索、媒体检索、联网检索）。
-3. 并行执行工具并进行阈值过滤。
-4. 汇总上下文后生成最终回答，并保存会话。
+2. 由混合路由器决定工具调用：包含 LLM 分类、embedding 相似度、媒体实体/意图规则、follow-up 上下文继承。
+3. 规划工具调用（文档检索、媒体检索、联网检索、概念扩展、TMDB）并并行执行。
+4. 对结果做阈值过滤、validator 过滤与引用上限截断。
+5. 汇总上下文后生成最终回答，并保存会话、trace 与指标。
+
+补充说明：当前路由不是“纯算法”也不是“纯 LLM”，而是 `LLM + 规则 + 统计阈值 + follow-up 状态机` 的混合决策系统。它已经具备可持续迭代的观测闭环，但还不是自动在线学习系统。
 
 ### 2.2 `ai_conversations_summary` 的 RAG 链路
 
@@ -55,6 +58,8 @@ core_service (共享模块)
 - `config.py`：统一读取本地配置与环境变量。
 - `llm_client.py`：统一封装 OpenAI-compatible API 调用。
 - `rag_vector_index.py`：共享 embedding 与向量索引读写能力。
+- `trace_store.py`：共享 trace 存储，按月滚动写入 `nav_dashboard/data/trace_records_YYYY_MM.jsonl`。
+- `ticket_store.py`：共享 Ticket 事件存储，使用 append-only 事件日志 `nav_dashboard/data/tickets.jsonl`。
 
 ## 3. 目录导读
 
@@ -64,7 +69,14 @@ core_service (共享模块)
 - `core_service/`：跨项目共享配置与模型调用
 - `data/`：仓库级运行数据（如 benchmark 结果）
 
-## 4. 安装与启动（Windows）
+## 4. 当前能力快照
+
+- `nav_dashboard` 现已提供：Trace 查询、Tickets 管理、按周 Ticket 提交/关闭趋势图、任务中心、聊天反馈查看、运行时数据清理。
+- Agent trace 会记录：resolved question、follow-up state before/after、路由决策路径、工具调用、guardrail mode、reference-limit 截断原因。
+- 媒体类回答支持更强的结构化输出：评分、短评、作者、出版方、渠道等本地字段可直接展开。
+- 历史会话标题现在完整持久化，由前端按容器宽度单行省略显示，而不是后端硬截断。
+
+## 5. 安装与启动（Windows）
 
 ### 4.1 创建统一虚拟环境
 
@@ -105,7 +117,7 @@ python -m venv .venv
 - AI Conversations Summary: `http://127.0.0.1:8000/`
 - Library Tracker: `http://127.0.0.1:8091/`
 
-## 5. 配置约定
+## 6. 配置约定
 
 - 推荐在仓库根目录维护 `env.local.ps1`；当前 launcher 会自动读取该文件。
 - embedding 模型可通过环境变量覆盖：
@@ -118,9 +130,23 @@ python -m venv .venv
 - Agent 文档检索默认配置：
     - `NAV_DASHBOARD_QUERY_REWRITE_COUNT`：默认 `2`
     - `NAV_DASHBOARD_PRIMARY_QUERY_SCORE_BONUS`：原 query 的合并加权
+- 外部媒体资料扩展配置：
+        - `NAV_DASHBOARD_MEDIAWIKI_ZH_API_URL`
+        - `NAV_DASHBOARD_MEDIAWIKI_EN_API_URL`
+        - `NAV_DASHBOARD_TMDB_API_KEY`
+        - `NAV_DASHBOARD_TMDB_READ_ACCESS_TOKEN`
 - 若出现默认模型未生效，优先检查以上环境变量是否指向旧模型。
 
-## 6. 常见协作建议
+## 7. 迭代与优化建议
+
+- 当前系统已经具备“可学习”的数据基础，但默认不会自动在线改写路由策略。
+- 持续优化的主要抓手是：`trace_records`、`agent_metrics`、`chat_feedback`、`tickets`、`evals` 与 benchmark 结果。
+- 如果要把它演进成反馈驱动的决策系统，建议路线是：
+    1. 先把误路由/误判样本沉淀成结构化评测集。
+    2. 用这些样本离线调整分类阈值、planner 规则与 guardrail 触发条件。
+    3. 再考虑训练轻量 router model 或 bandit/ranker，而不是直接做无约束在线学习。
+
+## 8. 常见协作建议
 
 - 运行时数据（会话、缓存、向量库）建议与源码提交分离。
 - 优先通过子项目 README 查看模块内的实现细节和接口说明。

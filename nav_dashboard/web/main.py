@@ -48,6 +48,7 @@ from pydantic import BaseModel
 
 from web.api.agent import router as agent_router
 from web.api.benchmark import router as benchmark_router
+from web.api.benchmark import QUERY_CASE_SETS
 from web.config import AI_SUMMARY_URL_OVERRIDE, HOST, LIBRARY_TRACKER_URL_OVERRIDE, PORT
 from web.services import agent_service, dashboard_jobs
 
@@ -57,7 +58,17 @@ if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
 from core_service.chat_feedback_store import append_feedback, clear_feedback, list_feedback
-from core_service.trace_store import get_trace_record, render_trace_export
+from core_service.ticket_store import (
+    build_ticket_facets,
+    build_ticket_weekly_stats,
+    create_ticket,
+    delete_ticket,
+    get_ticket,
+    list_ticket_storage_paths,
+    list_tickets,
+    update_ticket,
+)
+from core_service.trace_store import get_trace_record, list_trace_record_paths, render_trace_export
 
 CUSTOM_CARDS_FILE = PROJECT_ROOT / "data" / "custom_cards.json"
 CUSTOM_CARDS_MAX = 8
@@ -83,6 +94,14 @@ SOURCE_LABELS = {
 }
 templates = Jinja2Templates(directory=str(APP_DIR / "templates"))
 
+_BENCHMARK_CASE_QUERIES = {
+    str(query or "").strip()
+    for case_set in QUERY_CASE_SETS.values()
+    for queries in case_set.values()
+    for query in queries
+    if str(query or "").strip()
+}
+
 
 def _is_benchmark_source(source: str) -> bool:
     return str(source or "").strip().lower().startswith("benchmark")
@@ -90,6 +109,10 @@ def _is_benchmark_source(source: str) -> bool:
 
 def _is_benchmark_trace_id(trace_id: str) -> bool:
     return str(trace_id or "").strip().lower().startswith("benchmark_")
+
+
+def _is_benchmark_case_query(query: str) -> bool:
+    return str(query or "").strip() in _BENCHMARK_CASE_QUERIES
 
 
 def _load_deploy_time() -> str:
@@ -131,6 +154,60 @@ class FeedbackPayload(BaseModel):
     search_mode: str = ""
     query_type: str = ""
     metadata: dict[str, Any] = {}
+
+
+class TicketCreatePayload(BaseModel):
+    ticket_id: str = ""
+    title: str = ""
+    status: str = "open"
+    priority: str = "medium"
+    domain: str = ""
+    category: str = ""
+    summary: str = ""
+    related_traces: list[str] = []
+    repro_query: str = ""
+    expected_behavior: str = ""
+    actual_behavior: str = ""
+    root_cause: str = ""
+    fix_notes: str = ""
+    additional_notes: str = ""
+    created_by: str = "ai"
+    updated_by: str = ""
+
+
+class TicketUpdatePayload(BaseModel):
+    title: str | None = None
+    status: str | None = None
+    priority: str | None = None
+    domain: str | None = None
+    category: str | None = None
+    summary: str | None = None
+    related_traces: list[str] | None = None
+    repro_query: str | None = None
+    expected_behavior: str | None = None
+    actual_behavior: str | None = None
+    root_cause: str | None = None
+    fix_notes: str | None = None
+    additional_notes: str | None = None
+    updated_by: str | None = "human"
+
+
+class TicketAIDraftPayload(BaseModel):
+    trace_id: str = ""
+    title: str = ""
+    priority: str = "medium"
+    domain: str = ""
+    category: str = ""
+    summary: str = ""
+    related_traces: list[str] = []
+    repro_query: str = ""
+    expected_behavior: str = ""
+    actual_behavior: str = ""
+    root_cause: str = ""
+    fix_notes: str = ""
+    additional_notes: str = ""
+    created_by: str = "ai"
+    updated_by: str = "ai"
 
 
 def _default_custom_cards() -> list[dict[str, str]]:
@@ -289,6 +366,166 @@ def _source_display_name(source: str) -> str:
     return SOURCE_LABELS.get(raw.lower(), raw)
 
 
+def _safe_text_list(value: Any) -> list[str]:
+    if isinstance(value, str):
+        raw_items = value.replace("\r", "\n").replace(",", "\n").split("\n")
+    elif isinstance(value, list):
+        raw_items = value
+    else:
+        raw_items = []
+    items: list[str] = []
+    seen: set[str] = set()
+    for item in raw_items:
+        text = str(item or "").strip()
+        if not text or text in seen:
+            continue
+        seen.add(text)
+        items.append(text)
+    return items
+
+
+def _first_nonempty(*values: Any) -> str:
+    for value in values:
+        text = str(value or "").strip()
+        if text:
+            return text
+    return ""
+
+
+def _infer_ticket_domain(trace: dict[str, Any], fallback: str = "") -> str:
+    explicit = str(fallback or "").strip().lower()
+    if explicit:
+        return explicit
+    router = trace.get("router") if isinstance(trace.get("router"), dict) else {}
+    understanding = trace.get("query_understanding") if isinstance(trace.get("query_understanding"), dict) else {}
+    query_type = str(trace.get("query_type", "") or "").strip().lower()
+    selected_tool = str(router.get("selected_tool", "") or "").strip().lower()
+    detected_intent = str(understanding.get("detected_intent", "") or "").strip().lower()
+    if "media" in query_type or "media" in detected_intent or "movie" in detected_intent or "tv" in detected_intent:
+        return "media"
+    if "web" in selected_tool:
+        return "web"
+    if "doc" in selected_tool or "rag" in selected_tool or "tech" in query_type:
+        return "knowledge"
+    return "agent"
+
+
+def _infer_ticket_category(trace: dict[str, Any], fallback: str = "") -> str:
+    explicit = str(fallback or "").strip().lower()
+    if explicit:
+        return explicit
+    taxonomy = trace.get("error_taxonomy") if isinstance(trace.get("error_taxonomy"), dict) else {}
+    router = trace.get("router") if isinstance(trace.get("router"), dict) else {}
+    primary = str(taxonomy.get("primary_label", "") or "").strip().lower()
+    if primary:
+        return primary
+    decision = str(router.get("decision_category", "") or "").strip().lower()
+    if decision:
+        return decision
+    selected_tool = str(router.get("selected_tool", "") or "").strip().lower()
+    if selected_tool:
+        return selected_tool
+    return "investigation"
+
+
+def _build_ticket_ai_draft(payload: TicketAIDraftPayload) -> dict[str, Any]:
+    trace_id = str(payload.trace_id or "").strip()
+    trace = get_trace_record(trace_id) if trace_id else None
+    if trace_id and not trace:
+        raise HTTPException(status_code=404, detail=f"未找到 trace_id={trace_id} 对应的追踪记录")
+
+    understanding = trace.get("query_understanding") if isinstance(trace, dict) and isinstance(trace.get("query_understanding"), dict) else {}
+    router = trace.get("router") if isinstance(trace, dict) and isinstance(trace.get("router"), dict) else {}
+    result = trace.get("result") if isinstance(trace, dict) and isinstance(trace.get("result"), dict) else {}
+    taxonomy = trace.get("error_taxonomy") if isinstance(trace, dict) and isinstance(trace.get("error_taxonomy"), dict) else {}
+    guardrail_flags = trace.get("guardrail_flags") if isinstance(trace, dict) and isinstance(trace.get("guardrail_flags"), dict) else {}
+    answer_guardrail_mode = trace.get("answer_guardrail_mode") if isinstance(trace, dict) and isinstance(trace.get("answer_guardrail_mode"), dict) else {}
+
+    related_traces = _safe_text_list(payload.related_traces)
+    if trace_id and trace_id not in related_traces:
+        related_traces.insert(0, trace_id)
+
+    resolved_question = _first_nonempty(
+        payload.repro_query,
+        understanding.get("resolved_question"),
+        understanding.get("original_question"),
+    )
+    route = str(router.get("selected_tool", "") or "").strip()
+    mode = str(answer_guardrail_mode.get("mode", "") or "").strip()
+    mode_reasons = [str(item or "").strip() for item in list(answer_guardrail_mode.get("reasons") or []) if str(item or "").strip()]
+    primary_error = str(taxonomy.get("primary_label", "") or "").strip()
+    secondary_error = str(taxonomy.get("secondary_label", "") or "").strip()
+    no_context_reason = str(result.get("no_context_reason", "") or "").strip()
+
+    priority = str(payload.priority or "medium").strip().lower() or "medium"
+    if primary_error in {"answer_restricted", "understanding_ambiguous"}:
+        priority = "high"
+    if primary_error in {"answer_incorrect_entity", "retrieval_empty_after_validation"}:
+        priority = "critical"
+
+    summary = _first_nonempty(
+        payload.summary,
+        f"{resolved_question or '未提供 query'} 的回答链路出现异常，route={route or '-'}，mode={mode or 'normal'}。",
+    )
+    actual_behavior = _first_nonempty(
+        payload.actual_behavior,
+        "\n".join(
+            [
+                line for line in [
+                    f"复现 query: {resolved_question}" if resolved_question else "",
+                    f"实际路由: {route}" if route else "",
+                    f"错误分类: {primary_error}" if primary_error else "",
+                    f"次级分类: {secondary_error}" if secondary_error else "",
+                    f"Guardrail 模式: {mode}" if mode else "",
+                    f"Guardrail 原因: {', '.join(mode_reasons)}" if mode_reasons else "",
+                    f"未命中原因: {no_context_reason}" if no_context_reason else "",
+                ] if line
+            ]
+        ),
+    )
+    root_cause = _first_nonempty(
+        payload.root_cause,
+        "; ".join(
+            [
+                item for item in [
+                    primary_error,
+                    secondary_error,
+                    ", ".join(sorted([key for key, enabled in guardrail_flags.items() if enabled])),
+                ] if item
+            ]
+        ),
+    )
+    expected_behavior = _first_nonempty(
+        payload.expected_behavior,
+        "应正确理解用户问题与上下文，选择匹配的检索/工具链路，并返回与实体、时间窗、过滤条件一致的结果。",
+    )
+    title = _first_nonempty(
+        payload.title,
+        resolved_question,
+        actual_behavior.splitlines()[0] if actual_behavior else "",
+        summary,
+    )[:120]
+
+    return {
+        "ticket_id": "",
+        "title": title or "未命名 Ticket",
+        "status": "open",
+        "priority": priority,
+        "domain": _infer_ticket_domain(trace or {}, payload.domain),
+        "category": _infer_ticket_category(trace or {}, payload.category),
+        "summary": summary,
+        "related_traces": related_traces,
+        "repro_query": resolved_question,
+        "expected_behavior": expected_behavior,
+        "actual_behavior": actual_behavior,
+        "root_cause": root_cause,
+        "fix_notes": str(payload.fix_notes or "").strip(),
+        "additional_notes": str(payload.additional_notes or "").strip(),
+        "created_by": str(payload.created_by or "ai").strip() or "ai",
+        "updated_by": str(payload.updated_by or "ai").strip() or "ai",
+    }
+
+
 def _display_path(path: Path) -> str:
     try:
         return str(path.relative_to(PROJECT_ROOT)).replace("\\", "/")
@@ -357,10 +594,14 @@ def _runtime_data_targets() -> list[dict[str, Any]]:
             "key": "trace_records",
             "label": "Trace 查询记录",
             "description": "Dashboard trace_id 查询使用的轻量追踪摘要。",
-            "paths": [
-                PROJECT_ROOT / "nav_dashboard" / "data" / "trace_records.jsonl",
-                PROJECT_ROOT / "nav_dashboard" / "data" / "trace_records.json",
-            ],
+            "paths": list_trace_record_paths(),
+            "mode": "delete_paths",
+        },
+        {
+            "key": "ticket_records",
+            "label": "Ticket 事件记录",
+            "description": "Dashboard 内置 Jira-like ticket append-only 事件日志。",
+            "paths": list_ticket_storage_paths(),
             "mode": "delete_paths",
         },
         {
@@ -375,6 +616,13 @@ def _runtime_data_targets() -> list[dict[str, Any]]:
             "label": "Embedding 缓存",
             "description": "文本 embedding 缓存数据库，可手动清空后重建。",
             "paths": _sqlite_family(cache_dir / "embed_cache.db"),
+            "mode": "delete_paths",
+        },
+        {
+            "key": "legacy_ai_summary_vector_db",
+            "label": "旧索引目录",
+            "description": "ai_conversations_summary/data/vector_db 旧索引目录，当前默认索引已切到 core_service/data/vector_db。",
+            "paths": [ai_data / "vector_db"],
             "mode": "delete_paths",
         },
         {
@@ -409,7 +657,7 @@ def _runtime_data_targets() -> list[dict[str, Any]]:
             "key": "deepseek_api_audit",
             "label": "DeepSeek 审计缓存",
             "description": "DeepSeek API 调用审计与调试文件。",
-            "paths": [cache_dir / "deepseek_api_audit"],
+            "paths": [ai_data / "deepseek_api_audit"],
             "mode": "clear_dir_contents",
         },
     ]
@@ -520,13 +768,16 @@ def _clear_runtime_target(target: dict[str, Any]) -> None:
     raise ValueError(f"unsupported runtime cleanup mode: {mode}")
 
 
-def _count_rag_index_docs() -> tuple[int, int, int]:
-    # Respect AI_SUMMARY_VECTOR_DB_DIR env var (mirrors ai_conversations_summary/web/config.py logic)
+def _resolve_ai_summary_vector_db_dir() -> Path:
     vector_db_env = (os.getenv("AI_SUMMARY_VECTOR_DB_DIR", "") or "").strip()
     if vector_db_env:
-        vector_db_dir = Path(vector_db_env)
-    else:
-        vector_db_dir = PROJECT_ROOT / "core_service" / "data" / "vector_db"
+        return Path(vector_db_env)
+    return PROJECT_ROOT / "core_service" / "data" / "vector_db"
+
+
+def _count_rag_index_docs() -> tuple[int, int, int]:
+    # Respect AI_SUMMARY_VECTOR_DB_DIR env var (mirrors ai_conversations_summary/web/config.py logic)
+    vector_db_dir = _resolve_ai_summary_vector_db_dir()
     metadata_path = vector_db_dir / "metadata.json"
     payload = _safe_load_json(metadata_path, default=[])
 
@@ -639,7 +890,7 @@ def _library_graph_quality(total_items: int, vector_rows: int) -> dict[str, Any]
 
 def _rag_graph_counts() -> tuple[int, int]:
     """Return (node_count, edge_count) from the RAG knowledge graph JSON."""
-    graph_path = PROJECT_ROOT / "ai_conversations_summary" / "data" / "vector_db" / "knowledge_graph_rag.json"
+    graph_path = _resolve_ai_summary_vector_db_dir() / "knowledge_graph_rag.json"
     graph_data = _safe_load_json(graph_path, default={})
     if not isinstance(graph_data, dict):
         return 0, 0
@@ -859,6 +1110,8 @@ def _load_missing_queries(days: int = 30, limit: int = 200, source: str = "") ->
             continue
         query = str(row.get("query", "")).strip()
         if not query:
+            continue
+        if _is_benchmark_case_query(query):
             continue
         row_source = str(row.get("source", "unknown") or "unknown").strip()
         if _is_benchmark_source(row_source):
@@ -1292,6 +1545,7 @@ def _build_overview() -> dict[str, Any]:
     retrieval_latency = _load_retrieval_latency_summary()
     agent_metrics = _load_agent_metrics_summary()
     runtime_data = _runtime_data_summary(include_items=False)
+    ticket_weekly_stats = build_ticket_weekly_stats(weeks=12)
 
     warnings: list[str] = []
     if startup.get("status") == "unreachable":
@@ -1366,6 +1620,7 @@ def _build_overview() -> dict[str, Any]:
             "count": len(feedback_items),
             "items": feedback_items[:20],
         },
+        "ticket_weekly_stats": ticket_weekly_stats,
         "agent_wall_clock": agent_metrics.get("wall_clock", {}),
         "runtime_data": runtime_data,
         "warnings": warnings,
@@ -1446,6 +1701,96 @@ def clear_dashboard_feedback(source: str = "all") -> dict[str, Any]:
     removed = clear_feedback(source=source)
     _invalidate_overview_cache()
     return {"ok": True, "removed": removed, "source": str(source or "all")}
+
+
+@app.post("/api/dashboard/tickets/ai-draft")
+def build_dashboard_ticket_ai_draft(payload: TicketAIDraftPayload) -> dict[str, Any]:
+    draft = _build_ticket_ai_draft(payload)
+    return {"ok": True, "ticket": draft}
+
+
+@app.get("/api/dashboard/tickets")
+def get_dashboard_tickets(
+    status: str = "non_closed",
+    priority: str = "all",
+    domain: str = "all",
+    category: str = "all",
+    search: str = "",
+    created_from: str = "",
+    created_to: str = "",
+    limit: int = 200,
+    sort: str = "updated_desc",
+) -> dict[str, Any]:
+    items = list_tickets(
+        status=status,
+        priority=priority,
+        domain=domain,
+        category=category,
+        search=search,
+        created_from=created_from,
+        created_to=created_to,
+        limit=limit,
+        sort=sort,
+    )
+    all_items = list_tickets(limit=5000, sort=sort)
+    return {
+        "ok": True,
+        "count": len(items),
+        "items": items,
+        "filters": build_ticket_facets(all_items),
+        "applied_filters": {
+            "status": str(status or "all"),
+            "priority": str(priority or "all"),
+            "domain": str(domain or "all"),
+            "category": str(category or "all"),
+            "search": str(search or ""),
+            "created_from": str(created_from or ""),
+            "created_to": str(created_to or ""),
+            "sort": str(sort or "updated_desc"),
+        },
+    }
+
+
+@app.post("/api/dashboard/tickets")
+def post_dashboard_ticket(payload: TicketCreatePayload) -> dict[str, Any]:
+    try:
+        item = create_ticket(payload.model_dump())
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    _invalidate_overview_cache()
+    return {"ok": True, "ticket": item}
+
+
+@app.get("/api/dashboard/tickets/{ticket_id}")
+def get_dashboard_ticket(ticket_id: str) -> dict[str, Any]:
+    item = get_ticket(ticket_id)
+    if item is None:
+        raise HTTPException(status_code=404, detail=f"未找到 ticket_id={ticket_id} 对应的 ticket")
+    return {"ok": True, "ticket": item}
+
+
+@app.patch("/api/dashboard/tickets/{ticket_id}")
+def patch_dashboard_ticket(ticket_id: str, payload: TicketUpdatePayload) -> dict[str, Any]:
+    try:
+        item = update_ticket(ticket_id, payload.model_dump(exclude_none=True))
+    except ValueError as exc:
+        message = str(exc)
+        status_code = 404 if "不存在" in message else 400
+        raise HTTPException(status_code=status_code, detail=message) from exc
+    _invalidate_overview_cache()
+    return {"ok": True, "ticket": item}
+
+
+@app.delete("/api/dashboard/tickets/{ticket_id}")
+def delete_dashboard_ticket(ticket_id: str, deleted_by: str = "human") -> dict[str, Any]:
+    try:
+        item = delete_ticket(ticket_id, deleted_by=deleted_by)
+    except ValueError as exc:
+        message = str(exc)
+        status_code = 404 if "不存在" in message else 400
+        raise HTTPException(status_code=status_code, detail=message) from exc
+    _invalidate_overview_cache()
+    return {"ok": True, "ticket": item}
 
 
 @app.get("/api/dashboard/runtime-data")

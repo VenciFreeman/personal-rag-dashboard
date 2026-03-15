@@ -14,9 +14,23 @@ class CoreSettings:
     chat_model: str
     embedding_model: str
     timeout: int
+    rag_response_max_tokens_with_context: int
+    rag_response_max_tokens_no_context: int
+    rag_local_only_read_web_cache: bool
     local_llm_url: str
     local_llm_model: str
     local_llm_api_key: str
+    mediawiki_zh_api_url: str
+    mediawiki_en_api_url: str
+    mediawiki_user_agent: str
+    mediawiki_api_user_agent: str
+    mediawiki_contact: str
+    mediawiki_timeout: int
+    tmdb_api_base_url: str
+    tmdb_api_key: str
+    tmdb_read_access_token: str
+    tmdb_timeout: int
+    tmdb_language: str
 
 
 def _workspace_root() -> Path:
@@ -61,6 +75,9 @@ def get_settings() -> CoreSettings:
     api_cfg = file_cfg.get("api", {}) if isinstance(file_cfg.get("api"), dict) else {}
     rag_cfg = file_cfg.get("rag", {}) if isinstance(file_cfg.get("rag"), dict) else {}
     local_llm_cfg = file_cfg.get("local_llm", {}) if isinstance(file_cfg.get("local_llm"), dict) else {}
+    external_cfg = file_cfg.get("external_apis", {}) if isinstance(file_cfg.get("external_apis"), dict) else {}
+    mediawiki_cfg = external_cfg.get("mediawiki", {}) if isinstance(external_cfg.get("mediawiki"), dict) else {}
+    tmdb_cfg = external_cfg.get("tmdb", {}) if isinstance(external_cfg.get("tmdb"), dict) else {}
 
     api_base_url = _first_non_empty(
         os.getenv("DEEPSEEK_BASE_URL", ""),
@@ -95,6 +112,34 @@ def get_settings() -> CoreSettings:
     except ValueError:
         timeout = 120
 
+    with_context_raw = _first_non_empty(
+        os.getenv("AI_SUMMARY_RESPONSE_MAX_TOKENS_WITH_CONTEXT", ""),
+        str(rag_cfg.get("response_max_tokens_with_context", "")),
+        "2500",
+    )
+    no_context_raw = _first_non_empty(
+        os.getenv("AI_SUMMARY_RESPONSE_MAX_TOKENS_NO_CONTEXT", ""),
+        str(rag_cfg.get("response_max_tokens_no_context", "")),
+        "1200",
+    )
+    local_only_read_web_cache_raw = _first_non_empty(
+        os.getenv("AI_SUMMARY_LOCAL_ONLY_READ_WEB_CACHE", ""),
+        str(rag_cfg.get("local_only_read_web_cache", "")),
+        "1",
+    )
+
+    try:
+        rag_response_max_tokens_with_context = int(with_context_raw)
+    except ValueError:
+        rag_response_max_tokens_with_context = 2500
+
+    try:
+        rag_response_max_tokens_no_context = int(no_context_raw)
+    except ValueError:
+        rag_response_max_tokens_no_context = 1200
+
+    rag_local_only_read_web_cache = str(local_only_read_web_cache_raw).strip().lower() in {"1", "true", "yes", "on"}
+
     local_llm_url = _first_non_empty(
         os.getenv("AI_SUMMARY_LOCAL_LLM_URL", ""),
         str(local_llm_cfg.get("url", "")),
@@ -111,6 +156,71 @@ def get_settings() -> CoreSettings:
         "local",
     )
 
+    mediawiki_zh_api_url = _first_non_empty(
+        os.getenv("NAV_DASHBOARD_MEDIAWIKI_ZH_API_URL", ""),
+        str(mediawiki_cfg.get("zh_api_url", "")),
+        "https://zh.wikipedia.org/w/api.php",
+    )
+    mediawiki_en_api_url = _first_non_empty(
+        os.getenv("NAV_DASHBOARD_MEDIAWIKI_EN_API_URL", ""),
+        str(mediawiki_cfg.get("en_api_url", "")),
+        "https://en.wikipedia.org/w/api.php",
+    )
+    mediawiki_user_agent = _first_non_empty(
+        os.getenv("NAV_DASHBOARD_MEDIAWIKI_USER_AGENT", ""),
+        str(mediawiki_cfg.get("user_agent", "")),
+        "",
+    )
+    mediawiki_api_user_agent = _first_non_empty(
+        os.getenv("NAV_DASHBOARD_MEDIAWIKI_API_USER_AGENT", ""),
+        str(mediawiki_cfg.get("api_user_agent", "")),
+        "",
+    )
+    mediawiki_contact = _first_non_empty(
+        os.getenv("NAV_DASHBOARD_MEDIAWIKI_CONTACT", ""),
+        str(mediawiki_cfg.get("contact", "")),
+        "",
+    )
+    mediawiki_timeout_raw = _first_non_empty(
+        os.getenv("NAV_DASHBOARD_MEDIAWIKI_TIMEOUT", ""),
+        str(mediawiki_cfg.get("timeout", "")),
+        "20",
+    )
+    try:
+        mediawiki_timeout = int(mediawiki_timeout_raw)
+    except ValueError:
+        mediawiki_timeout = 20
+
+    tmdb_api_base_url = _first_non_empty(
+        os.getenv("NAV_DASHBOARD_TMDB_API_BASE_URL", ""),
+        str(tmdb_cfg.get("api_base_url", "")),
+        "https://api.themoviedb.org/3",
+    )
+    tmdb_api_key = _first_non_empty(
+        os.getenv("NAV_DASHBOARD_TMDB_API_KEY", ""),
+        str(tmdb_cfg.get("api_key", "")),
+        "",
+    )
+    tmdb_read_access_token = _first_non_empty(
+        os.getenv("NAV_DASHBOARD_TMDB_READ_ACCESS_TOKEN", ""),
+        str(tmdb_cfg.get("read_access_token", "")),
+        "",
+    )
+    tmdb_timeout_raw = _first_non_empty(
+        os.getenv("NAV_DASHBOARD_TMDB_TIMEOUT", ""),
+        str(tmdb_cfg.get("timeout", "")),
+        "20",
+    )
+    try:
+        tmdb_timeout = int(tmdb_timeout_raw)
+    except ValueError:
+        tmdb_timeout = 20
+    tmdb_language = _first_non_empty(
+        os.getenv("NAV_DASHBOARD_TMDB_LANGUAGE", ""),
+        str(tmdb_cfg.get("language", "")),
+        "zh-CN",
+    )
+
     if local_llm_url and not local_llm_url.rstrip("/").endswith("/v1"):
         local_llm_url = local_llm_url.rstrip("/") + "/v1"
 
@@ -120,7 +230,21 @@ def get_settings() -> CoreSettings:
         chat_model=chat_model,
         embedding_model=embedding_model,
         timeout=timeout,
+        rag_response_max_tokens_with_context=rag_response_max_tokens_with_context,
+        rag_response_max_tokens_no_context=rag_response_max_tokens_no_context,
+        rag_local_only_read_web_cache=rag_local_only_read_web_cache,
         local_llm_url=local_llm_url,
         local_llm_model=local_llm_model,
         local_llm_api_key=local_llm_api_key,
+        mediawiki_zh_api_url=mediawiki_zh_api_url,
+        mediawiki_en_api_url=mediawiki_en_api_url,
+        mediawiki_user_agent=mediawiki_user_agent,
+        mediawiki_api_user_agent=mediawiki_api_user_agent,
+        mediawiki_contact=mediawiki_contact,
+        mediawiki_timeout=mediawiki_timeout,
+        tmdb_api_base_url=tmdb_api_base_url,
+        tmdb_api_key=tmdb_api_key,
+        tmdb_read_access_token=tmdb_read_access_token,
+        tmdb_timeout=tmdb_timeout,
+        tmdb_language=tmdb_language,
     )

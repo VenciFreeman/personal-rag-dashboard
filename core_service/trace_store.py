@@ -9,8 +9,9 @@ from typing import Any
 
 
 WORKSPACE_ROOT = Path(__file__).resolve().parent.parent
-TRACE_RECORDS_FILE = WORKSPACE_ROOT / "nav_dashboard" / "data" / "trace_records.jsonl"
-TRACE_RECORDS_JSON_FILE = WORKSPACE_ROOT / "nav_dashboard" / "data" / "trace_records.json"
+TRACE_RECORDS_DIR = WORKSPACE_ROOT / "nav_dashboard" / "data"
+TRACE_RECORDS_LEGACY_FILE = TRACE_RECORDS_DIR / "trace_records.jsonl"
+TRACE_RECORDS_JSON_FILE = TRACE_RECORDS_DIR / "trace_records.json"
 TRACE_RECORDS_MAX = max(100, int(os.getenv("TRACE_RECORDS_MAX", "2000") or "2000"))
 _LOCK = threading.Lock()
 
@@ -20,6 +21,53 @@ def _json_safe(value: Any) -> Any:
         return json.loads(json.dumps(value, ensure_ascii=False, default=str))
     except Exception:
         return str(value)
+
+
+def _parse_trace_timestamp(value: Any) -> datetime | None:
+    text = str(value or "").strip()
+    if not text:
+        return None
+    try:
+        normalized = text.replace("Z", "+00:00")
+        return datetime.fromisoformat(normalized)
+    except Exception:
+        return None
+
+
+def _trace_month_key(record: dict[str, Any]) -> str:
+    dt = _parse_trace_timestamp(record.get("timestamp")) or datetime.now()
+    return dt.strftime("%Y_%m")
+
+
+def _trace_records_file_for_month(month_key: str) -> Path:
+    safe_key = str(month_key or "").strip() or datetime.now().strftime("%Y_%m")
+    return TRACE_RECORDS_DIR / f"trace_records_{safe_key}.jsonl"
+
+
+def list_trace_record_paths() -> list[Path]:
+    monthly = sorted(
+        [path for path in TRACE_RECORDS_DIR.glob("trace_records_*.jsonl") if path.is_file()],
+        key=lambda path: path.name,
+    )
+    paths: list[Path] = []
+    if TRACE_RECORDS_LEGACY_FILE.exists():
+        paths.append(TRACE_RECORDS_LEGACY_FILE)
+    paths.extend(monthly)
+    if TRACE_RECORDS_JSON_FILE.exists() or paths:
+        paths.append(TRACE_RECORDS_JSON_FILE)
+    return paths
+
+
+def _iter_trace_jsonl_files_locked() -> list[Path]:
+    monthly = sorted(
+        [path for path in TRACE_RECORDS_DIR.glob("trace_records_*.jsonl") if path.is_file()],
+        key=lambda path: path.name,
+    )
+    files: list[Path] = []
+    if TRACE_RECORDS_LEGACY_FILE.exists():
+        files.append(TRACE_RECORDS_LEGACY_FILE)
+    files.extend(monthly)
+    return files
 
 
 def write_trace_record(record: dict[str, Any]) -> None:
@@ -33,10 +81,14 @@ def write_trace_record(record: dict[str, Any]) -> None:
     payload["trace_id"] = trace_id
 
     with _LOCK:
-        TRACE_RECORDS_FILE.parent.mkdir(parents=True, exist_ok=True)
-        with TRACE_RECORDS_FILE.open("a", encoding="utf-8") as handle:
+        trace_file = _trace_records_file_for_month(_trace_month_key(payload))
+        trace_file.parent.mkdir(parents=True, exist_ok=True)
+        with trace_file.open("a", encoding="utf-8") as handle:
             handle.write(json.dumps(payload, ensure_ascii=False) + "\n")
-        records = _trim_trace_records_locked()
+        records = _load_recent_trace_records_locked(limit=TRACE_RECORDS_MAX)
+        records.append(payload)
+        if len(records) > TRACE_RECORDS_MAX:
+            records = records[-TRACE_RECORDS_MAX:]
         _write_trace_snapshot_locked(records)
 
 
@@ -46,11 +98,14 @@ def get_trace_record(trace_id: str) -> dict[str, Any] | None:
         return None
 
     with _LOCK:
-        records = _load_trace_records_locked()
-
-    for row in reversed(records):
-        if isinstance(row, dict) and str(row.get("trace_id", "") or "").strip() == value:
-            return row
+        records = _load_trace_records_from_snapshot_locked()
+        for row in reversed(records):
+            if isinstance(row, dict) and str(row.get("trace_id", "") or "").strip() == value:
+                return row
+        for path in reversed(_iter_trace_jsonl_files_locked()):
+            for row in reversed(_load_trace_records_from_jsonl_path_locked(path)):
+                if isinstance(row, dict) and str(row.get("trace_id", "") or "").strip() == value:
+                    return row
     return None
 
 
@@ -134,10 +189,26 @@ def render_trace_export(record: dict[str, Any]) -> str:
         "[Ranking]",
         f"Method: {ranking.get('method', '')}",
         f"Rerank K: {ranking.get('rerank_k', '')}",
+        f"Rerank Candidate Count: {ranking.get('rerank_candidate_count', '')}",
+        f"Rerank Candidate Profile: {ranking.get('rerank_candidate_profile', '')}",
+        f"Fusion Alpha: {_format_optional(ranking.get('fusion_alpha'))}",
+        f"Fusion Alpha Base: {_format_optional(ranking.get('fusion_alpha_base'))}",
+        f"Dynamic Alpha Enabled: {ranking.get('dynamic_alpha_enabled', '')}",
+        f"Rerank Soft Top1: {_format_optional(ranking.get('rerank_soft_top1'))}",
+        f"Rerank Soft Top2: {_format_optional(ranking.get('rerank_soft_top2'))}",
+        f"Rerank Soft Diff: {_format_optional(ranking.get('rerank_soft_diff'))}",
+        f"Rerank Confidence Factor: {_format_optional(ranking.get('rerank_confidence_factor'))}",
+        f"Fusion Alpha Reason: {ranking.get('fusion_alpha_reason', '')}",
         f"Rerank Optimization: {_format_optional(rerank_delta)}",
+        f"Top1 Final Score: {_format_optional(ranking.get('top1_final_score'))}",
+        f"Top1 Vector Delta: {_format_optional(ranking.get('top1_vector_delta'))}",
+        f"Baseline Gap: {_format_optional(ranking.get('baseline_gap'))}",
         f"Threshold Margin: {_format_optional(threshold_margin)}",
         f"Identity Changed: {ranking.get('top1_identity_changed', '')}",
         f"Rank Shift: {_format_optional(ranking.get('top1_rank_shift'))}",
+        f"Swap Blocked By Gap: {ranking.get('swap_blocked_by_gap', '')}",
+        f"Guard Triggered: {ranking.get('guard_triggered', '')}",
+        f"Guard Reason: {ranking.get('guard_reason', '')}",
         "",
         "[LLM]",
         f"Backend: {llm.get('backend', '')}",
@@ -170,25 +241,11 @@ def render_trace_export(record: dict[str, Any]) -> str:
     return "\n".join(lines).strip() + "\n"
 
 
-def _trim_trace_records_locked() -> list[dict[str, Any]]:
-    records = _load_trace_records_from_jsonl_locked()
-    if len(records) <= TRACE_RECORDS_MAX:
-        return records
-
-    records = records[-TRACE_RECORDS_MAX:]
-    try:
-        serialized = [json.dumps(_json_safe(item), ensure_ascii=False) for item in records if isinstance(item, dict)]
-        TRACE_RECORDS_FILE.write_text("\n".join(serialized) + "\n", encoding="utf-8")
-    except Exception:
-        pass
-    return records
-
-
-def _load_trace_records_locked() -> list[dict[str, Any]]:
+def _load_recent_trace_records_locked(limit: int = TRACE_RECORDS_MAX) -> list[dict[str, Any]]:
     records = _load_trace_records_from_snapshot_locked()
     if records:
-        return records
-    return _load_trace_records_from_jsonl_locked()
+        return records[-max(1, int(limit)):]
+    return _load_trace_records_from_all_jsonl_locked(limit=limit)
 
 
 def _load_trace_records_from_snapshot_locked() -> list[dict[str, Any]]:
@@ -207,11 +264,11 @@ def _load_trace_records_from_snapshot_locked() -> list[dict[str, Any]]:
     return []
 
 
-def _load_trace_records_from_jsonl_locked() -> list[dict[str, Any]]:
-    if not TRACE_RECORDS_FILE.exists():
+def _load_trace_records_from_jsonl_path_locked(path: Path) -> list[dict[str, Any]]:
+    if not path.exists():
         return []
     try:
-        lines = TRACE_RECORDS_FILE.read_text(encoding="utf-8").splitlines()
+        lines = path.read_text(encoding="utf-8").splitlines()
     except Exception:
         return []
     records: list[dict[str, Any]] = []
@@ -225,6 +282,15 @@ def _load_trace_records_from_jsonl_locked() -> list[dict[str, Any]]:
             continue
         if isinstance(row, dict):
             records.append(row)
+    return records
+
+
+def _load_trace_records_from_all_jsonl_locked(limit: int | None = None) -> list[dict[str, Any]]:
+    records: list[dict[str, Any]] = []
+    for path in _iter_trace_jsonl_files_locked():
+        records.extend(_load_trace_records_from_jsonl_path_locked(path))
+    if limit is not None and len(records) > max(1, int(limit)):
+        return records[-max(1, int(limit)):]
     return records
 
 
