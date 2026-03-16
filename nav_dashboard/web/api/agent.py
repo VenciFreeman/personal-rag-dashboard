@@ -34,6 +34,50 @@ from web.services import agent_service
 router = APIRouter(prefix="/api/agent", tags=["agent"])
 
 
+def _first_forwarded_value(value: str) -> str:
+    return str(value or "").split(",", 1)[0].strip()
+
+
+def _public_request_base_url(request: Request) -> str:
+    forwarded = _first_forwarded_value(request.headers.get("forwarded", ""))
+    forwarded_host = ""
+    forwarded_proto = ""
+    if forwarded:
+        for segment in forwarded.split(";"):
+            key, _, raw_value = segment.partition("=")
+            if not _:
+                continue
+            normalized_key = key.strip().lower()
+            normalized_value = raw_value.strip().strip('"')
+            if normalized_key == "host" and not forwarded_host:
+                forwarded_host = normalized_value
+            elif normalized_key == "proto" and not forwarded_proto:
+                forwarded_proto = normalized_value
+
+    host = (
+        _first_forwarded_value(request.headers.get("x-forwarded-host", ""))
+        or forwarded_host
+        or str(request.headers.get("host", "")).strip()
+        or str(request.url.netloc or "").strip()
+    ).rstrip("/")
+    scheme = (
+        _first_forwarded_value(request.headers.get("x-forwarded-proto", ""))
+        or forwarded_proto
+        or str(request.url.scheme or "http").strip()
+        or "http"
+    ).rstrip(":/")
+    forwarded_port = _first_forwarded_value(request.headers.get("x-forwarded-port", ""))
+    if host and forwarded_port and ":" not in host and not host.startswith("["):
+        host = f"{host}:{forwarded_port}"
+    if not host:
+        hostname = request.url.hostname or "localhost"
+        if request.url.port:
+            host = f"{hostname}:{request.url.port}"
+        else:
+            host = hostname
+    return f"{scheme}://{host}/"
+
+
 class ChatPayload(BaseModel):
     question: str = Field(min_length=1)
     session_id: str = ""
@@ -95,7 +139,7 @@ def post_chat(payload: ChatPayload, request: Request) -> dict[str, Any]:
             confirm_over_quota=payload.confirm_over_quota,
             deny_over_quota=payload.deny_over_quota,
             debug=payload.debug,
-            request_base_url=str(request.base_url),
+            request_base_url=_public_request_base_url(request),
             benchmark_mode=payload.benchmark_mode,
         )
     except ValueError as exc:
@@ -138,7 +182,7 @@ def post_chat_stream(payload: ChatPayload, request: Request) -> StreamingRespons
                 confirm_over_quota=payload.confirm_over_quota,
                 deny_over_quota=payload.deny_over_quota,
                 debug=payload.debug,
-                request_base_url=str(request.base_url),
+                request_base_url=_public_request_base_url(request),
                 benchmark_mode=payload.benchmark_mode,
             ):
                 yield f"data: {json.dumps(event, ensure_ascii=False)}\n\n"

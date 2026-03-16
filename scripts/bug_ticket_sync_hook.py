@@ -59,9 +59,9 @@ def _json_output(payload: dict[str, Any]) -> None:
 
 def _debug_log_path(hook_input: dict[str, Any]) -> Path | None:
     raw_path = _safe_text(os.environ.get("BUG_TICKET_DEBUG_LOG"))
-    if not raw_path:
-        return None
     base = _resolve_path(_safe_text(hook_input.get("cwd")) or str(WORKSPACE_ROOT), WORKSPACE_ROOT)
+    if not raw_path:
+        return base / "nav_dashboard" / "data" / "bug_ticket_hook_debug.jsonl"
     return _resolve_path(raw_path, base)
 
 
@@ -113,6 +113,17 @@ def _read_hook_input() -> dict[str, Any]:
     return payload if isinstance(payload, dict) else {}
 
 
+def _read_hook_input_with_raw() -> tuple[str, dict[str, Any]]:
+    raw = sys.stdin.read().strip()
+    if not raw:
+        return "", {}
+    try:
+        payload = json.loads(raw)
+    except Exception:
+        return raw, {}
+    return raw, payload if isinstance(payload, dict) else {}
+
+
 def _resolve_path(value: str, base: Path) -> Path:
     candidate = Path(value)
     if not candidate.is_absolute():
@@ -132,6 +143,200 @@ def _configure_ticket_file(hook_input: dict[str, Any]) -> Path:
         ticket_file = base / "nav_dashboard" / "data" / "tickets.jsonl"
     ticket_store.TICKETS_FILE = ticket_file
     return ticket_file
+
+
+def _outbox_file(ticket_file: Path) -> Path:
+    explicit_path = _safe_text(os.environ.get("BUG_TICKET_OUTBOX_FILE"))
+    if explicit_path:
+        return _resolve_path(explicit_path, ticket_file.parent)
+    return ticket_file.with_name("bug_ticket_outbox.jsonl")
+
+
+def _backfill_state_file(ticket_file: Path) -> Path:
+    explicit_path = _safe_text(os.environ.get("BUG_TICKET_BACKFILL_STATE_FILE"))
+    if explicit_path:
+        return _resolve_path(explicit_path, ticket_file.parent)
+    return ticket_file.with_name("bug_ticket_backfill_state.json")
+
+
+def _invocation_state_file(ticket_file: Path) -> Path:
+    explicit_path = _safe_text(os.environ.get("BUG_TICKET_INVOCATION_STATE_FILE"))
+    if explicit_path:
+        return _resolve_path(explicit_path, ticket_file.parent)
+    return ticket_file.with_name("bug_ticket_hook_invocations.json")
+
+
+def _load_invocation_state(path: Path) -> dict[str, float]:
+    if not path.exists():
+        return {}
+    try:
+        payload = json.loads(path.read_text(encoding="utf-8"))
+    except Exception:
+        return {}
+    if not isinstance(payload, dict):
+        return {}
+    state: dict[str, float] = {}
+    for key, value in payload.items():
+        try:
+            state[str(key)] = float(value)
+        except Exception:
+            continue
+    return state
+
+
+def _save_invocation_state(path: Path, state: dict[str, float]) -> None:
+    trimmed_items = sorted(state.items(), key=lambda item: item[1], reverse=True)[:1000]
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps(dict(trimmed_items), ensure_ascii=False, indent=2), encoding="utf-8")
+
+
+def _fingerprint_hook_invocation(hook_input: dict[str, Any]) -> str:
+    session_id = _safe_text(hook_input.get("sessionId"))
+    hook_event_name = _safe_text(
+        hook_input.get("hookEventName")
+        or ((hook_input.get("hookSpecificOutput") or {}).get("hookEventName") if isinstance(hook_input.get("hookSpecificOutput"), dict) else "")
+    )
+    transcript_path = _safe_text(hook_input.get("transcript_path") or hook_input.get("transcriptPath"))
+    transcript_inline = hook_input.get("transcript")
+    transcript_text = _flatten_text(transcript_inline) if transcript_inline not in {None, ""} else ""
+    transcript_digest = _normalize_compare_text(transcript_path or transcript_text)[:400]
+    return " | ".join(part for part in [hook_event_name, session_id, transcript_digest] if part)
+
+
+def _should_skip_duplicate_invocation(ticket_file: Path, hook_input: dict[str, Any]) -> bool:
+    fingerprint = _fingerprint_hook_invocation(hook_input)
+    if not fingerprint:
+        return False
+    state_file = _invocation_state_file(ticket_file)
+    state = _load_invocation_state(state_file)
+    now = datetime.now().timestamp()
+    ttl_seconds = max(60.0, float(_safe_text(os.environ.get("BUG_TICKET_INVOCATION_TTL_SECONDS")) or "900"))
+    cutoff = now - ttl_seconds
+    state = {key: value for key, value in state.items() if value >= cutoff}
+    last_seen = float(state.get(fingerprint, 0.0) or 0.0)
+    if last_seen >= cutoff:
+        _append_debug_log(
+            hook_input,
+            {
+                "phase": "duplicate_invocation_skipped",
+                "fingerprint": fingerprint,
+                "state_file": state_file.as_posix(),
+                "hook_source": _safe_text(os.environ.get("BUG_TICKET_HOOK_SOURCE")) or "unknown",
+            },
+        )
+        _save_invocation_state(state_file, state)
+        return True
+    state[fingerprint] = now
+    _save_invocation_state(state_file, state)
+    return False
+
+
+def _workspace_storage_root() -> Path | None:
+    explicit_root = _safe_text(os.environ.get("BUG_TICKET_WORKSPACE_STORAGE_ROOT"))
+    if explicit_root:
+        path = _resolve_path(explicit_root, WORKSPACE_ROOT)
+        return path if path.exists() else None
+    appdata = _safe_text(os.environ.get("APPDATA"))
+    if not appdata:
+        return None
+    path = Path(appdata) / "Code" / "User" / "workspaceStorage"
+    return path if path.exists() else None
+
+
+def _code_logs_root() -> Path | None:
+    explicit_root = _safe_text(os.environ.get("BUG_TICKET_CODE_LOGS_ROOT"))
+    if explicit_root:
+        path = _resolve_path(explicit_root, WORKSPACE_ROOT)
+        return path if path.exists() else None
+    appdata = _safe_text(os.environ.get("APPDATA"))
+    if not appdata:
+        return None
+    path = Path(appdata) / "Code" / "logs"
+    return path if path.exists() else None
+
+
+def _load_backfill_state(path: Path) -> dict[str, float]:
+    if not path.exists():
+        return {}
+    try:
+        payload = json.loads(path.read_text(encoding="utf-8"))
+    except Exception:
+        return {}
+    if not isinstance(payload, dict):
+        return {}
+    state: dict[str, float] = {}
+    for key, value in payload.items():
+        try:
+            state[str(key)] = float(value)
+        except Exception:
+            continue
+    return state
+
+
+def _save_backfill_state(path: Path, state: dict[str, float]) -> None:
+    trimmed_items = sorted(state.items(), key=lambda item: item[1], reverse=True)[:2000]
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps(dict(trimmed_items), ensure_ascii=False, indent=2), encoding="utf-8")
+
+
+def _iter_workspace_storage_transcripts(root: Path, *, cutoff_epoch: float, max_files: int) -> list[Path]:
+    candidates: list[tuple[float, Path]] = []
+    seen: set[str] = set()
+    patterns = [
+        "*/GitHub.copilot-chat/chat-session-resources/**/*.txt",
+        "*/GitHub.copilot-chat/chat-session-resources/**/*.json",
+        "*/GitHub.copilot-chat/chat-session-resources/**/*.md",
+    ]
+    for pattern in patterns:
+        for path in root.glob(pattern):
+            if not path.is_file():
+                continue
+            suffix = str(path.suffix or "").strip().lower()
+            if suffix not in {".txt", ".json", ".md"}:
+                continue
+            normalized = path.as_posix()
+            if normalized in seen:
+                continue
+            seen.add(normalized)
+            try:
+                stat = path.stat()
+            except OSError:
+                continue
+            mtime = stat.st_mtime
+            if mtime < cutoff_epoch:
+                continue
+            if stat.st_size > 2 * 1024 * 1024:
+                continue
+            candidates.append((mtime, path))
+    candidates.sort(key=lambda item: item[0], reverse=True)
+    return [path for _, path in candidates[:max_files]]
+
+
+def _iter_code_log_candidates(root: Path, *, cutoff_epoch: float, max_files: int) -> list[Path]:
+    candidates: list[tuple[float, Path]] = []
+    seen: set[str] = set()
+    patterns = [
+        "**/GitHub.copilot-chat/*.log",
+        "**/GitHub.copilot-chat/*.txt",
+        "**/GitHub.copilot-chat/*.json",
+    ]
+    for pattern in patterns:
+        for path in root.glob(pattern):
+            if not path.is_file():
+                continue
+            normalized = path.as_posix()
+            if normalized in seen:
+                continue
+            seen.add(normalized)
+            try:
+                stat = path.stat()
+            except OSError:
+                continue
+            if stat.st_mtime < cutoff_epoch or stat.st_size > 2 * 1024 * 1024:
+                continue
+            candidates.append((stat.st_mtime, path))
+    candidates.sort(key=lambda item: item[0], reverse=True)
+    return [path for _, path in candidates[:max_files]]
 
 
 def _load_transcript(hook_input: dict[str, Any]) -> Any:
@@ -482,6 +687,88 @@ def _extract_candidates(transcript: Any, session_id: str) -> list[dict[str, Any]
     return _dedupe_candidates(normalized)
 
 
+def _extract_outbox_candidates(outbox_file: Path) -> tuple[list[dict[str, Any]], list[str], int, int]:
+    if not outbox_file.exists():
+        return [], [], 0, 0
+    try:
+        raw_lines = outbox_file.read_text(encoding="utf-8").splitlines()
+    except Exception:
+        return [], [], 0, 0
+
+    normalized: list[dict[str, Any]] = []
+    retained_lines: list[str] = []
+    consumed_count = 0
+    invalid_count = 0
+    for raw_line in raw_lines:
+        line = raw_line.strip()
+        if not line:
+            continue
+        try:
+            entry = json.loads(line)
+        except Exception:
+            retained_lines.append(raw_line)
+            invalid_count += 1
+            continue
+        if not isinstance(entry, dict):
+            retained_lines.append(raw_line)
+            invalid_count += 1
+            continue
+        payload = entry.get("payload") if isinstance(entry.get("payload"), dict) else entry
+        if not isinstance(payload, dict):
+            retained_lines.append(raw_line)
+            invalid_count += 1
+            continue
+        session_id = _safe_text(entry.get("session_id") or entry.get("sessionId") or entry.get("source_session"))
+        file_paths = _safe_text_list(entry.get("file_paths") or entry.get("filePaths"))
+        normalized.append(_normalize_candidate(payload, session_id=session_id, file_paths=file_paths, all_text=json.dumps(entry, ensure_ascii=False)))
+        consumed_count += 1
+    return _dedupe_candidates(normalized), retained_lines, consumed_count, invalid_count
+
+
+def _rewrite_outbox_file(outbox_file: Path, retained_lines: list[str]) -> None:
+    outbox_file.parent.mkdir(parents=True, exist_ok=True)
+    if not retained_lines:
+        outbox_file.write_text("", encoding="utf-8")
+        return
+    outbox_file.write_text("\n".join(retained_lines) + "\n", encoding="utf-8")
+
+
+def _sync_outbox_fallback(ticket_file: Path, hook_input: dict[str, Any]) -> dict[str, Any]:
+    outbox_file = _outbox_file(ticket_file)
+    candidates, retained_lines, consumed_count, invalid_count = _extract_outbox_candidates(outbox_file)
+    if not consumed_count and not invalid_count:
+        return {"continue": True, "outbox_consumed": 0, "outbox_invalid": 0}
+
+    created: list[str] = []
+    updated: list[str] = []
+    if candidates:
+        recent = _recent_tickets()
+        created, updated, recent = _sync_candidates(candidates, recent)
+    _rewrite_outbox_file(outbox_file, retained_lines)
+    summary = _summarize(created, updated, ticket_file)
+    _append_debug_log(
+        hook_input,
+        {
+            "phase": "outbox_fallback",
+            "outbox_file": outbox_file.as_posix(),
+            "outbox_consumed": consumed_count,
+            "outbox_invalid": invalid_count,
+            "candidate_categories": [_safe_text(item.get("category")) for item in candidates],
+            "created": created,
+            "updated": updated,
+            "summary": summary,
+        },
+    )
+    payload: dict[str, Any] = {
+        "continue": True,
+        "outbox_consumed": consumed_count,
+        "outbox_invalid": invalid_count,
+    }
+    if summary:
+        payload["systemMessage"] = summary
+    return payload
+
+
 def _summarize(created: list[str], updated: list[str], ticket_file: Path) -> str:
     parts: list[str] = []
     if created:
@@ -493,18 +780,159 @@ def _summarize(created: list[str], updated: list[str], ticket_file: Path) -> str
     return f"Bug ticket sync -> {'; '.join(parts)} | store={ticket_file.as_posix()}"
 
 
+def _sync_candidates(candidates: list[dict[str, Any]], recent: list[dict[str, Any]]) -> tuple[list[str], list[str], list[dict[str, Any]]]:
+    created: list[str] = []
+    updated: list[str] = []
+    for candidate in candidates:
+        existing = _match_existing(candidate, recent)
+        if existing is None:
+            item = ticket_store.create_ticket(candidate)
+            created.append(_safe_text(item.get("ticket_id")))
+            recent.insert(0, item)
+            continue
+        merged = _merge_ticket_payload(existing, candidate)
+        item = ticket_store.update_ticket(_safe_text(existing.get("ticket_id")), merged)
+        updated.append(_safe_text(item.get("ticket_id")))
+        recent = [item if _safe_text(row.get("ticket_id")) == _safe_text(item.get("ticket_id")) else row for row in recent]
+    return created, updated, recent
+
+
+def _sync_workspace_storage_backfill(ticket_file: Path, hook_input: dict[str, Any]) -> dict[str, Any]:
+    root = _workspace_storage_root()
+    logs_root = _code_logs_root()
+    if root is None and logs_root is None:
+        return {"continue": True, "scanned_files": 0, "matched_files": 0}
+
+    cutoff_hours = max(1, int(_safe_text(os.environ.get("BUG_TICKET_BACKFILL_HOURS")) or "72"))
+    max_files = max(20, int(_safe_text(os.environ.get("BUG_TICKET_BACKFILL_MAX_FILES")) or "400"))
+    cutoff_epoch = (datetime.now() - timedelta(hours=cutoff_hours)).timestamp()
+    state_file = _backfill_state_file(ticket_file)
+    previous_state = _load_backfill_state(state_file)
+    next_state: dict[str, float] = {}
+
+    recent = _recent_tickets()
+    created: list[str] = []
+    updated: list[str] = []
+    scanned_files = 0
+    matched_files = 0
+
+    files: list[Path] = []
+    if root is not None:
+        files.extend(_iter_workspace_storage_transcripts(root, cutoff_epoch=cutoff_epoch, max_files=max_files))
+    if logs_root is not None:
+        files.extend(_iter_code_log_candidates(logs_root, cutoff_epoch=cutoff_epoch, max_files=max(20, max_files // 2)))
+
+    deduped_files: list[Path] = []
+    seen_files: set[str] = set()
+    for path in files:
+        key = path.as_posix()
+        if key in seen_files:
+            continue
+        seen_files.add(key)
+        deduped_files.append(path)
+
+    files = deduped_files[:max_files]
+    # Files modified within the last 10 minutes are always re-scanned,
+    # regardless of whether their mtime is already in the backfill state.
+    always_rescan_before = datetime.now().timestamp() - 600
+    for path in files:
+        key = path.as_posix()
+        try:
+            mtime = path.stat().st_mtime
+        except OSError:
+            continue
+        previous_mtime = float(previous_state.get(key, 0.0) or 0.0)
+        next_state[key] = max(previous_mtime, mtime)
+        # Skip files whose mtime hasn't changed, UNLESS they're very recent
+        if previous_mtime >= mtime and mtime < always_rescan_before:
+            continue
+
+        scanned_files += 1
+        try:
+            transcript_text = path.read_text(encoding="utf-8", errors="ignore")
+        except Exception:
+            continue
+        next_state[key] = mtime
+        if BUG_MARKER_PREFIX not in transcript_text:
+            continue
+
+        matched_files += 1
+        session_folder = path.parents[1].name if len(path.parents) > 1 else "unknown"
+        transcript_source = {
+            "transcript": transcript_text,
+            "transcript_path": key,
+        }
+        candidates = _extract_candidates(transcript_source, session_id=f"workspace-storage:{session_folder}")
+        created_now, updated_now, recent = _sync_candidates(candidates, recent)
+        created.extend(created_now)
+        updated.extend(updated_now)
+
+    _save_backfill_state(state_file, next_state)
+    summary = _summarize(created, updated, ticket_file)
+    _append_debug_log(
+        hook_input,
+        {
+            "phase": "workspace_storage_backfill",
+            "workspace_storage_root": root.as_posix() if root is not None else "",
+            "code_logs_root": logs_root.as_posix() if logs_root is not None else "",
+            "state_file": state_file.as_posix(),
+            "scanned_files": scanned_files,
+            "matched_files": matched_files,
+            "created": created,
+            "updated": updated,
+            "summary": summary,
+        },
+    )
+    payload: dict[str, Any] = {
+        "continue": True,
+        "scanned_files": scanned_files,
+        "matched_files": matched_files,
+    }
+    if summary:
+        payload["systemMessage"] = summary
+    return payload
+
+
 def main() -> int:
-    hook_input = _read_hook_input()
+    raw_hook_input, hook_input = _read_hook_input_with_raw()
+    scan_workspace_storage = "--scan-workspace-storage" in sys.argv[1:]
+    if scan_workspace_storage and not hook_input:
+        hook_input = {
+            "cwd": str(WORKSPACE_ROOT),
+            "hookEventName": "workspace_storage_backfill",
+        }
     try:
+        _append_debug_log(
+            hook_input or {"cwd": str(WORKSPACE_ROOT)},
+            {
+                "phase": "launch",
+                "argv": sys.argv[1:],
+                "raw_input_len": len(raw_hook_input),
+                "hook_input_keys": sorted(str(key) for key in hook_input.keys()),
+                "transcript_path": _safe_text(hook_input.get("transcript_path") or hook_input.get("transcriptPath")),
+                "session_id": _safe_text(hook_input.get("sessionId")),
+                "hook_source": _safe_text(os.environ.get("BUG_TICKET_HOOK_SOURCE")) or "unknown",
+                "scan_workspace_storage": scan_workspace_storage,
+            },
+        )
         ticket_file = _configure_ticket_file(hook_input)
+        if scan_workspace_storage:
+            _json_output(_sync_workspace_storage_backfill(ticket_file, hook_input))
+            return 0
+        if _should_skip_duplicate_invocation(ticket_file, hook_input):
+            _json_output({"continue": True})
+            return 0
+
         transcript = _load_transcript(hook_input)
         session_id = _safe_text(hook_input.get("sessionId"))
+        hook_event_name = _safe_text(hook_input.get("hookEventName") or ((hook_input.get("hookSpecificOutput") or {}).get("hookEventName") if isinstance(hook_input.get("hookSpecificOutput"), dict) else ""))
         transcript_source = {"hook_input": hook_input, "transcript": transcript}
         candidates = _extract_candidates(transcript_source, session_id=session_id)
         _append_debug_log(
             hook_input,
             {
                 "phase": "parsed",
+                "hook_event_name": hook_event_name,
                 "ticket_file": ticket_file.as_posix(),
                 "session_id": session_id,
                 "hook_input_keys": sorted(str(key) for key in hook_input.keys()),
@@ -518,23 +946,27 @@ def main() -> int:
             },
         )
         if not candidates:
+            outbox_payload = _sync_outbox_fallback(ticket_file, hook_input)
+            if int(outbox_payload.get("outbox_consumed") or 0) > 0:
+                _json_output(outbox_payload)
+                return 0
+            # Run workspace-storage backfill when:
+            #   a) the hook event is a recognised stop-type event, OR
+            #   b) the hook input was empty / minimal (raw_hook_input == "{}" or len <= 4).
+            #      This happens when Copilot/Claude Code sends the hook without a transcript.
+            input_was_empty = len(raw_hook_input) <= 4
+            recognised_event = _safe_text(hook_event_name).lower() in {
+                "stop", "subagentstop", "precompact", "userpromptsubmit"
+            }
+            if recognised_event or input_was_empty:
+                fallback_payload = _sync_workspace_storage_backfill(ticket_file, hook_input)
+                _json_output(fallback_payload)
+                return 0
             _json_output({"continue": True})
             return 0
 
         recent = _recent_tickets()
-        created: list[str] = []
-        updated: list[str] = []
-        for candidate in candidates:
-            existing = _match_existing(candidate, recent)
-            if existing is None:
-                item = ticket_store.create_ticket(candidate)
-                created.append(_safe_text(item.get("ticket_id")))
-                recent.insert(0, item)
-                continue
-            merged = _merge_ticket_payload(existing, candidate)
-            item = ticket_store.update_ticket(_safe_text(existing.get("ticket_id")), merged)
-            updated.append(_safe_text(item.get("ticket_id")))
-            recent = [item if _safe_text(row.get("ticket_id")) == _safe_text(item.get("ticket_id")) else row for row in recent]
+        created, updated, recent = _sync_candidates(candidates, recent)
 
         payload: dict[str, Any] = {"continue": True}
         summary = _summarize(created, updated, ticket_file)
@@ -544,6 +976,7 @@ def main() -> int:
             hook_input,
             {
                 "phase": "synced",
+                "hook_event_name": hook_event_name,
                 "ticket_file": ticket_file.as_posix(),
                 "session_id": session_id,
                 "created": created,

@@ -55,6 +55,11 @@ const feedbackSourceSelect = document.getElementById("feedback-source");
 const feedbackExportBtn = document.getElementById("feedback-export-btn");
 const feedbackClearBtn = document.getElementById("feedback-clear-btn");
 const feedbackCloseBtn = document.getElementById("feedback-close-btn");
+const feedbackDetailModal = document.getElementById("feedback-detail-modal");
+const feedbackDetailMeta = document.getElementById("feedback-detail-meta");
+const feedbackDetailContent = document.getElementById("feedback-detail-content");
+const feedbackDetailOpenTraceBtn = document.getElementById("feedback-detail-open-trace-btn");
+const feedbackDetailCloseBtn = document.getElementById("feedback-detail-close-btn");
 const sessionRenameModal = document.getElementById("session-rename-modal");
 const sessionRenameMeta = document.getElementById("session-rename-meta");
 const sessionRenameInput = document.getElementById("session-rename-input");
@@ -113,10 +118,13 @@ const ticketsCreatedFrom = document.getElementById("tickets-created-from");
 const ticketsCreatedTo = document.getElementById("tickets-created-to");
 const ticketsMainGrid = document.getElementById("tickets-main-grid");
 const ticketsListShell = document.getElementById("tickets-list-shell");
+const ticketsDetailShell = document.getElementById("tickets-detail-shell");
 const ticketsList = document.getElementById("tickets-list");
 const ticketIdInput = document.getElementById("ticket-id");
 const ticketTraceIdInput = document.getElementById("ticket-trace-id");
 const ticketTitleInput = document.getElementById("ticket-title");
+const ticketPasteInput = document.getElementById("ticket-paste-input");
+const ticketPasteFillBtn = document.getElementById("ticket-paste-fill-btn");
 const ticketStatusInput = document.getElementById("ticket-status");
 const ticketPriorityInput = document.getElementById("ticket-priority");
 const ticketDomainInput = document.getElementById("ticket-domain");
@@ -138,8 +146,24 @@ const ticketDeleteConfirmSelect = document.getElementById("ticket-delete-confirm
 const ticketDeleteConfirmBtn = document.getElementById("ticket-delete-confirm-btn");
 const ticketDeleteCancelBtn = document.getElementById("ticket-delete-cancel-btn");
 const pageLocalModel = (document.body?.dataset?.localModel || "").trim() || "qwen2.5-7b-instruct";
-const pageAiSummaryUrl = (document.body?.dataset?.aiSummaryUrl || "").trim() || "http://127.0.0.1:8000/";
-const pageLibraryUrl = (document.body?.dataset?.libraryUrl || "").trim() || "http://127.0.0.1:8091/";
+
+function deriveServiceUrl(explicitUrl, fallbackPort) {
+  const explicit = String(explicitUrl || "").trim();
+  if (explicit) return explicit;
+  const scheme = String(window.location?.protocol || "http:").trim() || "http:";
+  const host = String(window.location?.host || "").trim();
+  if (host) {
+    const hostname = String(window.location?.hostname || "").trim();
+    const currentPort = Number(window.location?.port || 0);
+    const targetPort = Number(fallbackPort);
+    const netloc = hostname && currentPort === targetPort ? host : `${hostname || host}:${targetPort}`;
+    return `${scheme}//${netloc}/`;
+  }
+  return `${scheme}//localhost:${Number(fallbackPort)}/`;
+}
+
+const pageAiSummaryUrl = deriveServiceUrl(document.body?.dataset?.aiSummaryUrl, 8000);
+const pageLibraryUrl = deriveServiceUrl(document.body?.dataset?.libraryUrl, 8091);
 const MAX_REFERENCE_ITEMS = 6;
 
 let activeController = null;
@@ -162,6 +186,7 @@ let currentMissingQueries = [];
 let currentMissingQueriesSource = "all";
 let currentFeedbackItems = [];
 let currentFeedbackSource = "all";
+let currentFeedbackDetailItem = null;
 let currentRuntimeDataItems = [];
 let currentRuntimeDataSummary = {};
 let currentTraceRecord = null;
@@ -174,6 +199,7 @@ let pendingDeleteTicketId = "";
 let currentTicketSort = "updated_desc";
 let currentTicketStatusFilter = "non_closed";
 let ticketsListCollapsed = false;
+let ticketsDetailResizeObserver = null;
 const TICKETS_LIST_COLLAPSED_STORAGE_KEY = "navDashboardTicketsListCollapsed";
 
 // Startup polling
@@ -1502,23 +1528,43 @@ async function loadFeedback(source = "all") {
 
 function showFeedbackDetail(item) {
   const metadata = item?.metadata && typeof item.metadata === "object" ? item.metadata : {};
-  const text = [
-    `时间: ${String(item?.created_at || "")}`,
-    `来源: ${displaySourceLabel(item?.source || "unknown")}`,
-    `trace_id: ${String(item?.trace_id || "—")}`,
-    `session_id: ${String(item?.session_id || "—")}`,
-    `模型: ${String(item?.model || "—")}`,
-    `搜索模式: ${String(item?.search_mode || "—")}`,
-    `问题类型: ${String(item?.query_type || metadata.query_type || "—")}`,
-    "",
-    "原始问题:",
-    String(item?.question || "—"),
-    "",
-    "回答:",
-    String(item?.answer || "—"),
-  ].join("\n");
-  const meta = [String(item?.created_at || ""), displaySourceLabel(item?.source || "unknown")].filter(Boolean).join(" | ");
-  showAppErrorModal("聊天反馈详情", text, meta);
+  const traceId = String(item?.trace_id || "").trim();
+  currentFeedbackDetailItem = item || null;
+  if (feedbackDetailMeta) {
+    feedbackDetailMeta.textContent = [String(item?.created_at || ""), displaySourceLabel(item?.source || "unknown")].filter(Boolean).join(" | ");
+  }
+  if (feedbackDetailContent) {
+    feedbackDetailContent.innerHTML = `
+      <div class="trace-summary-grid">
+        <section class="trace-summary-card">
+          <div class="bm-card-section-label">基本信息</div>
+          <div class="trace-kv"><span>trace_id</span><strong>${escapeHtml(traceId || "—")}</strong></div>
+          <div class="trace-kv"><span>session_id</span><strong>${escapeHtml(String(item?.session_id || "—"))}</strong></div>
+          <div class="trace-kv"><span>模型</span><strong>${escapeHtml(String(item?.model || "—"))}</strong></div>
+          <div class="trace-kv"><span>搜索模式</span><strong>${escapeHtml(String(item?.search_mode || "—"))}</strong></div>
+          <div class="trace-kv"><span>问题类型</span><strong>${escapeHtml(String(item?.query_type || metadata.query_type || "—"))}</strong></div>
+          <div class="trace-kv"><span>用户反馈</span><strong>${escapeHtml(String(item?.feedback || metadata.feedback || "—"))}</strong></div>
+        </section>
+        <section class="trace-summary-card">
+          <div class="bm-card-section-label">原始问题</div>
+          <div class="feedback-detail-text">${escapeHtml(String(item?.question || "—"))}</div>
+        </section>
+      </div>
+      <section class="trace-summary-card">
+        <div class="bm-card-section-label">回答</div>
+        <div class="feedback-detail-text is-answer">${escapeHtml(String(item?.answer || "—"))}</div>
+      </section>
+    `;
+  }
+  if (feedbackDetailOpenTraceBtn) feedbackDetailOpenTraceBtn.disabled = !traceId;
+  feedbackDetailModal?.classList.remove("hidden");
+  feedbackDetailModal?.setAttribute("aria-hidden", "false");
+}
+
+function closeFeedbackDetailModal() {
+  feedbackDetailModal?.classList.add("hidden");
+  feedbackDetailModal?.setAttribute("aria-hidden", "true");
+  currentFeedbackDetailItem = null;
 }
 
 function renderDashboardTicketTrend(stats) {
@@ -1971,6 +2017,9 @@ const BENCHMARK_HISTORY_COLUMNS = 5;
 let benchmarkCaseSets = [];
 const TRACE_STAGE_COLORS = ["#7fc97f", "#beaed4", "#fdc086", "#ffff99", "#386cb0", "#f0027f", "#bf5b17", "#666666"];
 const TRACE_STAGE_ORDER = [
+  "session_prepare_seconds",
+  "query_profile_seconds",
+  "tool_planning_seconds",
   "planning_seconds",
   "vector_recall_seconds",
   "rerank_seconds",
@@ -1980,6 +2029,9 @@ const TRACE_STAGE_ORDER = [
   "llm_seconds",
 ];
 const TRACE_STAGE_LABELS = {
+  session_prepare_seconds: "session_prepare",
+  query_profile_seconds: "query_profile",
+  tool_planning_seconds: "tool_planning",
   planning_seconds: "planning",
   vector_recall_seconds: "vector_recall",
   rerank_seconds: "rerank",
@@ -2029,12 +2081,16 @@ function formatTraceStageLabel(key) {
 
 function buildTraceStageEntries(trace) {
   const stages = trace?.stages && typeof trace.stages === "object" ? trace.stages : {};
+  const hasDetailedPlanning = ["session_prepare_seconds", "query_profile_seconds", "tool_planning_seconds"].some(
+    (key) => Number(stages[key] || 0) > 0,
+  );
   const orderedKeys = [
     ...TRACE_STAGE_ORDER.filter((key) => Object.prototype.hasOwnProperty.call(stages, key)),
     ...Object.keys(stages).filter((key) => key !== "wall_clock_seconds" && !TRACE_STAGE_ORDER.includes(key)),
   ];
   const entries = orderedKeys
     .filter((key) => key !== "wall_clock_seconds")
+    .filter((key) => !(hasDetailedPlanning && key === "planning_seconds"))
     .map((key, index) => ({
       key,
       label: formatTraceStageLabel(key),
@@ -2189,7 +2245,7 @@ async function openTraceModal(traceId) {
   if (traceModalMeta) {
     traceModalMeta.textContent = `${trace?.trace_id || value} | ${trace?.entrypoint || ""} | ${trace?.call_type || ""}`;
   }
-  if (traceModalContent) traceModalContent.innerHTML = "";
+  if (traceModalContent) traceModalContent.innerHTML = trace ? renderTraceSummary(trace) : '<div class="trace-result-empty">未找到 trace 数据</div>';
   if (traceModalExport) traceModalExport.textContent = exportText;
   traceModal?.classList.remove("hidden");
   traceModal?.setAttribute("aria-hidden", "false");
@@ -2284,6 +2340,44 @@ function buildEmptyTicket() {
   };
 }
 
+function mergeTicketDraft(currentTicket, draftTicket) {
+  const base = currentTicket && typeof currentTicket === "object" ? currentTicket : buildEmptyTicket();
+  const draft = draftTicket && typeof draftTicket === "object" ? draftTicket : {};
+  return {
+    ...base,
+    ...draft,
+    ticket_id: String(base.ticket_id || ""),
+    created_at: String(base.created_at || draft.created_at || ""),
+    updated_at: String(base.updated_at || draft.updated_at || ""),
+    related_traces: parseTicketTraceList(draft.related_traces ?? base.related_traces ?? []),
+  };
+}
+
+function syncTicketsPaneHeights() {
+  if (!(ticketsListShell instanceof HTMLElement)) return;
+  if (!(ticketsDetailShell instanceof HTMLElement) || ticketsListCollapsed || isCompactTicketsLayout()) {
+    ticketsListShell.style.height = "";
+    ticketsListShell.style.maxHeight = "";
+    return;
+  }
+  const detailHeight = Math.ceil(ticketsDetailShell.getBoundingClientRect().height || 0);
+  if (detailHeight <= 0) return;
+  ticketsListShell.style.height = `${detailHeight}px`;
+  ticketsListShell.style.maxHeight = `${detailHeight}px`;
+}
+
+function setupTicketsPaneHeightSync() {
+  if (!(ticketsDetailShell instanceof HTMLElement)) return;
+  if (ticketsDetailResizeObserver) ticketsDetailResizeObserver.disconnect();
+  if (typeof ResizeObserver === "function") {
+    ticketsDetailResizeObserver = new ResizeObserver(() => {
+      syncTicketsPaneHeights();
+    });
+    ticketsDetailResizeObserver.observe(ticketsDetailShell);
+  }
+  syncTicketsPaneHeights();
+}
+
 function applyTicketToForm(ticket) {
   const value = ticket && typeof ticket === "object" ? ticket : buildEmptyTicket();
   currentTicketId = String(value.ticket_id || "").trim();
@@ -2311,6 +2405,7 @@ function applyTicketToForm(ticket) {
       : "可先用 trace_id 生成草稿，再人工编辑更新字段";
   }
   if (ticketsDeleteBtn) ticketsDeleteBtn.disabled = !currentTicketId;
+  syncTicketsPaneHeights();
 }
 
 function closeTicketDeleteModal() {
@@ -2411,6 +2506,7 @@ function applyTicketsListLayoutState() {
   ticketsMainGrid?.classList.toggle("is-list-collapsed", ticketsListCollapsed);
   ticketsListShell?.classList.toggle("is-collapsed", ticketsListCollapsed);
   renderTicketsListCollapseButton();
+  syncTicketsPaneHeights();
 }
 
 function setTicketsListCollapsed(nextValue) {
@@ -2461,6 +2557,26 @@ function renderTicketsList() {
         `;
       }).join("")
     : '<div class="ticket-empty-state">当前筛选下暂无 ticket</div>';
+  syncTicketsPaneHeights();
+}
+
+async function fillTicketFromPaste() {
+  const raw = String(ticketPasteInput?.value || "").trim();
+  if (!raw) {
+    showAppErrorModal("BUG-TICKET 填充失败", "请先粘贴 BUG-TICKET 文本");
+    return;
+  }
+  const data = await apiPost("/api/dashboard/tickets/parse", { text: raw });
+  const merged = mergeTicketDraft(
+    {
+      ...collectTicketFormPayload(),
+      ticket_id: String(ticketIdInput?.value || currentTicketId || ""),
+      created_at: String(ticketCreatedAtInput?.value || ""),
+      updated_at: String(ticketUpdatedAtInput?.value || ""),
+    },
+    data?.ticket || {},
+  );
+  applyTicketToForm(merged);
 }
 
 async function refreshTickets({ keepSelection = true, selectTicketId = "" } = {}) {
@@ -2489,6 +2605,7 @@ async function refreshTickets({ keepSelection = true, selectTicketId = "" } = {}
 
 async function bootstrapTicketsTab() {
   await refreshTickets({ keepSelection: false });
+  setupTicketsPaneHeightSync();
   ticketsBootstrapped = true;
 }
 
@@ -3520,7 +3637,7 @@ function buildReferencesMarkdown(toolResults) {
 
 function hasReferenceSections(text) {
   const value = String(text || "");
-  return /###\s*(?:本地知识库参考|外部参考|参考资料)/.test(value);
+  return /###\s*(?:本地知识库参考|本地文档参考|本地媒体库参考|外部参考|参考资料)/.test(value);
 }
 
 function setRowContent(row, markdownText) {
@@ -4150,6 +4267,9 @@ async function init() {
   ticketsNewBtn?.addEventListener("click", () => {
     resetTicketEditor();
   });
+  ticketPasteFillBtn?.addEventListener("click", () => {
+    fillTicketFromPaste().catch((e) => showAppErrorModal("BUG-TICKET 填充失败", String(e)));
+  });
   ticketsAIDraftBtn?.addEventListener("click", () => {
     createTicketAIDraft().catch((e) => showAppErrorModal("AI Ticket 草稿失败", String(e)));
   });
@@ -4193,6 +4313,9 @@ async function init() {
   ticketRelatedTracesInput?.addEventListener("input", () => {
     renderTicketTraceLinks(ticketRelatedTracesInput.value || "");
   });
+  ticketPasteInput?.addEventListener("input", () => {
+    syncTicketsPaneHeights();
+  });
   ticketDeleteConfirmSelect?.addEventListener("change", () => {
     if (ticketDeleteConfirmBtn) ticketDeleteConfirmBtn.disabled = String(ticketDeleteConfirmSelect.value || "") !== "delete";
   });
@@ -4207,6 +4330,7 @@ async function init() {
   window.addEventListener("resize", () => {
     renderTicketsListCollapseButton();
     updateSidebarToggleButton("agent-sidebar");
+    syncTicketsPaneHeights();
   });
   ticketDeleteConfirmBtn?.addEventListener("click", () => {
     confirmDeleteCurrentTicket().catch((e) => showAppErrorModal("Ticket 删除失败", String(e)));
@@ -4306,6 +4430,12 @@ async function init() {
     clearFeedback().catch((e) => window.alert(`清空失败: ${String(e)}`));
   });
   feedbackCloseBtn?.addEventListener("click", closeFeedbackModal);
+  feedbackDetailCloseBtn?.addEventListener("click", closeFeedbackDetailModal);
+  feedbackDetailOpenTraceBtn?.addEventListener("click", () => {
+    const traceId = String(currentFeedbackDetailItem?.trace_id || "").trim();
+    if (!traceId) return;
+    openTraceModal(traceId).catch((e) => showAppErrorModal("Trace 加载失败", String(e)));
+  });
   sessionRenameSaveBtn?.addEventListener("click", () => {
     saveSessionRename().catch((e) => window.alert(`重命名失败: ${String(e)}`));
   });
@@ -4319,6 +4449,11 @@ async function init() {
     const target = event.target;
     if (!(target instanceof Element)) return;
     if (target.dataset.role === "feedback-backdrop") closeFeedbackModal();
+  });
+  feedbackDetailModal?.addEventListener("click", (event) => {
+    const target = event.target;
+    if (!(target instanceof Element)) return;
+    if (target.dataset.role === "feedback-detail-backdrop") closeFeedbackDetailModal();
   });
   sessionRenameModal?.addEventListener("click", (event) => {
     const target = event.target;

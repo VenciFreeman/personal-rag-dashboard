@@ -4,8 +4,13 @@ import ast
 import json
 import os
 import re
+import threading
 from pathlib import Path
 from typing import Any
+
+# Serialize concurrent writes to avoid WinError 5 (Access Denied) on Windows
+# when multiple threads race to rename the .tmp file.
+_GRAPH_WRITE_LOCK = threading.Lock()
 
 GRAPH_FILE_NAME = "library_knowledge_graph.json"
 GRAPH_SCHEMA_VERSION = 3
@@ -55,9 +60,10 @@ def _safe_read_json(path: Path, default: Any) -> Any:
 
 def _safe_write_json(path: Path, payload: Any) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
-    tmp_path = path.with_suffix(path.suffix + ".tmp")
-    tmp_path.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
-    tmp_path.replace(path)
+    with _GRAPH_WRITE_LOCK:
+        tmp_path = path.with_suffix(path.suffix + ".tmp")
+        tmp_path.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
+        tmp_path.replace(path)
 
 
 def _split_tags(raw: Any) -> list[str]:

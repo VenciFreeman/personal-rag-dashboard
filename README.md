@@ -37,13 +37,32 @@ core_service (共享模块)
 
 ### 2.1 `nav_dashboard` 的 Agent 协调链路
 
-1. 对用户问题做意图分析与配额检查。
-2. 由混合路由器决定工具调用：包含 LLM 分类、embedding 相似度、媒体实体/意图规则、follow-up 上下文继承。
-3. 规划工具调用（文档检索、媒体检索、联网检索、概念扩展、TMDB）并并行执行。
-4. 对结果做阈值过滤、validator 过滤与引用上限截断。
-5. 汇总上下文后生成最终回答，并保存会话、trace 与指标。
+当前 Agent 已经从早期的单一 `query_type` 路由，演进为 `RouterDecision -> RoutingPolicy -> PostRetrievalAssessment -> Guardrail/Answer` 的分层链路：
 
-补充说明：当前路由不是“纯算法”也不是“纯 LLM”，而是 `LLM + 规则 + 统计阈值 + follow-up 状态机` 的混合决策系统。它已经具备可持续迭代的观测闭环，但还不是自动在线学习系统。
+1. 对用户问题做 query profile 分析与配额检查。
+2. 由 Router 构建 `RouterDecision`：
+   - LLM 结构化理解（`domain / lookup_mode / ranking / rewritten_queries`）
+   - follow-up 策略判定（`standalone / inherit_entity / inherit_filters / inherit_timerange`）
+   - 媒体语义槽提取与 schema 投影
+   - domain arbitration（如 `tech_primary`、`mixed_due_to_entity_plus_tech`、`media_surface_wins`、`llm_media_weak_general`）
+3. `RoutingPolicy` 根据决策结果规划工具：
+   - 文档 RAG：`query_document_rag`
+   - 媒体库检索：`query_media_record`
+   - 可选联网检索：`search_web`
+   - 可选媒体概念扩展：`expand_mediawiki_concept`
+   - 可选外部影视元数据：`search_tmdb_media`
+4. 执行工具后生成 `PostRetrievalAssessment`，记录媒体候选数量、TMDB 结果、doc similarity、reference-limit 截断等信息。
+5. 由 guardrail 和 answer policy 决定最终输出模式：
+   - `normal`
+   - `annotated`
+   - `restricted`
+6. 持久化 trace、会话状态、guardrail flags、工具调用结果与仲裁字段。
+
+补充说明：
+
+- 当前路由不是“纯算法”也不是“纯 LLM”，而是 `LLM understanding + follow-up policy + schema projection + deterministic routing policy` 的混合系统。
+- 技术/通用知识问题不再因为低置信度而直接触发媒体式 restricted 回答；restricted 主要保留给真正存在媒体上下文歧义的场景。
+- trace 现已包含 `arbitration` 字段，便于定位“为什么最终走了 tech / media / mixed / general”。
 
 ### 2.2 `ai_conversations_summary` 的 RAG 链路
 
@@ -72,9 +91,26 @@ core_service (共享模块)
 ## 4. 当前能力快照
 
 - `nav_dashboard` 现已提供：Trace 查询、Tickets 管理、按周 Ticket 提交/关闭趋势图、任务中心、聊天反馈查看、运行时数据清理。
-- Agent trace 会记录：resolved question、follow-up state before/after、路由决策路径、工具调用、guardrail mode、reference-limit 截断原因。
+- Agent trace 会记录：`RouterDecision`、`arbitration`、follow-up state before/after、工具计划、guardrail mode、reference-limit 截断原因、TMDB/MediaWiki/媒体检索验证信息。
+- 媒体类查询已支持语义到库 schema 的自动投影，例如：
+  - `movie -> video + category=电影`
+  - `anime -> video + category=动画`
+  - `director / composer / developer -> author`
+- 媒体实体解析已支持标题与创作者双通道归一，开始具备跨语言/别名对齐能力（例如标题别名、创作者名的规范化）。
 - 媒体类回答支持更强的结构化输出：评分、短评、作者、出版方、渠道等本地字段可直接展开。
 - 历史会话标题现在完整持久化，由前端按容器宽度单行省略显示，而不是后端硬截断。
+
+### 4.1 媒体高层工具定义
+
+仓库中已经引入一组可供 LLM 调用的高层媒体工具定义，位于 `nav_dashboard/web/services/media_tool_definitions.py`，主要包括：
+
+- `resolve_entity`：将自由文本名称解析为本地媒体库中的 canonical title 或 canonical creator
+- `get_title_detail`：按 canonical title 获取个人库中的完整条目
+- `search_by_creator`：按创作者聚合作品
+- `search_by_filters`：按语义过滤条件检索，内部自动完成 schema projection
+- `resolve_and_search`：组合式单步工具
+
+当前主链默认仍以 `query_media_record` 为兼容入口，但高层工具定义已经可以作为后续 tool-calling agent 的迁移基础。
 
 ## 5. 安装与启动（Windows）
 
@@ -130,21 +166,34 @@ python -m venv .venv
 - Agent 文档检索默认配置：
     - `NAV_DASHBOARD_QUERY_REWRITE_COUNT`：默认 `2`
     - `NAV_DASHBOARD_PRIMARY_QUERY_SCORE_BONUS`：原 query 的合并加权
+- Agent 路由/提示词相关配置：
+    - `NAV_DASHBOARD_LONG_QUERY_MIN_TOKENS`
+    - `NAV_DASHBOARD_PROMPT_HISTORY_MAX_MESSAGES`
+    - `NAV_DASHBOARD_PROMPT_HISTORY_ITEM_MAX_CHARS`
+    - `NAV_DASHBOARD_PROMPT_MEMORY_MAX_CHARS`
 - 外部媒体资料扩展配置：
-        - `NAV_DASHBOARD_MEDIAWIKI_ZH_API_URL`
-        - `NAV_DASHBOARD_MEDIAWIKI_EN_API_URL`
-        - `NAV_DASHBOARD_TMDB_API_KEY`
-        - `NAV_DASHBOARD_TMDB_READ_ACCESS_TOKEN`
+    - `NAV_DASHBOARD_MEDIAWIKI_ZH_API_URL`
+    - `NAV_DASHBOARD_MEDIAWIKI_EN_API_URL`
+    - `NAV_DASHBOARD_MEDIAWIKI_TIMEOUT`
+    - `NAV_DASHBOARD_MEDIAWIKI_USER_AGENT`
+    - `NAV_DASHBOARD_MEDIAWIKI_API_USER_AGENT`
+    - `NAV_DASHBOARD_MEDIAWIKI_CONTACT`
+    - `NAV_DASHBOARD_TMDB_API_KEY`
+    - `NAV_DASHBOARD_TMDB_READ_ACCESS_TOKEN`
+    - `NAV_DASHBOARD_TMDB_API_BASE_URL`
+    - `NAV_DASHBOARD_TMDB_TIMEOUT`
+    - `NAV_DASHBOARD_TMDB_LANGUAGE`
 - 若出现默认模型未生效，优先检查以上环境变量是否指向旧模型。
 
 ## 7. 迭代与优化建议
 
 - 当前系统已经具备“可学习”的数据基础，但默认不会自动在线改写路由策略。
-- 持续优化的主要抓手是：`trace_records`、`agent_metrics`、`chat_feedback`、`tickets`、`evals` 与 benchmark 结果。
+- 持续优化的主要抓手是：`trace_records`、`agent_metrics`、`chat_feedback`、`tickets`、`evals`、回归样例与 benchmark 结果。
 - 如果要把它演进成反馈驱动的决策系统，建议路线是：
     1. 先把误路由/误判样本沉淀成结构化评测集。
-    2. 用这些样本离线调整分类阈值、planner 规则与 guardrail 触发条件。
-    3. 再考虑训练轻量 router model 或 bandit/ranker，而不是直接做无约束在线学习。
+    2. 用这些样本离线调整 arbitration policy、planner 规则、schema projection 与 guardrail 触发条件。
+    3. 把 `PostRetrievalPolicy` 和 `AnswerPolicy` 继续从 `agent_service` 中拆出来，减少单体编排器复杂度。
+    4. 再考虑训练轻量 router model 或 bandit/ranker，而不是直接做无约束在线学习。
 
 ## 8. 常见协作建议
 

@@ -9,7 +9,7 @@
   <link rel="icon" type="image/png" sizes="16x16" href="/static/favicon_logosc/favicon-16x16.png" />
   <link rel="shortcut icon" href="/static/favicon_logosc/favicon.ico" />
   <link rel="manifest" href="/static/favicon_logosc/site.webmanifest" />
-  <link rel="stylesheet" href="/static/app.css?v=20260314b" />
+  <link rel="stylesheet" href="/static/app.css?v=20260316c" />
 </head>
 <body>
   <header class="top">
@@ -69,6 +69,13 @@
           </div>
           <div id="result-meta" class="hint"></div>
           <div id="result-list" class="result-list"></div>
+          <div id="result-pagination" class="result-pagination hidden" aria-label="查询结果分页">
+            <button id="result-page-first" type="button" class="ghost result-page-btn" aria-label="首页">&lt;&lt;</button>
+            <button id="result-page-prev" type="button" class="ghost result-page-btn" aria-label="上一页">&lt;</button>
+            <div id="result-page-info" class="hint result-page-info">1 / 1</div>
+            <button id="result-page-next" type="button" class="ghost result-page-btn" aria-label="下一页">&gt;</button>
+            <button id="result-page-last" type="button" class="ghost result-page-btn" aria-label="末页">&gt;&gt;</button>
+          </div>
         </div>
       </div>
     </section>
@@ -176,6 +183,6 @@
   </dialog>
 
   <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.3/dist/chart.umd.min.js"></script>
-  <script src="/static/app.js?v=20260314b"></script>
+  <script src="/static/app.js?v=20260316c"></script>
 </body>
 </html>

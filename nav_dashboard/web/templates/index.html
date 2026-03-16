@@ -9,7 +9,7 @@
   <link rel="icon" type="image/png" sizes="16x16" href="/static/favicon_logosc/favicon-16x16.png" />
   <link rel="shortcut icon" href="/static/favicon_logosc/favicon.ico" />
   <link rel="manifest" href="/static/favicon_logosc/site.webmanifest" />
-  <link rel="stylesheet" href="/static/app.css?v=20260315k" />
+  <link rel="stylesheet" href="/static/app.css?v=20260316f" />
 </head>
 <body data-local-model="{{ local_model }}" data-deepseek-model="{{ deepseek_model }}" data-ai-summary-url="{{ ai_summary_url }}" data-library-url="{{ library_tracker_url }}">
   <header class="top">
@@ -348,93 +348,140 @@
             </div>
           </section>
 
-          <section class="panel-shell tickets-detail-shell">
+          <section id="tickets-detail-shell" class="panel-shell tickets-detail-shell">
             <div class="dashboard-log-head tickets-detail-head">
               <span>Ticket 详情</span>
               <div id="tickets-detail-meta" class="dashboard-meta">可先用 trace_id 生成草稿，再人工编辑更新字段</div>
             </div>
 
-            <div class="tickets-form-grid">
-              <label class="tickets-field compact">
-                <span>Ticket ID</span>
-                <input id="ticket-id" type="text" readonly placeholder="保存后生成" />
-              </label>
-              <label class="tickets-field compact">
-                <span>AI 草稿 Trace ID</span>
-                <input id="ticket-trace-id" type="text" autocomplete="off" spellcheck="false" placeholder="例如 trace_xxx" />
-              </label>
-              <label class="tickets-field compact">
-                <span>Status</span>
-                <select id="ticket-status">
-                  <option value="open">open</option>
-                  <option value="in_progress">in_progress</option>
-                  <option value="blocked">blocked</option>
-                  <option value="resolved">resolved</option>
-                  <option value="closed">closed</option>
-                </select>
-              </label>
-              <label class="tickets-field compact">
-                <span>Priority</span>
-                <select id="ticket-priority">
-                  <option value="low">low</option>
-                  <option value="medium">medium</option>
-                  <option value="high">high</option>
-                  <option value="critical">critical</option>
-                </select>
-              </label>
-              <label class="tickets-field full">
-                <span>Title</span>
-                <input id="ticket-title" type="text" autocomplete="off" spellcheck="false" placeholder="简要描述问题" />
-              </label>
-              <label class="tickets-field compact">
-                <span>Domain</span>
-                <input id="ticket-domain" type="text" autocomplete="off" spellcheck="false" placeholder="media / knowledge / agent" />
-              </label>
-              <label class="tickets-field compact">
-                <span>Category</span>
-                <input id="ticket-category" type="text" autocomplete="off" spellcheck="false" placeholder="answer_restricted / retrieval_empty" />
-              </label>
-              <label class="tickets-field compact">
-                <span>Created At</span>
-                <input id="ticket-created-at" type="text" readonly />
-              </label>
-              <label class="tickets-field compact">
-                <span>Updated At</span>
-                <input id="ticket-updated-at" type="text" readonly />
-              </label>
-              <label class="tickets-field full">
-                <span>Related Traces</span>
-                <textarea id="ticket-related-traces" rows="2" placeholder="每行或逗号分隔一个 trace_id"></textarea>
-              </label>
-              <div id="ticket-related-traces-links" class="ticket-trace-links full"></div>
-              <label class="tickets-field full">
-                <span>Repro Query</span>
-                <textarea id="ticket-repro-query" rows="3" placeholder="复现问题的 query"></textarea>
-              </label>
-              <label class="tickets-field full">
-                <span>Summary</span>
-                <textarea id="ticket-summary" rows="3" placeholder="一句话概括问题"></textarea>
-              </label>
-              <label class="tickets-field full">
-                <span>Expected Behavior</span>
-                <textarea id="ticket-expected-behavior" rows="4" placeholder="预期表现"></textarea>
-              </label>
-              <label class="tickets-field full">
-                <span>Actual Behavior</span>
-                <textarea id="ticket-actual-behavior" rows="5" placeholder="实际表现"></textarea>
-              </label>
-              <label class="tickets-field full">
-                <span>Root Cause</span>
-                <textarea id="ticket-root-cause" rows="4" placeholder="已知根因或初步判断"></textarea>
-              </label>
-              <label class="tickets-field full">
-                <span>Fix Notes</span>
-                <textarea id="ticket-fix-notes" rows="4" placeholder="修复思路、改动点、PR 链接等"></textarea>
-              </label>
-              <label class="tickets-field full">
-                <span>Additional Notes</span>
-                <textarea id="ticket-additional-notes" rows="4" placeholder="补充备注"></textarea>
-              </label>
+            <div class="tickets-detail-body">
+              <section class="tickets-form-section tickets-title-section">
+                <div class="tickets-section-title">标题</div>
+                <label class="tickets-field tickets-title-field">
+                  <span>Title</span>
+                  <input id="ticket-title" type="text" autocomplete="off" spellcheck="false" placeholder="简要描述问题" />
+                </label>
+              </section>
+
+              <section class="tickets-form-section tickets-paste-section">
+                <div class="tickets-section-title">手动粘贴填充</div>
+                <label class="tickets-field full">
+                  <span>BUG-TICKET 文本</span>
+                  <textarea id="ticket-paste-input" rows="6" placeholder='粘贴 BUG-TICKET: {"title":"..."} 这类单行或多行文本'></textarea>
+                </label>
+                <div class="ticket-paste-actions">
+                  <button id="ticket-paste-fill-btn" type="button" class="ghost">填充到表单</button>
+                  <div class="dashboard-meta">支持直接粘贴以 BUG-TICKET: 开头的 JSON；未提供的字段会保留当前表单值。</div>
+                </div>
+              </section>
+
+              <section class="tickets-form-section tickets-form-section-meta">
+                <div class="tickets-section-title">元数据</div>
+                <div class="tickets-meta-rows">
+                  <div class="tickets-meta-row">
+                    <label class="tickets-inline-field">
+                      <span>Ticket ID</span>
+                      <input id="ticket-id" type="text" readonly placeholder="保存后生成" />
+                    </label>
+                    <label class="tickets-inline-field">
+                      <span>AI 草稿 Trace ID</span>
+                      <input id="ticket-trace-id" type="text" autocomplete="off" spellcheck="false" placeholder="例如 trace_xxx" />
+                    </label>
+                  </div>
+                  <div class="tickets-meta-row">
+                    <label class="tickets-inline-field">
+                      <span>Status</span>
+                      <select id="ticket-status">
+                        <option value="open">open</option>
+                        <option value="in_progress">in_progress</option>
+                        <option value="blocked">blocked</option>
+                        <option value="resolved">resolved</option>
+                        <option value="closed">closed</option>
+                      </select>
+                    </label>
+                    <label class="tickets-inline-field">
+                      <span>Priority</span>
+                      <select id="ticket-priority">
+                        <option value="low">low</option>
+                        <option value="medium">medium</option>
+                        <option value="high">high</option>
+                        <option value="critical">critical</option>
+                      </select>
+                    </label>
+                  </div>
+                  <div class="tickets-meta-row">
+                    <label class="tickets-inline-field">
+                      <span>Domain</span>
+                      <input id="ticket-domain" type="text" autocomplete="off" spellcheck="false" placeholder="media / knowledge / agent" />
+                    </label>
+                    <label class="tickets-inline-field">
+                      <span>Category</span>
+                      <input id="ticket-category" type="text" autocomplete="off" spellcheck="false" placeholder="answer_restricted / retrieval_empty" />
+                    </label>
+                  </div>
+                  <div class="tickets-meta-row">
+                    <label class="tickets-inline-field">
+                      <span>Created At</span>
+                      <input id="ticket-created-at" type="text" readonly />
+                    </label>
+                    <label class="tickets-inline-field">
+                      <span>Updated At</span>
+                      <input id="ticket-updated-at" type="text" readonly />
+                    </label>
+                  </div>
+                </div>
+              </section>
+
+              <section class="tickets-form-section">
+                <div class="tickets-section-title">问题概览</div>
+                <div class="tickets-editor-grid">
+                  <label class="tickets-field full">
+                    <span>Related Traces</span>
+                    <textarea id="ticket-related-traces" rows="2" placeholder="每行或逗号分隔一个 trace_id"></textarea>
+                  </label>
+                  <div id="ticket-related-traces-links" class="ticket-trace-links full"></div>
+                  <label class="tickets-field">
+                    <span>Repro Query</span>
+                    <textarea id="ticket-repro-query" rows="4" placeholder="复现问题的 query"></textarea>
+                  </label>
+                  <label class="tickets-field">
+                    <span>Summary</span>
+                    <textarea id="ticket-summary" rows="4" placeholder="一句话概括问题"></textarea>
+                  </label>
+                </div>
+              </section>
+
+              <section class="tickets-form-section">
+                <div class="tickets-section-title">行为对比</div>
+                <div class="tickets-editor-grid">
+                  <label class="tickets-field">
+                    <span>Expected Behavior</span>
+                    <textarea id="ticket-expected-behavior" rows="6" placeholder="预期表现"></textarea>
+                  </label>
+                  <label class="tickets-field">
+                    <span>Actual Behavior</span>
+                    <textarea id="ticket-actual-behavior" rows="6" placeholder="实际表现"></textarea>
+                  </label>
+                </div>
+              </section>
+
+              <section class="tickets-form-section">
+                <div class="tickets-section-title">分析与修复</div>
+                <div class="tickets-editor-grid">
+                  <label class="tickets-field">
+                    <span>Root Cause</span>
+                    <textarea id="ticket-root-cause" rows="6" placeholder="已知根因或初步判断"></textarea>
+                  </label>
+                  <label class="tickets-field">
+                    <span>Fix Notes</span>
+                    <textarea id="ticket-fix-notes" rows="6" placeholder="修复思路、改动点、PR 链接等"></textarea>
+                  </label>
+                  <label class="tickets-field full">
+                    <span>Additional Notes</span>
+                    <textarea id="ticket-additional-notes" rows="5" placeholder="补充备注"></textarea>
+                  </label>
+                </div>
+              </section>
             </div>
           </section>
         </div>
@@ -500,6 +547,21 @@
         <button id="feedback-export-btn" class="ghost">导出 JSON</button>
         <button id="feedback-clear-btn">清空列表</button>
         <button id="feedback-close-btn" class="ghost">关闭</button>
+      </div>
+    </div>
+  </div>
+
+  <div id="feedback-detail-modal" class="card-modal hidden" aria-hidden="true">
+    <div class="card-modal-backdrop" data-role="feedback-detail-backdrop"></div>
+    <div class="card-modal-panel feedback-detail-panel" role="dialog" aria-modal="true" aria-label="聊天反馈详情">
+      <div class="card-modal-head">
+        <h3>聊天反馈详情</h3>
+        <div class="dashboard-meta" id="feedback-detail-meta"></div>
+      </div>
+      <div id="feedback-detail-content" class="feedback-detail-content"></div>
+      <div class="card-modal-actions">
+        <button id="feedback-detail-open-trace-btn" type="button">打开 Trace</button>
+        <button id="feedback-detail-close-btn" type="button" class="ghost">关闭</button>
       </div>
     </div>
   </div>
@@ -648,6 +710,6 @@
     </div>
   </div>
 
-  <script src="/static/app.js?v=20260315n"></script>
+  <script src="/static/app.js?v=20260316f"></script>
 </body>
 </html>

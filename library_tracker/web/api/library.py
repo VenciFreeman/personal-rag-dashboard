@@ -6,7 +6,8 @@ from typing import Any
 from fastapi import APIRouter, BackgroundTasks, HTTPException, Request
 from pydantic import BaseModel, Field
 
-from web.services import library_service
+from web.services import library_graph, library_service
+from web.settings import VECTOR_DB_DIR
 
 router = APIRouter(prefix="/api/library", tags=["library"])
 
@@ -47,7 +48,8 @@ def _trigger_embedding_refresh() -> None:
 class SearchRequest(BaseModel):
     query: str = ""
     mode: str = Field(default="keyword", description="keyword or vector")
-    limit: int = Field(default=100, ge=1, le=500)
+    limit: int = Field(default=50, ge=1, le=500)
+    offset: int = Field(default=0, ge=0, le=100000)
     filters: dict[str, list[str]] = Field(default_factory=dict)
 
 
@@ -61,6 +63,11 @@ class ItemPayload(BaseModel):
 
 class EmbeddingRefreshItemsRequest(BaseModel):
     item_ids: list[str] = Field(default_factory=list)
+
+
+class GraphExpandRequest(BaseModel):
+    query: str = ""
+    max_expand: int = Field(default=6, ge=1, le=24)
 
 
 @router.get("/meta")
@@ -127,6 +134,7 @@ def search(req: SearchRequest) -> dict[str, Any]:
         mode=req.mode,
         filters=req.filters,
         limit=req.limit,
+        offset=req.offset,
     )
 
 
@@ -160,6 +168,15 @@ def rebuild_graph_job() -> dict[str, Any]:
 @router.post("/graph/sync-missing-job")
 def sync_missing_graph_job() -> dict[str, Any]:
     return {"ok": True, "job": library_service.start_graph_job(full=False)}
+
+
+@router.post("/agent-boundary/graph/expand")
+def expand_graph_query(req: GraphExpandRequest) -> dict[str, Any]:
+    return library_graph.expand_library_query(
+        graph_dir=VECTOR_DB_DIR,
+        query=str(req.query or ""),
+        max_expand=max(1, int(req.max_expand or 6)),
+    )
 
 
 @router.get("/graph/jobs/{job_id}")

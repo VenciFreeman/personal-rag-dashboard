@@ -277,6 +277,29 @@ button.full { width: 100%; margin-top: 0; }
   font-size: 12px;
   margin-bottom: 8px;
 }
+.result-pagination {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  margin-top: 12px;
+}
+.result-pagination.hidden {
+  display: none;
+}
+.result-pagination .hint {
+  margin: 0;
+  text-align: center;
+}
+.result-page-btn {
+  min-width: 42px;
+  padding: 8px 10px;
+}
+.result-page-info {
+  min-width: 132px;
+  padding: 0 6px;
+  font-variant-numeric: tabular-nums;
+}
 .result-list {
   display: grid;
   gap: 8px;
@@ -833,6 +856,18 @@ body.dialog-open {
   }
   .search-row > input {
     grid-column: 1 / -1;
+  }
+  .result-pagination {
+    display: flex;
+    justify-content: center;
+    gap: 6px;
+  }
+  .result-page-btn {
+    min-width: 38px;
+    padding: 8px;
+  }
+  .result-page-info {
+    min-width: 108px;
   }
   .sidebar,
   .main-panel {

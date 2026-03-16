@@ -93,6 +93,13 @@ SOURCE_LABELS = {
     "rag_chat": "RAG 问答",
 }
 templates = Jinja2Templates(directory=str(APP_DIR / "templates"))
+BUG_TICKET_SYNC_SCRIPT = PROJECT_ROOT / "scripts" / "bug_ticket_sync_hook.py"
+BUG_TICKET_SYNC_FILE = PROJECT_ROOT / "nav_dashboard" / "data" / "tickets.jsonl"
+BUG_TICKET_BACKFILL_STATE_FILE = PROJECT_ROOT / "nav_dashboard" / "data" / "bug_ticket_backfill_state.json"
+BUG_TICKET_DEBUG_LOG = PROJECT_ROOT / "nav_dashboard" / "data" / "bug_ticket_hook_debug.jsonl"
+_bug_ticket_backfill_stop = threading.Event()
+_bug_ticket_backfill_lock = threading.Lock()
+_bug_ticket_backfill_thread: threading.Thread | None = None
 
 _BENCHMARK_CASE_QUERIES = {
     str(query or "").strip()
@@ -210,16 +217,20 @@ class TicketAIDraftPayload(BaseModel):
     updated_by: str = "ai"
 
 
+class TicketPastePayload(BaseModel):
+    text: str = ""
+
+
 def _default_custom_cards() -> list[dict[str, str]]:
     cards = [
         {
             "title": "RAG System",
-            "url": "http://127.0.0.1:8000/",
+            "url": str(AI_SUMMARY_URL_OVERRIDE or "").strip(),
             "image": "",
         },
         {
             "title": "Library Tracker",
-            "url": "http://127.0.0.1:8091/",
+            "url": str(LIBRARY_TRACKER_URL_OVERRIDE or "").strip(),
             "image": "",
         },
     ]
@@ -275,12 +286,65 @@ def _is_loopback_host(host: str) -> bool:
     return str(host or "").strip().lower() in {"127.0.0.1", "localhost", "::1"}
 
 
+def _default_card_port(title: str) -> int | None:
+    normalized = str(title or "").strip().lower()
+    if normalized == "rag system":
+        return 8000
+    if normalized == "library tracker":
+        return 8091
+    return None
+
+
+def _first_forwarded_value(value: str) -> str:
+    return str(value or "").split(",", 1)[0].strip()
+
+
+def _request_public_origin(request: Request) -> tuple[str, str]:
+    forwarded = _first_forwarded_value(request.headers.get("forwarded", ""))
+    forwarded_host = ""
+    forwarded_proto = ""
+    if forwarded:
+        for segment in forwarded.split(";"):
+            key, _, raw_value = segment.partition("=")
+            if not _:
+                continue
+            normalized_key = key.strip().lower()
+            normalized_value = raw_value.strip().strip('"')
+            if normalized_key == "host" and not forwarded_host:
+                forwarded_host = normalized_value
+            elif normalized_key == "proto" and not forwarded_proto:
+                forwarded_proto = normalized_value
+
+    host = (
+        _first_forwarded_value(request.headers.get("x-forwarded-host", ""))
+        or forwarded_host
+        or str(request.headers.get("host", "")).strip()
+        or str(request.url.netloc or "").strip()
+    ).rstrip("/")
+    scheme = (
+        _first_forwarded_value(request.headers.get("x-forwarded-proto", ""))
+        or forwarded_proto
+        or str(request.url.scheme or "http").strip()
+        or "http"
+    ).rstrip(":/")
+    forwarded_port = _first_forwarded_value(request.headers.get("x-forwarded-port", ""))
+    if host and forwarded_port and ":" not in host and not host.startswith("["):
+        host = f"{host}:{forwarded_port}"
+    if not host:
+        hostname = request.url.hostname or "localhost"
+        if request.url.port:
+            host = f"{hostname}:{request.url.port}"
+        else:
+            host = hostname
+    return scheme, host
+
+
 def _rewrite_loopback_url_for_request(raw_url: str, request: Request, fallback_port: int) -> str:
     url_text = str(raw_url or "").strip()
+    public_scheme, public_host = _request_public_origin(request)
+    public_hostname = urlparse.urlparse(f"//{public_host}").hostname or request.url.hostname or "localhost"
     if not url_text:
-        host = request.url.hostname or "127.0.0.1"
-        scheme = request.url.scheme or "http"
-        return f"{scheme}://{host}:{int(fallback_port)}/"
+        return f"{public_scheme}://{public_hostname}:{int(fallback_port)}/"
 
     parsed = urlparse.urlparse(url_text)
     if not parsed.scheme or not parsed.hostname:
@@ -288,8 +352,8 @@ def _rewrite_loopback_url_for_request(raw_url: str, request: Request, fallback_p
     if not _is_loopback_host(parsed.hostname):
         return url_text
 
-    target_host = request.url.hostname or parsed.hostname or "127.0.0.1"
-    target_scheme = request.url.scheme or parsed.scheme or "http"
+    target_host = public_hostname or parsed.hostname or "localhost"
+    target_scheme = public_scheme or parsed.scheme or "http"
     target_port = parsed.port or int(fallback_port)
     target_path = parsed.path or "/"
     rewritten = parsed._replace(
@@ -306,6 +370,7 @@ def _browser_custom_cards(request: Request) -> list[dict[str, str]]:
     for item in cards:
         row = _normalize_card(item)
         url_value = row.get("url", "")
+        fallback_port = _default_card_port(row.get("title", ""))
         if url_value:
             parsed = urlparse.urlparse(url_value)
             row["url"] = _rewrite_loopback_url_for_request(
@@ -313,8 +378,68 @@ def _browser_custom_cards(request: Request) -> list[dict[str, str]]:
                 request,
                 parsed.port or 80,
             )
+        elif fallback_port is not None:
+            row["url"] = _rewrite_loopback_url_for_request("", request, fallback_port)
         rewritten.append(row)
     return rewritten
+
+
+def _bug_ticket_sync_env() -> dict[str, str]:
+    env = os.environ.copy()
+    env.setdefault("BUG_TICKET_SYNC_FILE", str(BUG_TICKET_SYNC_FILE))
+    env.setdefault("BUG_TICKET_BACKFILL_STATE_FILE", str(BUG_TICKET_BACKFILL_STATE_FILE))
+    env.setdefault("BUG_TICKET_DEBUG_LOG", str(BUG_TICKET_DEBUG_LOG))
+    env.setdefault("BUG_TICKET_INVOCATION_STATE_FILE", str(PROJECT_ROOT / "nav_dashboard" / "data" / "bug_ticket_hook_invocations.json"))
+    env.setdefault("BUG_TICKET_HOOK_SOURCE", "dashboard-backfill")
+    env.setdefault("BUG_TICKET_CREATED_BY", "ai-backfill")
+    env.setdefault("BUG_TICKET_UPDATED_BY", "ai-backfill")
+    return env
+
+
+def _run_bug_ticket_workspace_backfill_once() -> None:
+    if not BUG_TICKET_SYNC_SCRIPT.exists():
+        return
+    try:
+        subprocess.run(
+            [sys.executable, str(BUG_TICKET_SYNC_SCRIPT), "--scan-workspace-storage"],
+            cwd=str(PROJECT_ROOT),
+            env=_bug_ticket_sync_env(),
+            capture_output=True,
+            text=True,
+            timeout=90,
+            check=False,
+        )
+    except Exception:
+        return
+
+
+def _bug_ticket_workspace_backfill_loop() -> None:
+    _run_bug_ticket_workspace_backfill_once()
+    interval_seconds = max(30.0, float(os.getenv("BUG_TICKET_BACKFILL_INTERVAL_SECONDS", "120")))
+    while not _bug_ticket_backfill_stop.wait(interval_seconds):
+        _run_bug_ticket_workspace_backfill_once()
+
+
+def _start_bug_ticket_workspace_backfill() -> None:
+    global _bug_ticket_backfill_thread
+
+    enabled = str(os.getenv("BUG_TICKET_BACKFILL_ENABLED", "1")).strip().lower() not in {"0", "false", "no"}
+    if not enabled or not BUG_TICKET_SYNC_SCRIPT.exists():
+        return
+    with _bug_ticket_backfill_lock:
+        if _bug_ticket_backfill_thread is not None and _bug_ticket_backfill_thread.is_alive():
+            return
+        _bug_ticket_backfill_stop.clear()
+        _bug_ticket_backfill_thread = threading.Thread(
+            target=_bug_ticket_workspace_backfill_loop,
+            name="bug-ticket-backfill",
+            daemon=True,
+        )
+        _bug_ticket_backfill_thread.start()
+
+
+def _stop_bug_ticket_workspace_backfill() -> None:
+    _bug_ticket_backfill_stop.set()
 
 
 def _trigger_custom_card_compression() -> None:
@@ -333,6 +458,8 @@ def _trigger_custom_card_compression() -> None:
         return
 
 app = FastAPI(title="Nav Dashboard", version="0.1.0")
+app.add_event_handler("startup", _start_bug_ticket_workspace_backfill)
+app.add_event_handler("shutdown", _stop_bug_ticket_workspace_backfill)
 
 # Captured once at process start; stays constant until the next deployment.
 _DEPLOY_TIME: str = _load_deploy_time()
@@ -400,8 +527,9 @@ def _infer_ticket_domain(trace: dict[str, Any], fallback: str = "") -> str:
     understanding = trace.get("query_understanding") if isinstance(trace.get("query_understanding"), dict) else {}
     query_type = str(trace.get("query_type", "") or "").strip().lower()
     selected_tool = str(router.get("selected_tool", "") or "").strip().lower()
-    detected_intent = str(understanding.get("detected_intent", "") or "").strip().lower()
-    if "media" in query_type or "media" in detected_intent or "movie" in detected_intent or "tv" in detected_intent:
+    lookup_mode = str(understanding.get("lookup_mode", router.get("lookup_mode", "")) or "").strip().lower()
+    domain = str(understanding.get("domain", router.get("domain", "")) or "").strip().lower()
+    if "media" in query_type or domain == "media" or lookup_mode in {"general_lookup", "entity_lookup", "filter_search", "concept_lookup"}:
         return "media"
     if "web" in selected_tool:
         return "web"
@@ -426,6 +554,69 @@ def _infer_ticket_category(trace: dict[str, Any], fallback: str = "") -> str:
     if selected_tool:
         return selected_tool
     return "investigation"
+
+
+def _empty_ticket_draft() -> dict[str, Any]:
+    return {
+        "ticket_id": "",
+        "title": "",
+        "status": "open",
+        "priority": "medium",
+        "domain": "",
+        "category": "",
+        "summary": "",
+        "related_traces": [],
+        "repro_query": "",
+        "expected_behavior": "",
+        "actual_behavior": "",
+        "root_cause": "",
+        "fix_notes": "",
+        "additional_notes": "",
+        "created_at": "",
+        "updated_at": "",
+    }
+
+
+def _parse_ticket_paste_payload(raw_text: str) -> dict[str, Any]:
+    raw = str(raw_text or "").strip()
+    if not raw:
+        raise ValueError("请先粘贴 BUG-TICKET 文本")
+
+    payload_text = raw
+    marker_index = raw.find("BUG-TICKET:")
+    if marker_index >= 0:
+        payload_text = raw[marker_index + len("BUG-TICKET:"):].strip()
+
+    if not payload_text:
+        raise ValueError("未找到 BUG-TICKET JSON 内容")
+
+    try:
+        payload = json.loads(payload_text)
+    except json.JSONDecodeError as exc:
+        raise ValueError(f"BUG-TICKET JSON 解析失败: {exc.msg}") from exc
+
+    if not isinstance(payload, dict):
+        raise ValueError("BUG-TICKET 内容必须是 JSON 对象")
+
+    ticket = _empty_ticket_draft()
+    ticket.update(
+        {
+            "title": _first_nonempty(payload.get("title"), ticket["title"]),
+            "status": _first_nonempty(payload.get("status"), ticket["status"]),
+            "priority": _first_nonempty(payload.get("priority"), ticket["priority"]),
+            "domain": _first_nonempty(payload.get("domain"), ticket["domain"]),
+            "category": _first_nonempty(payload.get("category"), ticket["category"]),
+            "summary": _first_nonempty(payload.get("summary"), ticket["summary"]),
+            "related_traces": _safe_text_list(payload.get("related_traces")),
+            "repro_query": _first_nonempty(payload.get("repro_query"), ticket["repro_query"]),
+            "expected_behavior": _first_nonempty(payload.get("expected_behavior"), ticket["expected_behavior"]),
+            "actual_behavior": _first_nonempty(payload.get("actual_behavior"), ticket["actual_behavior"]),
+            "root_cause": _first_nonempty(payload.get("root_cause"), ticket["root_cause"]),
+            "fix_notes": _first_nonempty(payload.get("fix_notes"), ticket["fix_notes"]),
+            "additional_notes": _first_nonempty(payload.get("additional_notes"), ticket["additional_notes"]),
+        }
+    )
+    return ticket
 
 
 def _build_ticket_ai_draft(payload: TicketAIDraftPayload) -> dict[str, Any]:
@@ -1709,6 +1900,15 @@ def build_dashboard_ticket_ai_draft(payload: TicketAIDraftPayload) -> dict[str, 
     return {"ok": True, "ticket": draft}
 
 
+@app.post("/api/dashboard/tickets/parse")
+def parse_dashboard_ticket(payload: TicketPastePayload) -> dict[str, Any]:
+    try:
+        ticket = _parse_ticket_paste_payload(payload.text)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    return {"ok": True, "ticket": ticket}
+
+
 @app.get("/api/dashboard/tickets")
 def get_dashboard_tickets(
     status: str = "non_closed",
@@ -2010,6 +2210,8 @@ def _run_library_graph_rebuild(full: bool = False, *, report_progress=None, is_c
             )
 
         deadline = time.time() + (7200 if full else 3600)
+        consecutive_poll_errors = 0
+        _MAX_CONSECUTIVE_POLL_ERRORS = 6  # ~30 s of failed polls before giving up
         while True:
             if is_cancelled is not None and is_cancelled():
                 return {"ok": False, "cancelled": True, "job_id": job_id, "message": "dashboard polling cancelled"}
@@ -2017,6 +2219,17 @@ def _run_library_graph_rebuild(full: bool = False, *, report_progress=None, is_c
                 raise TimeoutError("Library Graph 后台任务轮询超时")
 
             payload = _http_json_get(status_url, timeout=15)
+            if not payload.get("ok", True) and "error" in payload and "job" not in payload:
+                # Transient poll failure (library tracker unavailable etc.)
+                consecutive_poll_errors += 1
+                poll_error = str(payload.get("error") or "unknown")
+                if consecutive_poll_errors >= _MAX_CONSECUTIVE_POLL_ERRORS:
+                    raise RuntimeError(f"Library Graph 状态轮询持续失败（{consecutive_poll_errors} 次）: {poll_error}")
+                if report_progress is not None:
+                    report_progress(message=f"轮询暂时失败（{consecutive_poll_errors}/{_MAX_CONSECUTIVE_POLL_ERRORS}），重试中…", log=f"Library Graph 状态轮询失败: {poll_error}")
+                time.sleep(5)
+                continue
+            consecutive_poll_errors = 0
             status_job = payload.get("job", {}) if isinstance(payload, dict) else {}
             status = str(status_job.get("status") or "unknown")
             message = str(status_job.get("message") or status)

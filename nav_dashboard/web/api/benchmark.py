@@ -842,3 +842,199 @@ def clear_history() -> dict[str, Any]:
             json.dumps({"results": []}, ensure_ascii=False, indent=2), encoding="utf-8"
         )
     return {"ok": True}
+
+
+# ─── Router Classification Benchmark ─────────────────────────────────────────
+# Each case has:
+#   query          — raw question text
+#   mock_label     — synthetic LLM classifier label (MEDIA / TECH / OTHER)
+#   mock_domain    — synthetic LLM domain
+#   mock_entities  — synthetic entity list
+#   mock_lu        — synthetic lookup_mode
+#   exp_domain     — expected RouterDecision.domain
+#   exp_arb        — expected RouterDecision.arbitration
+#   note           — human-readable annotation
+# The cases are deliberately diverse and cover the full arbitration matrix:
+# tech_primary, entity_wins, media_surface_wins, abstract_concept_wins,
+# mixed_due_to_entity_plus_tech, llm_media_weak_general, followup, etc.
+
+ROUTER_CLASSIFICATION_CASES: list[dict[str, Any]] = [
+    # ── tech_primary ──────────────────────────────────────────────────────────
+    {"query": "机器学习的概念和应用",          "mock_label": "TECH", "mock_domain": "tech",    "mock_entities": [],        "mock_lu": "general_lookup",  "exp_domain": "tech",    "exp_arb": "tech_primary",            "note": "core tech — CJK token fix"},
+    {"query": "深度学习架构原理是什么",          "mock_label": "TECH", "mock_domain": "tech",    "mock_entities": [],        "mock_lu": "general_lookup",  "exp_domain": "tech",    "exp_arb": "tech_primary",            "note": "tech with lexical cues"},
+    {"query": "Transformer注意力机制的数学原理", "mock_label": "TECH", "mock_domain": "tech",    "mock_entities": [],        "mock_lu": "general_lookup",  "exp_domain": "tech",    "exp_arb": "tech_primary",            "note": "latin+CJK tech"},
+    {"query": "RAG检索增强生成的工作流程",       "mock_label": "TECH", "mock_domain": "tech",    "mock_entities": [],        "mock_lu": "general_lookup",  "exp_domain": "tech",    "exp_arb": "tech_primary",            "note": "RAG acronym tech cue"},
+    {"query": "什么是向量数据库",               "mock_label": "TECH", "mock_domain": "tech",    "mock_entities": [],        "mock_lu": "general_lookup",  "exp_domain": "tech",    "exp_arb": "tech_primary",            "note": "向量 tech cue"},
+    # ── entity_wins / media_surface_wins ──────────────────────────────────────
+    {"query": "《教父》的导演是谁",              "mock_label": "MEDIA", "mock_domain": "media",  "mock_entities": ["教父"],   "mock_lu": "entity_lookup",   "exp_domain": "media",   "exp_arb_any": ["entity_wins", "media_surface_wins"], "note": "《》 title → surface or entity"},
+    {"query": "《三体》作者刘慈欣的其他作品",    "mock_label": "MEDIA", "mock_domain": "media",  "mock_entities": ["三体"],   "mock_lu": "entity_lookup",   "exp_domain": "media",   "exp_arb_any": ["entity_wins", "media_surface_wins"], "note": "book entity"},
+    {"query": "波拉尼奥的小说有哪些",            "mock_label": "MEDIA", "mock_domain": "media",  "mock_entities": ["波拉尼奥"], "mock_lu": "entity_lookup",  "exp_domain": "media",   "exp_arb": "entity_wins",             "note": "author entity without 《》"},
+    # ── media_surface_wins ────────────────────────────────────────────────────
+    {"query": "推荐几部法国新浪潮电影",          "mock_label": "MEDIA", "mock_domain": "media",  "mock_entities": [],        "mock_lu": "filter_search",   "exp_domain": "media",   "exp_arb": "media_surface_wins",      "note": "电影 surface cue"},
+    {"query": "2023年值得一看的日本动漫",        "mock_label": "MEDIA", "mock_domain": "media",  "mock_entities": [],        "mock_lu": "filter_search",   "exp_domain": "media",   "exp_arb": "media_surface_wins",      "note": "动漫 surface + year"},
+    # ── abstract_concept_wins ─────────────────────────────────────────────────
+    {"query": "魔幻现实主义的叙事手法",          "mock_label": "MEDIA", "mock_domain": "media",  "mock_entities": [],        "mock_lu": "concept_lookup",  "exp_domain": "media",   "exp_arb": "abstract_concept_wins",   "note": "abstract concept no surface"},
+    {"query": "新浪潮电影的主要特征",            "mock_label": "MEDIA", "mock_domain": "media",  "mock_entities": [],        "mock_lu": "concept_lookup",  "exp_domain": "media",   "exp_arb_any": ["abstract_concept_wins", "media_surface_wins"], "note": "新浪潮 abstract"},
+    {"query": "拉美文学的代表作家",              "mock_label": "MEDIA", "mock_domain": "media",  "mock_entities": [],        "mock_lu": "concept_lookup",  "exp_domain": "media",   "exp_arb_any": ["abstract_concept_wins", "media_surface_wins"], "note": "拉美文学"},
+    # ── mixed_due_to_entity_plus_tech ─────────────────────────────────────────
+    {"query": "机器学习在电影推荐系统里的应用",  "mock_label": "TECH",  "mock_domain": "tech",   "mock_entities": ["电影推荐系统"], "mock_lu": "general_lookup", "exp_domain": "media",  "exp_arb": "mixed_due_to_entity_plus_tech", "note": "tech+entity=mixed"},
+    # ── llm_media_weak_general ────────────────────────────────────────────────
+    {"query": "从整体上来说这个领域",            "mock_label": "MEDIA", "mock_domain": "media",  "mock_entities": [],        "mock_lu": "general_lookup",  "exp_domain": "general", "exp_arb": "llm_media_weak_general",  "note": "LLM-only media, no anchor"},
+    # ── general_fallback ──────────────────────────────────────────────────────
+    {"query": "什么是量子纠缠",                 "mock_label": "OTHER", "mock_domain": "general", "mock_entities": [],        "mock_lu": "general_lookup",  "exp_domain": "general", "exp_arb": "general_fallback",        "note": "pure knowledge qa"},
+    {"query": "气候变化的主要原因",              "mock_label": "OTHER", "mock_domain": "general", "mock_entities": [],        "mock_lu": "general_lookup",  "exp_domain": "general", "exp_arb": "general_fallback",        "note": "general knowledge"},
+    # ── tech_signal_only ──────────────────────────────────────────────────────
+    {"query": "如何实现微服务架构",              "mock_label": "OTHER", "mock_domain": "general", "mock_entities": [],        "mock_lu": "general_lookup",  "exp_domain": "tech",    "exp_arb": "tech_signal_only",        "note": "lexical tech without LLM confirm"},
+    # ── CJK token counting (regression for trace_8bc75ef5b2ac4871) ────────────
+    {"query": "机器学习的概念", "mock_label": "TECH", "mock_domain": "tech", "mock_entities": [], "mock_lu": "general_lookup", "exp_domain": "tech", "exp_arb": "tech_primary", "note": "6 CJK chars → medium profile, must not be short"},
+]
+
+# History file for router classification results
+ROUTER_CLS_HISTORY_FILE = APP_DIR.parent / "data" / "benchmark" / "router_cls_results.json"
+ROUTER_CLS_HISTORY_MAX = 20
+
+
+def _load_router_cls_history() -> list[dict[str, Any]]:
+    if not ROUTER_CLS_HISTORY_FILE.exists():
+        return []
+    try:
+        raw = json.loads(ROUTER_CLS_HISTORY_FILE.read_text(encoding="utf-8"))
+        return list(raw.get("results", []))[-ROUTER_CLS_HISTORY_MAX:] if isinstance(raw, dict) else []
+    except Exception:
+        return []
+
+
+def _save_router_cls_result(result: dict[str, Any]) -> None:
+    history = _load_router_cls_history()
+    history.append(result)
+    ROUTER_CLS_HISTORY_FILE.parent.mkdir(parents=True, exist_ok=True)
+    ROUTER_CLS_HISTORY_FILE.write_text(
+        json.dumps({"results": history[-ROUTER_CLS_HISTORY_MAX:]}, ensure_ascii=False, indent=2),
+        encoding="utf-8",
+    )
+
+
+def _run_router_classification_suite() -> dict[str, Any]:
+    """Run all ROUTER_CLASSIFICATION_CASES in-process without LLM calls.
+
+    Returns a result dict with per-case outcomes and aggregate pass/fail counts.
+    """
+    import sys as _sys
+    from pathlib import Path as _Path
+    from unittest.mock import patch as _patch
+
+    _repo_root = _Path(__file__).resolve().parents[3]
+    if str(_repo_root) not in _sys.path:
+        _sys.path.insert(0, str(_repo_root))
+
+    import nav_dashboard.web.services.agent_service as _svc
+
+    _empty_quota: dict = {}
+
+    def _resolve_profile(q: str) -> dict:
+        return _svc._resolve_query_profile(q)
+
+    def _decide(query: str, mock_label: str, mock_domain: str, mock_entities: list, mock_lu: str) -> Any:
+        mock_llm = {
+            "label": mock_label,
+            "domain": mock_domain,
+            "lookup_mode": mock_lu,
+            "entities": list(mock_entities),
+            "filters": {},
+            "time_window": {},
+            "ranking": {},
+            "followup_target": "",
+            "needs_comparison": False,
+            "needs_explanation": False,
+            "confidence": 0.85,
+            "rewritten_queries": {},
+        }
+        with (
+            _patch.object(_svc, "_classify_media_query_with_llm", return_value=mock_llm),
+            _patch.object(_svc, "_rewrite_tool_queries_with_llm", return_value={}),
+        ):
+            decision, _, _ = _svc._build_router_decision(
+                question=query,
+                history=[],
+                quota_state=_empty_quota,
+                query_profile=_resolve_profile(query),
+            )
+        return decision
+
+    cases_out: list[dict[str, Any]] = []
+    passed = 0
+    failed = 0
+    violations: list[dict[str, Any]] = []
+
+    for case in ROUTER_CLASSIFICATION_CASES:
+        query = str(case.get("query") or "")
+        exp_domain = str(case.get("exp_domain") or "")
+        exp_arb = str(case.get("exp_arb") or "")
+        exp_arb_any: list[str] = [str(v) for v in (case.get("exp_arb_any") or [])]
+
+        try:
+            decision = _decide(
+                query,
+                str(case.get("mock_label") or "OTHER"),
+                str(case.get("mock_domain") or "general"),
+                list(case.get("mock_entities") or []),
+                str(case.get("mock_lu") or "general_lookup"),
+            )
+            actual_domain = str(decision.domain or "")
+            actual_arb = str(decision.arbitration or "")
+
+            domain_ok = actual_domain == exp_domain
+            arb_ok = (actual_arb == exp_arb) if exp_arb else (actual_arb in exp_arb_any) if exp_arb_any else True
+            ok = domain_ok and arb_ok
+
+            row: dict[str, Any] = {
+                "query": query,
+                "expected_domain": exp_domain,
+                "expected_arbitration": exp_arb or exp_arb_any,
+                "actual_domain": actual_domain,
+                "actual_arbitration": actual_arb,
+                "pass": ok,
+                "note": str(case.get("note") or ""),
+            }
+            if not ok:
+                row["violation"] = {
+                    "domain_mismatch": not domain_ok,
+                    "arbitration_mismatch": not arb_ok,
+                }
+                violations.append({"query": query, "expected_domain": exp_domain, "actual_domain": actual_domain,
+                                    "expected_arbitration": exp_arb or exp_arb_any, "actual_arbitration": actual_arb})
+
+            cases_out.append(row)
+            if ok:
+                passed += 1
+            else:
+                failed += 1
+        except Exception as exc:
+            cases_out.append({"query": query, "pass": False, "error": str(exc)[:200]})
+            failed += 1
+            violations.append({"query": query, "error": str(exc)[:200]})
+
+    total = passed + failed
+    result = {
+        "timestamp": datetime.now().isoformat(timespec="seconds"),
+        "total": total,
+        "passed": passed,
+        "failed": failed,
+        "pass_rate": round(passed / total, 4) if total else 0.0,
+        "cases": cases_out,
+        "violations": violations,
+    }
+    _save_router_cls_result(result)
+    return result
+
+
+@router.post("/router-classification")
+def post_router_classification() -> dict[str, Any]:
+    """Run the in-process router classification regression suite and return results."""
+    result = _run_router_classification_suite()
+    return result
+
+
+@router.get("/router-classification/history")
+def get_router_classification_history() -> dict[str, Any]:
+    return {"results": _load_router_cls_history()}

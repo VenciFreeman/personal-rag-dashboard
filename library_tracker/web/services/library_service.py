@@ -1012,7 +1012,8 @@ def search_items(
     query: str,
     mode: str,
     filters: dict[str, list[str]] | None = None,
-    limit: int = 100,
+    limit: int = 50,
+    offset: int = 0,
 ) -> dict[str, Any]:
     mode = (mode or "keyword").strip().lower()
     if mode not in {"keyword", "vector"}:
@@ -1054,12 +1055,18 @@ def search_items(
             scored = [r for r in scored if r.score > 0]
             scored.sort(key=lambda x: (x.score, _date_sort_key(x.item)), reverse=True)
 
-    trimmed = scored[: max(1, int(limit))]
+    page_size = max(1, int(limit))
+    page_offset = max(0, int(offset))
+    total_count = len(scored)
+    trimmed = scored[page_offset : page_offset + page_size]
     return {
         "query": q,
         "mode": mode,
         "sql_preview": _build_sql_preview(filters, q, mode),
         "count": len(trimmed),
+        "total_count": total_count,
+        "offset": page_offset,
+        "limit": page_size,
         "graph_expansion": graph_expand if mode == "vector" else {},
         "results": [
             {

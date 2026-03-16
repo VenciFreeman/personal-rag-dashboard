@@ -1,6 +1,9 @@
 let currentTab = "query";
 let currentMode = "keyword";
 let latestResults = [];
+let currentSearchOffset = 0;
+let currentSearchLimit = 50;
+let currentSearchTotal = 0;
 let currentPreviewIndex = -1;
 let editingItemId = "";
 let editingCoverPath = null;
@@ -1179,10 +1182,35 @@ function renderResults(payload) {
   latestResults = payload.results || [];
   const list = document.getElementById("result-list");
   const meta = document.getElementById("result-meta");
+  const pagination = document.getElementById("result-pagination");
+  const firstBtn = document.getElementById("result-page-first");
+  const pageInfo = document.getElementById("result-page-info");
+  const prevBtn = document.getElementById("result-page-prev");
+  const nextBtn = document.getElementById("result-page-next");
+  const lastBtn = document.getElementById("result-page-last");
   const queryText = String((payload && payload.query) || "");
   const isKeywordMode = String((payload && payload.mode) || "") === "keyword";
+  const totalCount = Math.max(0, Number(payload?.total_count ?? payload?.count ?? latestResults.length) || 0);
+  const offset = Math.max(0, Number(payload?.offset ?? currentSearchOffset) || 0);
+  const limit = Math.max(1, Number(payload?.limit ?? currentSearchLimit) || 1);
+  currentSearchOffset = offset;
+  currentSearchLimit = limit;
+  currentSearchTotal = totalCount;
   list.innerHTML = "";
-  meta.textContent = `模式: ${payload.mode} | 命中: ${payload.count}`;
+  const rangeStart = totalCount > 0 ? offset + 1 : 0;
+  const rangeEnd = totalCount > 0 ? offset + latestResults.length : 0;
+  const page = Math.floor(offset / limit) + 1;
+  const pageCount = Math.max(1, Math.ceil(totalCount / limit));
+  const lastOffset = Math.max(0, (pageCount - 1) * limit);
+  meta.textContent = `模式: ${payload.mode} | 总命中: ${totalCount} | 当前: ${rangeStart}-${rangeEnd}`;
+  if (pagination) pagination.classList.toggle("hidden", totalCount <= limit);
+  if (pageInfo) {
+    pageInfo.textContent = `${page} / ${pageCount}`;
+  }
+  if (firstBtn) firstBtn.disabled = offset <= 0;
+  if (prevBtn) prevBtn.disabled = offset <= 0;
+  if (nextBtn) nextBtn.disabled = offset + latestResults.length >= totalCount;
+  if (lastBtn) lastBtn.disabled = offset >= lastOffset;
 
   if (!latestResults.length) {
     list.innerHTML = "<div class='hint'>没有匹配结果</div>";
@@ -1193,6 +1221,7 @@ function renderResults(payload) {
     const item = latestResults[i];
     const card = document.createElement("div");
     card.className = "card";
+    if (item.id) card.dataset.itemId = String(item.id);
     const cardCoverPath = String(item.cover_path || "").trim();
     const cardCoverUrl = cardCoverPath ? `/media/${encodeURI(cardCoverPath)}` : "";
     const thumbHtml = cardCoverUrl
@@ -1462,9 +1491,15 @@ async function saveDialog() {
     savedItem = resp && resp.item ? resp.item : null;
   }
 
+  const scrollTargetId = editingItemId || "";
+  const savedOffset = currentSearchOffset;
   showToast("保存成功");
   document.getElementById("item-dialog").close();
-  await runSearch(currentMode);
+  await runSearch(currentMode, { offset: savedOffset });
+  if (scrollTargetId) {
+    const targetCard = document.querySelector(`[data-item-id="${scrollTargetId}"]`);
+    if (targetCard) targetCard.scrollIntoView({ block: "center", behavior: "smooth" });
+  }
   const [metaPayload, suggestionPayload] = await Promise.all([
     apiGet("/api/library/meta"),
     apiGet("/api/library/suggestions"),
@@ -1489,13 +1524,15 @@ async function saveDialog() {
   }
 }
 
-async function runSearch(mode) {
+async function runSearch(mode, options = {}) {
   currentMode = mode;
   const query = document.getElementById("query-input").value || "";
+  const offset = Number.isFinite(Number(options?.offset)) ? Math.max(0, Number(options.offset)) : 0;
   const payload = await apiPost("/api/library/search", {
     query,
     mode,
-    limit: 200,
+    limit: currentSearchLimit,
+    offset,
     filters: selectedFilters(),
   });
   renderResults(payload);
@@ -1535,6 +1572,37 @@ async function bootstrap() {
   });
   document.getElementById("btn-keyword").addEventListener("click", () => runSearch("keyword"));
   document.getElementById("btn-vector").addEventListener("click", () => runSearch("vector"));
+  document.getElementById("result-page-first")?.addEventListener("click", () => {
+    if (currentSearchOffset <= 0) return;
+    runSearch(currentMode, { offset: 0 }).catch((err) => {
+      console.error(err);
+      alert(`翻页失败: ${err.message}`);
+    });
+  });
+  document.getElementById("result-page-prev")?.addEventListener("click", () => {
+    if (currentSearchOffset <= 0) return;
+    runSearch(currentMode, { offset: Math.max(0, currentSearchOffset - currentSearchLimit) }).catch((err) => {
+      console.error(err);
+      alert(`翻页失败: ${err.message}`);
+    });
+  });
+  document.getElementById("result-page-next")?.addEventListener("click", () => {
+    const nextOffset = currentSearchOffset + currentSearchLimit;
+    if (nextOffset >= currentSearchTotal) return;
+    runSearch(currentMode, { offset: nextOffset }).catch((err) => {
+      console.error(err);
+      alert(`翻页失败: ${err.message}`);
+    });
+  });
+  document.getElementById("result-page-last")?.addEventListener("click", () => {
+    const pageCount = Math.max(1, Math.ceil(currentSearchTotal / currentSearchLimit));
+    const lastOffset = Math.max(0, (pageCount - 1) * currentSearchLimit);
+    if (currentSearchOffset >= lastOffset) return;
+    runSearch(currentMode, { offset: lastOffset }).catch((err) => {
+      console.error(err);
+      alert(`翻页失败: ${err.message}`);
+    });
+  });
   document.getElementById("btn-refresh-embedding").addEventListener("click", () => {
     refreshPendingEmbeddings().catch((err) => {
       console.error(err);
