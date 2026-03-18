@@ -8,7 +8,21 @@ router = APIRouter(prefix="/api/preview", tags=["preview"])
 
 
 @router.get("/tree")
-def get_tree() -> dict[str, object]:
+def get_tree(path: str = Query("", description="Directory path relative to documents root; empty for root")) -> dict[str, object]:
+    """Return shallow children of *path* for lazy tree rendering.
+
+    Pass ``path=""`` (or omit) for the root level.  Each directory entry
+    includes ``has_children: bool`` so the UI can show a caret without
+    loading the full subtree.  The ``full=1`` query param is kept for
+    backward-compatibility with any tooling that still wants the full tree.
+    """
+    children = preview_service.build_directory_children(path)
+    return {"path": path, "children": children}
+
+
+@router.get("/tree/full")
+def get_tree_full() -> dict[str, object]:
+    """Legacy endpoint: return the full recursive document tree in one shot."""
     return {"tree": preview_service.build_documents_tree()}
 
 

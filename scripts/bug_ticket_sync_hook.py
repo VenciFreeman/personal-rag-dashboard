@@ -199,7 +199,20 @@ def _fingerprint_hook_invocation(hook_input: dict[str, Any]) -> str:
     transcript_path = _safe_text(hook_input.get("transcript_path") or hook_input.get("transcriptPath"))
     transcript_inline = hook_input.get("transcript")
     transcript_text = _flatten_text(transcript_inline) if transcript_inline not in {None, ""} else ""
-    transcript_digest = _normalize_compare_text(transcript_path or transcript_text)[:400]
+
+    if transcript_path:
+        # Include file size so the fingerprint changes each time the transcript
+        # file grows (i.e., each new conversation turn).  Without this, every
+        # invocation inside the same session shares the same path-based fingerprint
+        # and gets suppressed after the very first turn.
+        try:
+            fsize = Path(transcript_path).stat().st_size
+        except Exception:
+            fsize = 0
+        transcript_digest = _normalize_compare_text(transcript_path)[:300] + f"|sz={fsize}"
+    else:
+        transcript_digest = _normalize_compare_text(transcript_text)[:400]
+
     return " | ".join(part for part in [hook_event_name, session_id, transcript_digest] if part)
 
 

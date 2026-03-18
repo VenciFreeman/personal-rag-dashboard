@@ -890,8 +890,13 @@ function renderTreeNodes(ul, nodes) {
     row.className = `tree-row ${isDir ? "dir" : "file"}`;
     const caret = document.createElement("span");
     caret.className = "tree-caret";
-    const hasChildren = isDir && node.children && node.children.length;
-    caret.textContent = hasChildren ? (collapsedDirs.has(node.path) ? "▸" : "▾") : "•";
+
+    // expandable = dir that either has loaded children or is known to have children
+    const expandable = isDir && (node.has_children || Array.isArray(node.children));
+    // expanded = children array is loaded AND dir is not manually collapsed
+    const isExpanded = isDir && Array.isArray(node.children) && !collapsedDirs.has(node.path);
+
+    caret.textContent = !expandable ? "·" : (isExpanded ? "▾" : "▸");
     const label = document.createElement("span");
     label.className = "tree-label";
     label.textContent = node.name;
@@ -900,31 +905,40 @@ function renderTreeNodes(ul, nodes) {
     row.appendChild(label);
     li.appendChild(row);
 
-    if (isDir && hasChildren) {
-      row.onclick = () => {
-        if (collapsedDirs.has(node.path)) collapsedDirs.delete(node.path);
-        else collapsedDirs.add(node.path);
-        renderTreeNodes(ul, nodes);
+    if (isDir && expandable) {
+      row.onclick = async () => {
+        if (Array.isArray(node.children)) {
+          // Children already loaded — just toggle collapse
+          if (collapsedDirs.has(node.path)) collapsedDirs.delete(node.path);
+          else collapsedDirs.add(node.path);
+          renderPreviewTree();
+        } else {
+          // Lazy-load children on first expand
+          row.style.opacity = "0.5";
+          try {
+            const data = await apiGet(`/api/preview/tree?path=${encodeURIComponent(node.path)}`);
+            node.children = data.children || [];
+            node.has_children = node.children.length > 0;
+          } catch (_e) {
+            node.children = [];
+          } finally {
+            row.style.opacity = "";
+          }
+          collapsedDirs.delete(node.path); // expand after load
+          renderPreviewTree();
+        }
       };
     } else if (!isDir) {
       row.onclick = async () => openDoc(node.path);
     }
 
     ul.appendChild(li);
-    if (isDir && hasChildren && !collapsedDirs.has(node.path)) {
+    if (isDir && isExpanded) {
       const child = document.createElement("ul");
       child.className = "tree nested";
       li.appendChild(child);
       renderTreeNodes(child, node.children);
     }
-  }
-}
-
-function collectDirPaths(nodes) {
-  for (const node of nodes || []) {
-    if (node.type !== "dir") continue;
-    if (node.path) collapsedDirs.add(node.path);
-    collectDirPaths(node.children || []);
   }
 }
 
@@ -972,9 +986,10 @@ async function openDoc(path) {
 
 async function loadTree() {
   const data = await apiGet("/api/preview/tree");
-  previewTreeNodes = (data.tree && data.tree.children) || [];
+  previewTreeNodes = data.children || [];
   collapsedDirs.clear();
-  collectDirPaths(previewTreeNodes);
+  // No pre-population of collapsedDirs: dirs without loaded children are
+  // implicitly closed (has_children=true but no .children array yet).
   renderPreviewTree();
 }
 
@@ -1759,9 +1774,14 @@ async function init() {
   wireDocLinks();
   wireWorkflowTab();
 
-  await loadRagConfig();
-  await Promise.all([loadWorkflowConfig(), loadTree()]);
-  await refreshSessions(true);
+  // UI event bindings above are synchronous so the page is interactive immediately.
+  // Load config + tree together; sessions are independent and don't block first paint.
+  refreshSessions(true).catch((err) => console.error("sessions load failed:", err));
+  await Promise.all([
+    loadRagConfig(),
+    loadWorkflowConfig(),
+    loadTree(),
+  ]);
 }
 
 init().catch((err) => {

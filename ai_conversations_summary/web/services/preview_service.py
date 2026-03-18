@@ -48,6 +48,48 @@ def build_documents_tree() -> dict[str, object]:
     return build_node(DOCUMENTS_DIR, is_root=True)
 
 
+def build_directory_children(rel_path: str) -> list[dict[str, object]]:
+    """Return the shallow (one-level) children of *rel_path* for lazy tree loading.
+
+    Each dir entry carries ``has_children: bool`` instead of a populated
+    ``children`` list so the caller can show a caret without a recursive scan.
+    """
+    DOCUMENTS_DIR.mkdir(parents=True, exist_ok=True)
+    if rel_path:
+        safe = rel_path.replace("\\", "/").strip("/")
+        dir_path = (DOCUMENTS_DIR / safe).resolve()
+        if not str(dir_path).startswith(str(DOCUMENTS_DIR.resolve())):
+            return []
+    else:
+        dir_path = DOCUMENTS_DIR
+
+    if not dir_path.is_dir():
+        return []
+
+    is_root = dir_path == DOCUMENTS_DIR
+    dirs = sorted((p for p in dir_path.iterdir() if p.is_dir()), key=lambda p: p.name.lower())
+    files = sorted(
+        (p for p in dir_path.iterdir() if p.is_file() and p.name != ".gitkeep"),
+        key=lambda p: p.name.lower(),
+    )
+
+    children: list[dict[str, object]] = []
+    for child in [*dirs, *files]:
+        if child.name == ".gitkeep":
+            continue
+        if is_root and child.is_dir() and child.name.lower() in EXCLUDED_ROOT_DIRS:
+            continue
+        rel = child.relative_to(DOCUMENTS_DIR).as_posix()
+        if child.is_dir():
+            has_children = any(
+                p for p in child.iterdir() if p.name != ".gitkeep"
+            )
+            children.append({"type": "dir", "name": child.name, "path": rel, "has_children": has_children})
+        else:
+            children.append({"type": "file", "name": child.name, "path": rel})
+    return children
+
+
 def read_markdown(relative_path: str) -> str:
     safe_rel = relative_path.replace("\\", "/").strip("/")
     path = (DOCUMENTS_DIR / safe_rel).resolve()
@@ -58,28 +100,76 @@ def read_markdown(relative_path: str) -> str:
     return path.read_text(encoding="utf-8", errors="ignore")
 
 
+def _bm25_tokenize(text: str) -> list[str]:
+    """Tokenize text for BM25: ASCII word tokens + CJK character bigrams."""
+    import re
+    tokens: list[str] = []
+    # ASCII word tokens (lowercased)
+    tokens.extend(re.findall(r"[a-z0-9]+", text.lower()))
+    # CJK character bigrams
+    cjk_chars = re.findall(r"[\u4e00-\u9fff\u3400-\u4dbf\uf900-\ufaff]", text)
+    tokens.extend(cjk_chars[i] + cjk_chars[i + 1] for i in range(len(cjk_chars) - 1))
+    return tokens
+
+
+def _bm25_score(
+    query_tokens: list[str],
+    doc_tokens: list[str],
+    avgdl: float = 500.0,
+    k1: float = 1.5,
+    b: float = 0.75,
+) -> float:
+    """BM25 TF score (IDF=1 per term) for a single document."""
+    if not query_tokens or not doc_tokens:
+        return 0.0
+    dl = len(doc_tokens)
+    freq: dict[str, int] = {}
+    for t in doc_tokens:
+        freq[t] = freq.get(t, 0) + 1
+    score = 0.0
+    norm = k1 * (1.0 - b + b * dl / avgdl)
+    for qt in set(query_tokens):
+        tf = freq.get(qt, 0)
+        if tf > 0:
+            score += (tf * (k1 + 1.0)) / (tf + norm)
+    return score
+
+
 def keyword_search(query: str, max_results: int = 50) -> list[PreviewHit]:
-    q = query.strip().lower()
+    q = query.strip()
     if not q:
         return []
 
-    results: list[PreviewHit] = []
+    query_tokens = _bm25_tokenize(q)
+    if not query_tokens:
+        return []
+
+    # Collect all candidate files and their BM25 scores
+    scored: list[tuple[float, str]] = []
+    all_lengths: list[int] = []
+    entries: list[tuple[str, list[str]]] = []
+
     for file_path in _iter_markdown_files(DOCUMENTS_DIR):
         rel = file_path.relative_to(DOCUMENTS_DIR).as_posix()
         if rel.split("/", 1)[0].lower() in EXCLUDED_ROOT_DIRS:
             continue
-        if q in rel.lower():
-            results.append(PreviewHit(path=rel))
-            continue
         try:
-            text = file_path.read_text(encoding="utf-8", errors="ignore").lower()
+            text = file_path.read_text(encoding="utf-8", errors="ignore")
         except Exception:
             continue
-        if q in text:
-            results.append(PreviewHit(path=rel))
-        if len(results) >= max_results:
-            break
-    return results
+        doc_tokens = _bm25_tokenize(rel + " " + text)
+        all_lengths.append(len(doc_tokens))
+        entries.append((rel, doc_tokens))
+
+    avgdl = sum(all_lengths) / len(all_lengths) if all_lengths else 500.0
+
+    for rel, doc_tokens in entries:
+        s = _bm25_score(query_tokens, doc_tokens, avgdl=avgdl)
+        if s > 0.0:
+            scored.append((s, rel))
+
+    scored.sort(reverse=True)
+    return [PreviewHit(path=rel, score=round(s, 4)) for s, rel in scored[:max_results]]
 
 
 def resolve_embedding_model() -> str:

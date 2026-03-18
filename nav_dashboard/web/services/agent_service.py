@@ -1,63 +1,30 @@
 """nav_dashboard/web/services/agent_service.py
-Agent 规划、工具执行与会话管理核心服务
+Agent 执行主链 — 工具调度、LLM 调用与会话管理
 
-═══════════════════════════════════════════════════════════════
-  一次 Agent 对话的完整链路（run_agent_round）
-═══════════════════════════════════════════════════════════════
+架构层次（由外到内）
+──────────────────────────────────────────────────────────────
+  agent_types.py          — 共享数据类与工具名称常量
+  routing_policy.py       — RoutingPolicy：RouterDecision → ExecutionPlan
+  post_retrieval_policy.py— PostRetrievalPolicy：检索结果质量评估与 repair 建议
+  answer_policy.py        — AnswerPolicy：回答模式 + 证据分层策略
+  agent_service.py        — 本文件：路由决策、工具执行、LLM 摘要、会话持久化
 
-  1. 配额检查
-       · 每日 Web Search 配额（WEB_SEARCH_DAILY_LIMIT）
-       · 每日 DeepSeek 调用配额（DEEPSEEK_DAILY_LIMIT）
-       · 超限时先返回确认请求，由前端用户确认后再继续
-
-  2. Query 长度分析（_resolve_query_profile）
-       · 基于 token 估算（字符数/4）分 short / medium / long 三档
-       · 不同档位对应不同的分数阈值、检索 top-n 参数、结果数量上限
-
-  3. 工具规划（LLM planning → _parse_planned_tools）
-       · 将问题、工具描述、记忆摘要传给本地 LLM，输出 JSON：
-           {"tools": [{"name": "...", "args": {"query": "..."}}]}
-       · 解析后去重，提取最多一次每个工具的调用
-       · 若 LLM 输出无效/超时，回退到启发式规划器
-
-  4. 工具执行（ThreadPoolExecutor 并行）
-       a. query_document_rag
-            · Query Rewrite（可选）：本地 LLM 将原始问题改写为最多 3 条检索 query
-            · 多 query 向量召回：每条 query 分别调用 /api/rag/ask（top_n=20），
-              结果 merge（同 doc_id 取最高分）
-            · 结果经过 score 过滤（阈值自 query_profile 读取）
-       b. query_media_record
-            · 调用 Library Tracker /api/library/search（keyword + vector 双模式）
-            · 两类结果分别按独立阈值过滤
-       c. search_web
-            · 调用 Tavily Search API，返回摘要及 URL
-            · 仅 hybrid 模式启用；local_only 模式跳过
-       d. expand_document_query / expand_media_query
-            · 通过知识图谱扩展检索关键词（调用对应子项目的 graph expand 函数）
-            · 扩展后将新关键词追加到 query_document_rag / query_media_record 结果
-
-  5. 结果过滤与排序（_apply_reference_limits）
-       · 按工具类型使用独立阈值对 score 字段过滤
-       · 最终每类工具保留最多 top-k 条结果（short/long query 动态调整 ±N 条）
-
-  6. 答案生成（_llm_summarize）
-       · 将过滤后的工具结果拼装为 context，连同用户问题一起构建 prompt
-       · 调用本地 LLM 或 DeepSeek 生成最终自然语言回答
-       · 若本地 LLM 不可用，降级为仅返回检索结果的文本摘要
-       · 回答末尾自动附加参考来源列表（文档标题/媒体条目/网址）
-
-  7. 会话持久化
-       · 问题和回答追加写入 data/agent_sessions/session_<id>.json
-       · 滑动更新记忆摘要 data/agent_sessions/_memory/memory_<id>.json
-         （最近 MEMORY_MAX_TURNS 轮）
-       · debug=True 时将规划输入、工具结果、LLM Token 估算落盘到
-         data/agent_sessions/debug_data/
-
-═══════════════════════════════════════════════════════════════
-  配额与历史记录
-═══════════════════════════════════════════════════════════════
-  · 今日用量：data/agent_quota.json（跨天自动清零）
-  · 月度历史：data/agent_quota_history.json（可通过 PATCH /api/dashboard/usage 手动调整）
+主链入口：run_agent_round()
+──────────────────────────────────────────────────────────────
+1. 配额检查（Web Search / DeepSeek 每日限额）
+2. Query 长度分析 → _resolve_query_profile（short/medium/long 三档）
+3. 路由决策 → _build_router_decision → RouterDecision
+4. 工具规划 → RoutingPolicy.build_plan → ExecutionPlan
+5. 工具执行（ThreadPoolExecutor 并发）
+     query_document_rag  — 向量召回 + 重写 + score 过滤
+     query_media_record  — 本地媒体库 keyword/vector 双模式
+     search_web          — Tavily API（仅 hybrid 模式）
+     expand_mediawiki_concept — 抽象媒体概念展开 / 创作者作品列表
+     search_tmdb_media   — TMDB 外部影视信息
+6. PostRetrievalPolicy → 结果质量分层（zero/weak/partial/proceed）
+7. AnswerPolicy → 回答模式 + 证据分层策略（evidence_policy）
+8. LLM 摘要生成 → _llm_summarize
+9. 会话持久化（session JSON + 滑动记忆摘要）
 """
 from __future__ import annotations
 
@@ -70,7 +37,7 @@ import re
 import sys
 import threading
 from concurrent.futures import ThreadPoolExecutor, as_completed
-from dataclasses import dataclass, field
+from dataclasses import asdict as _dc_asdict, dataclass, field
 from datetime import date, datetime, timedelta
 from pathlib import Path
 from typing import Any, Callable, Iterator, Literal
@@ -135,6 +102,53 @@ from nav_dashboard.web.services.media_taxonomy import (
     TMDB_PERSON_CUES,
     TMDB_TV_CUES,
 )
+from nav_dashboard.web.services.music_ontology import (
+    collect_composer_alias_hints,
+    collect_music_ontology_hints,
+    composer_override_signature_tokens,
+    infer_music_filters_from_text,
+    is_form_alias,
+    is_instrument_alias,
+    is_work_family_alias,
+)
+
+from nav_dashboard.web.services.post_retrieval_policy import (
+    PostRetrievalPolicy as _PostRetrievalPolicy,
+    PostRetrievalOutcome as _PostRetrievalOutcome,
+)
+from nav_dashboard.web.services.answer_policy import (
+    AnswerPolicy as _AnswerPolicy,
+    AnswerStrategy as _AnswerStrategy,
+)
+from nav_dashboard.web.services.agent_types import (  # noqa: E402
+    TOOL_QUERY_DOC_RAG,
+    TOOL_QUERY_MEDIA,
+    TOOL_SEARCH_WEB,
+    TOOL_EXPAND_DOC_QUERY,
+    TOOL_EXPAND_MEDIA_QUERY,
+    TOOL_SEARCH_MEDIAWIKI,
+    TOOL_PARSE_MEDIAWIKI,
+    TOOL_EXPAND_MEDIAWIKI_CONCEPT,
+    TOOL_SEARCH_TMDB,
+    TOOL_SEARCH_BANGUMI,
+    TOOL_SEARCH_BY_CREATOR,
+    TOOL_NAMES,
+    QUERY_TYPE_TECH,
+    QUERY_TYPE_MEDIA,
+    QUERY_TYPE_MIXED,
+    QUERY_TYPE_GENERAL,
+    CLASSIFIER_LABEL_MEDIA,
+    CLASSIFIER_LABEL_TECH,
+    CLASSIFIER_LABEL_OTHER,
+    PlannedToolCall,
+    ToolExecution,
+    RouterDecision,
+    ExecutionPlan,
+    RouterContextResolution,
+    PostRetrievalAssessment,
+    AgentRuntimeState,
+)
+from nav_dashboard.web.services.routing_policy import RoutingPolicy  # noqa: E402
 
 try:
     from core_service.config import get_settings
@@ -160,23 +174,6 @@ AGENT_METRICS_FILE = DATA_DIR / "agent_metrics.json"
 AGENT_METRICS_MAX = 20
 _LOCK = threading.RLock()
 
-TOOL_QUERY_DOC_RAG = "query_document_rag"
-TOOL_QUERY_MEDIA = "query_media_record"
-TOOL_SEARCH_WEB = "search_web"
-TOOL_EXPAND_DOC_QUERY = "expand_document_query"
-TOOL_EXPAND_MEDIA_QUERY = "expand_media_query"
-TOOL_SEARCH_MEDIAWIKI = "search_mediawiki_action"
-TOOL_PARSE_MEDIAWIKI = "parse_mediawiki_page"
-TOOL_EXPAND_MEDIAWIKI_CONCEPT = "expand_mediawiki_concept"
-TOOL_SEARCH_TMDB = "search_tmdb_media"
-
-QUERY_TYPE_TECH = "TECH_QUERY"
-QUERY_TYPE_MEDIA = "MEDIA_QUERY"
-QUERY_TYPE_MIXED = "MIXED_QUERY"
-QUERY_TYPE_GENERAL = "GENERAL_QUERY"
-CLASSIFIER_LABEL_MEDIA = "MEDIA"
-CLASSIFIER_LABEL_TECH = "TECH"
-CLASSIFIER_LABEL_OTHER = "OTHER"
 TECH_SPACE_PREFIXES = (
     "ai-governance/",
     "career-learning/",
@@ -186,17 +183,6 @@ TECH_SPACE_PREFIXES = (
     "science/",
 )
 
-TOOL_NAMES = [
-    TOOL_QUERY_DOC_RAG,
-    TOOL_QUERY_MEDIA,
-    TOOL_SEARCH_WEB,
-    TOOL_EXPAND_DOC_QUERY,
-    TOOL_EXPAND_MEDIA_QUERY,
-    TOOL_SEARCH_MEDIAWIKI,
-    TOOL_PARSE_MEDIAWIKI,
-    TOOL_EXPAND_MEDIAWIKI_CONCEPT,
-    TOOL_SEARCH_TMDB,
-]
 DOC_SCORE_THRESHOLD = 0.45
 WEB_SCORE_THRESHOLD = 0.5
 MEDIA_KEYWORD_SCORE_THRESHOLD = float(os.getenv("NAV_DASHBOARD_MEDIA_KEYWORD_SCORE_THRESHOLD", "0.2"))
@@ -226,6 +212,14 @@ SHORT_QUERY_DOC_VECTOR_TOP_N_DELTA = int(os.getenv("NAV_DASHBOARD_SHORT_DOC_VECT
 LONG_QUERY_DOC_VECTOR_TOP_N_DELTA = int(os.getenv("NAV_DASHBOARD_LONG_DOC_VECTOR_TOP_N_DELTA", "-4") or "-4")
 SHORT_QUERY_LIMIT_DELTA = int(os.getenv("NAV_DASHBOARD_SHORT_TOOL_LIMIT_DELTA", "1") or "1")
 LONG_QUERY_LIMIT_DELTA = int(os.getenv("NAV_DASHBOARD_LONG_TOOL_LIMIT_DELTA", "-1") or "-1")
+# For list_plus_expand collection queries the full result set is needed before per-item enrichment.
+COLLECTION_FILTER_TOP_K_MEDIA = int(os.getenv("NAV_DASHBOARD_COLLECTION_FILTER_TOP_K", "15") or "15")
+# Maximum number of local items to fan-out to per-item TMDB/Wiki enrichment.
+# Kept deliberately small to avoid latency spikes (each item = 1 external call).
+PER_ITEM_EXPAND_LIMIT = int(os.getenv("NAV_DASHBOARD_PER_ITEM_EXPAND_LIMIT", "8") or "8")
+# Minimum per-item TMDB match confidence to accept a result.
+# Below this the TMDB row is discarded to prevent wrong-item overviews.
+PER_ITEM_TMDB_MIN_CONFIDENCE = float(os.getenv("NAV_DASHBOARD_PER_ITEM_TMDB_MIN_CONFIDENCE", "0.45") or "0.45")
 _MEDIA_GRAPH_CACHE: dict[str, Any] = {"mtime": None, "degrees": {}}
 _MEDIA_COMPARE_SPLIT_RE = re.compile(r"\s*(?:和|与|以及|及|跟|vs\.?|VS\.?|/|／|、)\s*")
 _MEDIA_TITLE_MARKER_RE = re.compile(r"(?:《[^》]+》|「[^」]+」|『[^』]+』|“[^”]+”|\"[^\"]+\")")
@@ -234,6 +228,28 @@ _MEDIA_LIBRARY_VOCAB_CACHE: dict[str, Any] = {
     "data": {"nationalities": [], "authors": [], "categories": [], "titles": []},
 }
 _MEDIAWIKI_CONCEPT_CACHE: dict[str, Any] = {"entries": {}, "lock": threading.RLock()}
+
+# ── Classification Oracle ─────────────────────────────────────────────────────
+# Maps lowercased query text → expected {domain, arbitration}.  When a live
+# agent trace matches a known oracle entry, query_understanding gets a
+# classification_conformance field so the dashboard can flag regressions.
+# arbitration may be a str (exact match) or list[str] (any-of match).
+_CLASSIFICATION_ORACLE: dict[str, dict[str, Any]] = {
+    "机器学习的概念和应用":            {"domain": "tech",    "arbitration": "tech_primary"},
+    "深度学习架构原理是什么":            {"domain": "tech",    "arbitration": "tech_primary"},
+    "transformer注意力机制的数学原理":   {"domain": "tech",    "arbitration": "tech_primary"},
+    "rag检索增强生成的工作流程":          {"domain": "tech",    "arbitration": "tech_primary"},
+    "什么是向量数据库":                 {"domain": "tech",    "arbitration": "tech_primary"},
+    "《教父》的导演是谁":               {"domain": "media",   "arbitration": ["entity_wins", "media_surface_wins"]},
+    "《三体》作者刘慈欣的其他作品":       {"domain": "media",   "arbitration": ["entity_wins", "media_surface_wins"]},
+    "波拉尼奥的小说有哪些":             {"domain": "media",   "arbitration": ["entity_wins", "media_surface_wins"]},
+    "推荐几部法国新浪潮电影":            {"domain": "media",   "arbitration": "media_surface_wins"},
+    "魔幻现实主义的叙事手法":            {"domain": "media",   "arbitration": "abstract_concept_wins"},
+    "拉美文学的代表作家":               {"domain": "media",   "arbitration": ["abstract_concept_wins", "media_surface_wins"]},
+    "什么是量子纠缠":                   {"domain": "general", "arbitration": "general_fallback"},
+    "气候变化的主要原因":               {"domain": "general", "arbitration": "general_fallback"},
+}
+# ─────────────────────────────────────────────────────────────────────────────
 PROMPT_HISTORY_MAX_MESSAGES = int(os.getenv("NAV_DASHBOARD_PROMPT_HISTORY_MAX_MESSAGES", "6") or "6")
 PROMPT_HISTORY_ITEM_MAX_CHARS = int(os.getenv("NAV_DASHBOARD_PROMPT_HISTORY_ITEM_MAX_CHARS", "360") or "360")
 PROMPT_MEMORY_MAX_CHARS = int(os.getenv("NAV_DASHBOARD_PROMPT_MEMORY_MAX_CHARS", "1800") or "1800")
@@ -252,6 +268,7 @@ def _allowed_tool_names(search_mode: str) -> list[str]:
         TOOL_PARSE_MEDIAWIKI,
         TOOL_EXPAND_MEDIAWIKI_CONCEPT,
         TOOL_SEARCH_TMDB,
+        TOOL_SEARCH_BANGUMI,
     ]
     if normalized_mode == "hybrid":
         allowed.append(TOOL_SEARCH_WEB)
@@ -385,6 +402,21 @@ def _minimal_prompt_tool_payload(exec_result: ToolExecution) -> dict[str, Any]:
     if exec_result.tool == TOOL_EXPAND_MEDIAWIKI_CONCEPT and isinstance(data, dict):
         payload["concept"] = _clip_text(data.get("concept", ""), 120)
         payload["filters"] = _sanitize_for_prompt(data.get("filters", {}), key="filters", max_depth=2, max_list_items=6)
+        # Include abbreviated extract so the LLM can cite wiki content in the answer
+        # body even when the full payload is trimmed down to minimal form.
+        if rows:
+            _mw_first = rows[0] if isinstance(rows[0], dict) else {}
+            _mw_title = str(_mw_first.get("display_title") or _mw_first.get("title") or "").strip()
+            _mw_extract = _clip_text(str(_mw_first.get("extract") or ""), 400)
+            if _mw_title or _mw_extract:
+                payload["top_result"] = {"title": _mw_title, "extract": _mw_extract}
+    if exec_result.tool == TOOL_SEARCH_BY_CREATOR and isinstance(data, dict):
+        payload["canonical_creator"] = str(data.get("canonical_creator") or "").strip()
+        payload["found"] = bool(data.get("found"))
+        payload["works_count"] = int(data.get("works_count") or 0)
+        # Include first few works so the LLM sees concrete titles even in minimal path.
+        works = data.get("results") if isinstance(data.get("results"), list) else []
+        payload["works_preview"] = _sanitize_for_prompt(works[:6], key="data", max_depth=2, max_list_items=6, max_dict_items=6)
     return payload
 
 
@@ -428,6 +460,209 @@ def _build_tool_context_parts(tool_results: list[ToolExecution], *, max_total_ch
     if omitted > 0 and remaining > 32:
         parts.append(f"还有 {omitted} 个工具结果因上下文预算被省略。")
     return parts
+
+
+def _build_compact_tool_summary_lines(tool_results: list[ToolExecution]) -> list[str]:
+    """Render a terse tool summary for prompts when full raw tool JSON is redundant.
+
+    This is primarily used for per-item bucketed answers where the detailed
+    local/external media content has already been pre-assembled into buckets and
+    including the raw tool payload again only inflates prompt size.
+    """
+    lines: list[str] = []
+    for result in tool_results:
+        data = result.data if isinstance(result.data, dict) else {}
+        result_count = len(data.get("results") or []) if isinstance(data.get("results"), list) else 0
+        source_counts = data.get("source_counts") if isinstance(data.get("source_counts"), dict) else {}
+        source_suffix = ""
+        if source_counts:
+            ordered = sorted(
+                ((str(k), int(v or 0)) for k, v in source_counts.items() if str(k).strip()),
+                key=lambda item: (-item[1], item[0]),
+            )
+            source_suffix = " | sources=" + ", ".join(f"{name}:{count}" for name, count in ordered)
+        lines.append(f"- {result.tool} | {result.status} | results={result_count}{source_suffix}")
+    return lines
+
+
+def _compose_response_sections(
+    tool_results: list[ToolExecution],
+    answer_strategy: "Any | None",
+) -> dict[str, Any]:
+    """Pre-assemble compact data blocks from tool results so the LLM polishes
+    an already-structured data, rather than discovering structure from raw JSON.
+
+    Returns:
+        local_lines  – bullet lines for local-library items (title, date, rating, comment).
+        external_lines – labeled lines for TMDB / MediaWiki results.
+        has_external – True when external_lines is non-empty.
+    """
+    if answer_strategy is None:
+        return {"local_lines": [], "external_lines": [], "has_external": False}
+    _style = getattr(answer_strategy, "style_hints", None) or {}
+    _response_structure = str(_style.get("response_structure") or "")
+    # Only activate when the answer policy requests a structured multi-source layout.
+    if _response_structure not in {
+        "local_list_plus_external_background",
+        "local_record_plus_external_info",
+        "local_list",
+        "compare",
+        "thematic_list",
+    }:
+        return {"local_lines": [], "external_lines": [], "has_external": False}
+
+    local_lines: list[str] = []
+    external_lines: list[str] = []
+    # per_item_buckets: each entry is a single-item dict rendered as a complete
+    # block of "local record + external overview" so the LLM receives bucketed,
+    # deterministically paired data rather than two parallel flat lists.
+    per_item_buckets: list[str] = []
+
+    # ── Detect per-item fan-out result ───────────────────────────────────────
+    # When present, build bucketed blocks instead of flat external_lines.
+    _fanout_result = next(
+        (r for r in tool_results
+         if r.status in {"ok", "partial"}
+         and isinstance(r.data, dict)
+         and r.data.get("per_item_fanout")),
+        None,
+    )
+    _fanout_data: list[dict[str, Any]] = []
+    if _fanout_result is not None and isinstance(_fanout_result.data, dict):
+        _raw = _fanout_result.data.get("per_item_data") or _fanout_result.data.get("results") or []
+        _fanout_data = [d for d in _raw if isinstance(d, dict)]
+
+    if _fanout_data:
+        # Build an index keyed by normalised local_title for quick bucketing.
+        _ext_by_title: dict[str, dict[str, Any]] = {}
+        for item in _fanout_data:
+            key = _normalize_title_for_match(str(item.get("local_title") or item.get("_source_title") or ""))
+            if key:
+                _ext_by_title[key] = item
+
+        # Collect local rows to render
+        _local_rows: list[dict[str, Any]] = []
+        for result in tool_results:
+            if result.status not in {"ok", "partial"} or not isinstance(result.data, dict):
+                continue
+            if result.tool in {TOOL_QUERY_MEDIA, TOOL_SEARCH_BY_CREATOR}:
+                _raw_rows = result.data.get("results") or []
+                _local_rows.extend([r for r in _raw_rows if isinstance(r, dict)])
+
+        for row in _local_rows:
+            title = str(row.get("title") or "").strip()
+            if not title:
+                continue
+            date = str(row.get("date") or "").strip()
+            rating = row.get("rating")
+            comment = _clip_text(str(row.get("comment") or row.get("review") or ""), 80)
+
+            block: list[str] = [f"## 《{title}》"]
+            if date:
+                block.append(f"  观看/阅读日期：{date}")
+            if rating is not None:
+                block.append(f"  个人评分：{rating}")
+            if comment:
+                block.append(f"  个人短评：{comment}")
+
+            norm = _normalize_title_for_match(title)
+            ext = _ext_by_title.get(norm)
+            if ext:
+                ext_source = str(ext.get("external_source") or "wiki")
+                if ext_source == "bangumi":
+                    source_label = "Bangumi"
+                elif ext_source == "tmdb":
+                    source_label = "TMDB"
+                else:
+                    source_label = "Wiki"
+                confidence = float(ext.get("match_confidence") or 0.0)
+                ext_overview = _clip_text(str(ext.get("external_overview") or ext.get("overview") or ""), 180)
+                if ext_overview:
+                    line = f"  剧情/简介（{source_label}外部参考）：{ext_overview}"
+                    if confidence < 0.6:
+                        line += "（外部信息可能非精确匹配）"
+                    block.append(line)
+
+            per_item_buckets.append("\n".join(block))
+
+        return {
+            "local_lines": local_lines,
+            "external_lines": external_lines,
+            "per_item_buckets": per_item_buckets,
+            "has_external": bool(per_item_buckets),
+        }
+
+    # ── Standard (non-fan-out) rendering ─────────────────────────────────────
+    for result in tool_results:
+        if result.status not in {"ok", "partial"}:
+            continue
+        data = result.data if isinstance(result.data, dict) else {}
+        rows: list[Any] = data.get("results", []) if isinstance(data.get("results"), list) else []
+
+        if result.tool in {TOOL_QUERY_MEDIA, TOOL_SEARCH_BY_CREATOR}:
+            for row in rows:
+                if not isinstance(row, dict):
+                    continue
+                title = str(row.get("title") or "").strip()
+                if not title:
+                    continue
+                date = str(row.get("date") or "").strip()
+                rating = row.get("rating")
+                comment = _clip_text(str(row.get("comment") or row.get("review") or ""), 80)
+                if _response_structure == "compare":
+                    block_lines = [f"# 《{title}》"]
+                    if date:
+                        block_lines.append(f"  观看/阅读日期: {date}")
+                    if rating is not None:
+                        block_lines.append(f"  个人评分: {rating}")
+                    if comment:
+                        block_lines.append(f"  个人短评: {comment}")
+                    local_lines.extend(block_lines)
+                else:
+                    parts: list[str] = [f"《{title}》"]
+                    if date:
+                        parts.append(date)
+                    if rating is not None:
+                        parts.append(f"评分 {rating}")
+                    if comment:
+                        parts.append(comment)
+                    local_lines.append("・" + " | ".join(parts))
+
+        elif result.tool == TOOL_SEARCH_TMDB:
+            for row in rows[:4]:
+                if not isinstance(row, dict):
+                    continue
+                title = str(row.get("title") or "").strip()
+                overview = _clip_text(str(row.get("overview") or ""), 150)
+                if title:
+                    line = f"【TMDB】《{title}》"
+                    if overview:
+                        line += f"：{overview}"
+                    external_lines.append(line)
+
+        elif result.tool in {TOOL_EXPAND_MEDIAWIKI_CONCEPT, TOOL_SEARCH_MEDIAWIKI, TOOL_PARSE_MEDIAWIKI}:
+            wiki_rows: list[dict[str, Any]] = []
+            if result.tool == TOOL_PARSE_MEDIAWIKI:
+                page = data.get("page")
+                if isinstance(page, dict) and (page.get("title") or page.get("extract")):
+                    wiki_rows = [page]
+                elif rows:
+                    wiki_rows = [r for r in rows[:2] if isinstance(r, dict)]
+            else:
+                wiki_rows = [r for r in rows[:2] if isinstance(r, dict)]
+            for row in wiki_rows:
+                wiki_title = str(row.get("display_title") or row.get("title") or "").strip()
+                extract = _clip_text(str(row.get("extract") or ""), 250)
+                if wiki_title or extract:
+                    label = f"【Wiki】{wiki_title}" if wiki_title else "【Wiki】"
+                    external_lines.append(f"{label}：{extract}" if extract else label)
+
+    return {
+        "local_lines": local_lines,
+        "external_lines": external_lines,
+        "per_item_buckets": per_item_buckets,
+        "has_external": bool(external_lines),
+    }
 
 
 def _clip_memory_context(memory_context: str) -> str:
@@ -756,96 +991,25 @@ TMDB_LANGUAGE = _first_configured_text(
     "zh-CN",
 )
 
+BANGUMI_ACCESS_TOKEN = _first_configured_text(
+    os.getenv("BANGUMI_ACCESS_TOKEN", ""),
+    os.getenv("NAV_DASHBOARD_BANGUMI_ACCESS_TOKEN", ""),
+    getattr(_CORE_SETTINGS, "bangumi_access_token", ""),
+)
+BANGUMI_API_BASE_URL = "https://api.bgm.tv"
+BANGUMI_TIMEOUT = float(os.getenv("NAV_DASHBOARD_BANGUMI_TIMEOUT", "20") or "20")
+# Bangumi subject types: 1=书籍, 2=动画, 3=音乐, 4=游戏, 6=三次元
+BANGUMI_SUBJECT_TYPE_ANIME = 2
+BANGUMI_SUBJECT_TYPE_REAL = 6
+# Minimum Bangumi match confidence; same threshold as TMDB.
+PER_ITEM_BANGUMI_MIN_CONFIDENCE = float(
+    os.getenv("NAV_DASHBOARD_PER_ITEM_BANGUMI_MIN_CONFIDENCE", "0.45") or "0.45"
+)
 
-@dataclass
-class PlannedToolCall:
-    name: str
-    query: str
-    options: dict[str, Any] = field(default_factory=dict)
+# PlannedToolCall, ToolExecution, RouterDecision, ExecutionPlan,
+# RouterContextResolution, PostRetrievalAssessment, AgentRuntimeState
+# are imported from agent_types at the top of this module.
 
-
-@dataclass
-class ToolExecution:
-    tool: str
-    status: str
-    summary: str
-    data: Any
-
-
-@dataclass
-class RouterDecision:
-    raw_question: str
-    resolved_question: str
-    intent: Literal["knowledge_qa", "media_lookup", "mixed", "chat"]
-    domain: Literal["tech", "media", "general"]
-    lookup_mode: Literal["general_lookup", "entity_lookup", "filter_search", "concept_lookup"] = "general_lookup"
-    selection: dict[str, list[str]] = field(default_factory=dict)
-    time_constraint: dict[str, Any] = field(default_factory=dict)
-    ranking: dict[str, Any] = field(default_factory=dict)
-    entities: list[str] = field(default_factory=list)
-    filters: dict[str, list[str]] = field(default_factory=dict)
-    date_range: list[str] = field(default_factory=list)
-    sort: str = "relevance"
-    freshness: Literal["none", "recent", "realtime"] = "none"
-    needs_web: bool = False
-    needs_doc_rag: bool = False
-    needs_media_db: bool = False
-    needs_external_media_db: bool = False
-    followup_mode: Literal["none", "inherit_filters", "inherit_entity", "inherit_timerange"] = "none"
-    followup_filter_strategy: Literal["none", "carry", "replace", "augment"] = "none"
-    confidence: float = 0.0
-    reasons: list[str] = field(default_factory=list)
-    media_type: str = ""
-    llm_label: str = CLASSIFIER_LABEL_OTHER
-    query_type: str = QUERY_TYPE_GENERAL
-    allow_downstream_entity_inference: bool = False
-    followup_target: str = ""
-    needs_comparison: bool = False
-    needs_explanation: bool = False
-    rewritten_queries: dict[str, str] = field(default_factory=dict)
-    evidence: dict[str, Any] = field(default_factory=dict)
-    arbitration: str = "general_fallback"
-
-
-@dataclass
-class ExecutionPlan:
-    decision: RouterDecision
-    planned_tools: list[PlannedToolCall] = field(default_factory=list)
-    primary_tool: str = ""
-    fallback_tools: list[str] = field(default_factory=list)
-    reasons: list[str] = field(default_factory=list)
-
-
-@dataclass
-class RouterContextResolution:
-    resolved_question: str
-    resolved_query_state: dict[str, Any] = field(default_factory=dict)
-    conversation_state_before: dict[str, Any] = field(default_factory=dict)
-    conversation_state_after: dict[str, Any] = field(default_factory=dict)
-    detected_followup: bool = False
-    inheritance_applied: dict[str, str] = field(default_factory=dict)
-    state_diff: dict[str, Any] = field(default_factory=dict)
-    planner_snapshot: dict[str, Any] = field(default_factory=dict)
-
-
-@dataclass
-class PostRetrievalAssessment:
-    status: str = "pending_post_retrieval"
-    doc_similarity: dict[str, Any] = field(default_factory=dict)
-    media_validation: dict[str, Any] = field(default_factory=dict)
-    tmdb: dict[str, Any] = field(default_factory=dict)
-    tech_score: float = 0.0
-    weak_tech_signal: bool = False
-
-
-@dataclass
-class AgentRuntimeState:
-    decision: RouterDecision
-    execution_plan: ExecutionPlan
-    context_resolution: RouterContextResolution
-    llm_media: dict[str, Any] = field(default_factory=dict)
-    previous_context_state: dict[str, Any] = field(default_factory=dict)
-    post_retrieval_assessment: PostRetrievalAssessment = field(default_factory=PostRetrievalAssessment)
 
 
 def _serialize_planned_tool(call: PlannedToolCall) -> dict[str, Any]:
@@ -892,6 +1056,11 @@ def _serialize_router_decision(decision: RouterDecision) -> dict[str, Any]:
         "rewritten_queries": {str(key): str(value) for key, value in (decision.rewritten_queries or {}).items() if str(key).strip() and str(value).strip()},
         "evidence": dict(decision.evidence),
         "arbitration": str(decision.arbitration or "general_fallback"),
+        "query_class": str(decision.query_class or "knowledge_qa"),
+        "subject_scope": str(decision.subject_scope or "general_knowledge"),
+        "time_scope_type": str(decision.time_scope_type or ""),
+        "answer_shape": str(decision.answer_shape or ""),
+        "media_family": str(decision.media_family or ""),
     }
 
 
@@ -1600,6 +1769,172 @@ def _map_router_query_type(decision: RouterDecision) -> str:
     return QUERY_TYPE_GENERAL
 
 
+def _derive_query_class(decision: RouterDecision) -> str:
+    """Map a completed RouterDecision to a single stable query_class string.
+
+    Priority order (highest → lowest):
+      1. media_creator_collection — evidence.creator_collection_query
+      2. media_abstract_concept   — evidence.abstract_media_concept
+            3. music_work_versions_compare — music composer/work version compare
+            4. media_title_detail       — entity_lookup + single entity
+            5. media_collection_filter  — filter_search (non-creator)
+            6. mixed_knowledge_with_media — mixed domain intent
+            7. followup_proxy           — any active follow-up mode
+            8. knowledge_qa             — tech / general / knowledge intent
+            9. general_qa               — catch-all
+    """
+    ev = dict(decision.evidence or {})
+    if ev.get("creator_collection_query"):
+        return "media_creator_collection"
+    if ev.get("abstract_media_concept"):
+        return "media_abstract_concept"
+    if ev.get("music_work_versions_compare"):
+        return "music_work_versions_compare"
+    if decision.domain == "media" and decision.lookup_mode == "entity_lookup" and len(decision.entities) == 1:
+        return "media_title_detail"
+    if decision.domain == "media" and decision.lookup_mode == "filter_search":
+        return "media_collection_filter"
+    if decision.intent == "mixed":
+        return "mixed_knowledge_with_media"
+    if decision.followup_mode != "none":
+        return "followup_proxy"
+    if decision.domain in {"tech", "general"} or decision.intent == "knowledge_qa":
+        return "knowledge_qa"
+    return "general_qa"
+
+
+# Personal-scope cues shared by subject_scope and has_personal_scope check.
+# Exact-string cues cover the common contiguous-verb patterns.  The regex
+# additionally catches cases where a date range (or other token) sits between
+# "我" and the consumption verb, e.g. "我2024年7-10月看了哪些动画" where the
+# substring "我看了" does not appear contiguously.
+_PERSONAL_SCOPE_CUES = (
+    "我看过", "我看了", "我追过", "我补过",
+    "我读过", "我读了", "我听过",
+    "我玩过", "我打过", "我记录过",
+)
+_PERSONAL_SCOPE_RE = re.compile(
+    r"我.{0,25}[看追补读听玩打][了过]",
+    re.UNICODE,
+)
+
+
+def _derive_subject_scope(decision: RouterDecision) -> str:
+    """Return 'personal_record' when the question is about the user's own
+    consumption history (e.g. "我看过…", "我2024年6月看了…"), otherwise
+    'general_knowledge'."""
+    text = str(decision.raw_question or "").strip()
+    if any(cue in text for cue in _PERSONAL_SCOPE_CUES) or _PERSONAL_SCOPE_RE.search(text):
+        return "personal_record"
+    return "general_knowledge"
+
+
+def _derive_time_scope_type(decision: RouterDecision) -> str:
+    """Distinguish whether a date window constrains the user's *consumption*
+    date (library record date) or the work's *publication/release* date.
+
+    Rules:
+      • personal_scope + date window → consumption_date
+      • date window but no personal cues → publication_date
+      • no date window → ""
+    """
+    if not decision.time_constraint:
+        return ""
+    text = str(decision.raw_question or "").strip()
+    if any(cue in text for cue in _PERSONAL_SCOPE_CUES) or _PERSONAL_SCOPE_RE.search(text):
+        return "consumption_date"
+    return "publication_date"
+
+
+def _derive_answer_shape(decision: RouterDecision) -> str:
+    """Derive the expected shape of the answer from the router decision.
+
+    Values:
+      list_plus_expand — collection query where user wants per-item narrative
+      detail_card      — single-entity lookup with explanation requested
+      compare          — explicit comparison intent
+      list_only        — plain collection list
+      ""               — no strong shape signal (knowledge / general)
+    """
+    if decision.needs_comparison:
+        return "compare"
+    if decision.lookup_mode == "entity_lookup" and len(decision.entities) == 1:
+        return "detail_card"
+    is_collection = (
+        decision.lookup_mode in ("filter_search", "general_lookup")
+        and decision.domain == "media"
+    ) or bool((decision.evidence or {}).get("creator_collection_query"))
+    expand_cues = (
+        "介绍", "展开", "分别说说", "详细说", "分别介绍", "说说",
+        # Patterns like "分别是讲什么的 / 讲什么的 / 讲了什么 / 是什么内容"
+        # semantically mean per-item expansion even though the surface phrasing
+        # doesn't contain "介绍" or "展开".
+        "分别是讲什么的", "讲什么的", "讲了什么", "是什么内容", "什么故事",
+        "都是什么", "各自讲", "概述", "是讲什么",
+    )
+    text = str(decision.raw_question or "").strip()
+    if is_collection and decision.needs_explanation:
+        return "list_plus_expand"
+    if is_collection and any(cue in text for cue in expand_cues):
+        return "list_plus_expand"
+    if is_collection:
+        return "list_only"
+    return ""
+
+
+# Media type strings that identify audiovisual content.  Used by
+# _derive_media_family and consumed by RoutingPolicy (TMDB eligibility),
+# PostRetrievalPolicy (repair path), and AnswerPolicy (external block form).
+# "video" is the canonical normalised value used by this system's adapter.
+_AUDIOVISUAL_MEDIA_TYPES: frozenset[str] = frozenset({
+    "video", "movie", "film", "tv", "drama", "anime", "animation",
+    "documentary", "series", "show", "miniseries",
+})
+_BOOKISH_MEDIA_TYPES: frozenset[str] = frozenset({
+    "book", "novel", "manga", "comic", "essay", "literature",
+    "nonfiction", "fiction", "poetry",
+})
+_MUSIC_MEDIA_TYPES: frozenset[str] = frozenset({"music", "album", "song"})
+_GAME_MEDIA_TYPES: frozenset[str] = frozenset({"game", "videogame", "boardgame"})
+
+
+def _derive_media_family(decision: RouterDecision) -> str:
+    """Classify the content family from decision.media_type.
+
+    Returns one of: audiovisual | bookish | music | game | mixed | ""
+    """
+    mt = str(decision.media_type or "").lower().strip()
+    if not mt:
+        return ""
+    # A single canonical token can match exactly.
+    if mt in _AUDIOVISUAL_MEDIA_TYPES:
+        return "audiovisual"
+    if mt in _BOOKISH_MEDIA_TYPES:
+        return "bookish"
+    if mt in _MUSIC_MEDIA_TYPES:
+        return "music"
+    if mt in _GAME_MEDIA_TYPES:
+        return "game"
+    # Compound tokens like "video,book" or space-separated values.
+    tokens = {t.strip() for t in mt.replace(",", " ").split()}
+    families = set()
+    for tok in tokens:
+        if tok in _AUDIOVISUAL_MEDIA_TYPES:
+            families.add("audiovisual")
+        elif tok in _BOOKISH_MEDIA_TYPES:
+            families.add("bookish")
+        elif tok in _MUSIC_MEDIA_TYPES:
+            families.add("music")
+        elif tok in _GAME_MEDIA_TYPES:
+            families.add("game")
+    if len(families) == 1:
+        return families.pop()
+    if len(families) > 1:
+        return "mixed"
+    return ""
+
+
+
 def _decision_requires_tmdb(decision: RouterDecision) -> bool:
     text = str(decision.raw_question or "").strip()
     if not text or not decision.needs_media_db:
@@ -1744,6 +2079,9 @@ def _build_router_decision(
         or collection_query
         or abstract_media_concept  # e.g. "拉美文学", "新浪潮电影风格"
         or (followup_mode != "none" and _state_has_media_context(previous_state))
+        # LLM explicitly classified as media filter/entity search — stronger than
+        # just voting domain=media.  Still kept out of llm_media_weak_general path.
+        or (llm_domain == "media" and llm_lookup_mode in {"filter_search", "entity_lookup"})
     )
     media_primary = explicit_media_anchor and not tech_primary
     # mixed: entity or inherited followup EXISTS alongside tech cues
@@ -1942,6 +2280,12 @@ def _build_router_decision(
     }
     decision.needs_external_media_db = _decision_requires_tmdb(decision)
     decision.query_type = _map_router_query_type(decision)
+    decision.query_class = _derive_query_class(decision)
+    # ── New semantic slots ──────────────────────────────────────────────────
+    decision.subject_scope = _derive_subject_scope(decision)
+    decision.time_scope_type = _derive_time_scope_type(decision)
+    decision.answer_shape = _derive_answer_shape(decision)
+    decision.media_family = _derive_media_family(decision)
     return decision, llm_media, previous_state
 
 
@@ -1985,65 +2329,8 @@ def _router_decision_to_query_classification(
     }
 
 
-class RoutingPolicy:
-    def build_plan(self, decision: RouterDecision, search_mode: str) -> ExecutionPlan:
-        normalized_mode = _normalize_search_mode(search_mode)
-        planned_tools: list[PlannedToolCall] = []
-        reasons: list[str] = []
-        rewritten_queries = {str(key): str(value) for key, value in (decision.rewritten_queries or {}).items() if str(key).strip() and str(value).strip()}
-
-        if decision.needs_media_db:
-            planned_tools.append(
-                PlannedToolCall(
-                    name=TOOL_QUERY_MEDIA,
-                    query=rewritten_queries.get("media_query") or decision.resolved_question or decision.raw_question,
-                    options=_build_media_tool_options_from_decision(decision),
-                )
-            )
-            reasons.append("policy:media_primary")
-
-        if decision.needs_doc_rag:
-            # mixed_due_to_entity_plus_tech: tech knowledge is the primary answer source;
-            # media lookup is supplementary context — doc goes first in tool plan.
-            is_tech_primary_mixed = decision.arbitration == "mixed_due_to_entity_plus_tech"
-            insert_at_front = decision.domain == "tech" or is_tech_primary_mixed
-            doc_call = PlannedToolCall(name=TOOL_QUERY_DOC_RAG, query=rewritten_queries.get("doc_query") or decision.resolved_question or decision.raw_question)
-            if insert_at_front:
-                planned_tools.insert(0, doc_call)
-                reasons.append("policy:doc_primary")
-            else:
-                planned_tools.append(doc_call)
-                reasons.append("policy:doc_secondary")
-
-        if decision.domain == "media" and bool(decision.evidence.get("abstract_media_concept")):
-            planned_tools.insert(0, PlannedToolCall(name=TOOL_EXPAND_MEDIAWIKI_CONCEPT, query=rewritten_queries.get("media_query") or decision.raw_question))
-            reasons.append("policy:mediawiki_concept")
-
-        if decision.needs_external_media_db:
-            planned_tools.append(PlannedToolCall(name=TOOL_SEARCH_TMDB, query=rewritten_queries.get("tmdb_query") or decision.resolved_question or decision.raw_question))
-            reasons.append("policy:tmdb_secondary")
-
-        if decision.needs_web and normalized_mode == "hybrid":
-            planned_tools.append(PlannedToolCall(name=TOOL_SEARCH_WEB, query=rewritten_queries.get("web_query") or decision.resolved_question or decision.raw_question))
-            reasons.append("policy:web_freshness")
-
-        deduped: list[PlannedToolCall] = []
-        seen: set[str] = set()
-        for call in planned_tools:
-            if call.name in seen:
-                continue
-            seen.add(call.name)
-            deduped.append(call)
-
-        primary_tool = deduped[0].name if deduped else ""
-        fallback_tools = [call.name for call in deduped[1:]]
-        return ExecutionPlan(
-            decision=decision,
-            planned_tools=deduped,
-            primary_tool=primary_tool,
-            fallback_tools=fallback_tools,
-            reasons=reasons,
-        )
+# RoutingPolicy is imported from routing_policy.py at the top of this module.
+# See nav_dashboard/web/services/routing_policy.py for the full implementation.
 
 
 def _resolve_agent_no_context(query_type: str, rag_used: int, doc_no_context: int) -> tuple[int, str]:
@@ -2818,6 +3105,9 @@ def _infer_media_filters(query: str) -> dict[str, list[str]]:
         _merge_filter_values(filters, "media_type", ["game"])
     if any(keyword in text for keyword in ("音乐", "专辑", "歌曲", "歌单", "听过")):
         _merge_filter_values(filters, "media_type", ["music"])
+    music_filters = infer_music_filters_from_text(text)
+    for field, values in music_filters.items():
+        _merge_filter_values(filters, field, values)
     if any(keyword in text for keyword in ("电影", "影片", "片子")):
         _merge_filter_values(filters, "media_type", ["video"])
         _merge_filter_values(filters, "category", ["电影"])
@@ -3449,11 +3739,50 @@ def _build_media_tool_options_from_decision(decision: RouterDecision) -> dict[st
     query_text: str | None = rewritten_queries.get("media_query") or (decision.entities[0] if lookup_mode == "entity_lookup" and decision.entities else None)
     if query_text is None and lookup_mode not in {"filter_search", "concept_lookup"}:
         query_text = decision.resolved_question or decision.raw_question or None
+    evidence = dict(decision.evidence or {})
+    music_hints = evidence.get("music_work_hints") if isinstance(evidence.get("music_work_hints"), dict) else {}
+    composer_hints = [
+        str(item).strip()
+        for item in (music_hints.get("composer_hints") or [])
+        if str(item).strip()
+    ]
+    work_signature = [
+        str(item).strip()
+        for item in (music_hints.get("work_signature") or [])
+        if str(item).strip()
+    ]
+    instrument_hints = [
+        str(item).strip()
+        for item in (music_hints.get("instrument_hints") or [])
+        if str(item).strip()
+    ]
+    form_hints = [
+        str(item).strip()
+        for item in (music_hints.get("form_hints") or [])
+        if str(item).strip()
+    ]
+    work_family_hints = [
+        str(item).strip()
+        for item in (music_hints.get("work_family_hints") or [])
+        if str(item).strip()
+    ]
+    normalized_selection = _normalize_media_filter_map(decision.selection)
+    normalized_filters = _normalize_media_filter_map(decision.filters)
+    query_class = str(decision.query_class or "knowledge_qa")
+    # For composer-work version comparison in classical music, author should be
+    # a soft retrieval hint (title matching), not a hard structured filter,
+    # otherwise we can zero out true positives where author stores
+    # performer/conductor instead of composer.
+    if query_class == "music_work_versions_compare":
+        for _field in ("author",):
+            normalized_selection.pop(_field, None)
+            normalized_filters.pop(_field, None)
+
     options = {
-        "selection": _normalize_media_filter_map(decision.selection),
+        "selection": normalized_selection,
         "time_constraint": dict(decision.time_constraint),
         "ranking": dict(decision.ranking),
-        "filters": _normalize_media_filter_map(decision.filters),
+        "filters": normalized_filters,
         "date_window": _date_window_from_state({"date_range": decision.date_range}),
         "sort": decision.sort,
         "lookup_mode": lookup_mode,
@@ -3462,6 +3791,15 @@ def _build_media_tool_options_from_decision(decision: RouterDecision) -> dict[st
         "allow_downstream_entity_inference": bool(decision.allow_downstream_entity_inference),
         "query_text": query_text,
         "rewritten_queries": rewritten_queries,
+        "query_class": query_class,
+        "composer_hints": composer_hints,
+        "instrument_hints": instrument_hints,
+        "form_hints": form_hints,
+        "work_family_hints": work_family_hints,
+        "work_signature": work_signature,
+        # Semantic scope slots — drive date-field selection in _tool_query_media_record.
+        "subject_scope": str(decision.subject_scope or "general_knowledge"),
+        "time_scope_type": str(decision.time_scope_type or ""),
     }
     return {key: value for key, value in options.items() if value not in ({}, [], "", None)}
 
@@ -3505,6 +3843,39 @@ def _build_media_tool_options(
         "query_text": query_text,
     }
     return {key: value for key, value in options.items() if value not in ({}, [], "", None)}
+
+
+# Suffixes that mark a query as a creator-collection lookup: "X的作品/电影/书/..."
+_CREATOR_COLLECTION_SUFFIX_RE = re.compile(
+    r"^(.{2,12})的(?:作品|所有作品|全部作品|一切作品|全集|书|全部书|所有书"
+    r"|小说|全部小说|诗集|诗|散文|音乐|专辑|歌曲|全部专辑|电影|所有电影|全部电影"
+    r"|游戏|剧集|影片|电视剧|动画|代表作|经典作品|经典著作|著作)",
+    re.UNICODE,
+)
+# Alternative: "X写过什么", "X拍过哪些", "X创作了什么"
+_CREATOR_VERB_RE = re.compile(
+    r"^(.{2,12})(?:写过|写了|拍过|拍了|出版了|发行了|创作了|著有)",
+    re.UNICODE,
+)
+
+
+def _extract_creator_from_collection_query(question: str) -> "Any | None":
+    """Try to extract a creator name from queries like '加缪的作品有哪些'.
+
+    Returns a CreatorResolution if a known creator is resolvable, else None.
+    """
+    text = str(question or "").strip()
+    if not text or len(text) < 3:
+        return None
+    for pattern in (_CREATOR_COLLECTION_SUFFIX_RE, _CREATOR_VERB_RE):
+        m = pattern.match(text)
+        if m:
+            candidate = m.group(1).strip()
+            if candidate:
+                res = er_resolve_creator(candidate, min_confidence=0.15)
+                if res:
+                    return res
+    return None
 
 
 def _is_collection_media_query(query: str) -> bool:
@@ -4025,6 +4396,81 @@ def _tool_search_tmdb_media(query: str, trace_id: str = "", *, limit: int = 5) -
     )
 
 
+def _tool_search_by_creator(
+    creator_name: str,
+    trace_id: str = "",
+    *,
+    media_type: str = "",
+    max_results: int = 30,
+) -> ToolExecution:
+    """Structured lookup of all library works by a given creator via entity resolution.
+
+    Unlike query_media_record (which runs a keyword search), this tool uses the
+    entity resolver's creator index for an exact-match lookup.  It is the primary
+    tool for ``media_creator_collection`` queries such as "加缪的作品有哪些".
+    """
+    creator_name = str(creator_name or "").strip()
+    if not creator_name:
+        return ToolExecution(
+            tool=TOOL_SEARCH_BY_CREATOR,
+            status="empty",
+            summary="creator_name 为空，跳过 search_by_creator",
+            data={"trace_id": trace_id, "trace_stage": "agent.tool.search_by_creator", "results": [], "found": False},
+        )
+    creator_res = er_resolve_creator(creator_name, min_confidence=0.35)
+    if creator_res is None:
+        return ToolExecution(
+            tool=TOOL_SEARCH_BY_CREATOR,
+            status="empty",
+            summary=f"本地图书馆中未找到创作者「{creator_name}」的条目",
+            data={
+                "trace_id": trace_id,
+                "trace_stage": "agent.tool.search_by_creator",
+                "results": [],
+                "found": False,
+                "creator_name": creator_name,
+            },
+        )
+    works = list(creator_res.works)
+    if media_type:
+        filtered = [w for w in works if w.media_type == media_type]
+        if filtered:
+            works = filtered
+    works = works[:max(1, int(max_results))]
+    result_rows = [
+        {
+            "title": w.canonical,
+            "media_type": w.media_type,
+            "category": w.category,
+            "date": w.date,
+            "rating": w.rating,
+            "review": _clip_text(str(w.review or ""), 200),
+            "source": "local_creator_index",
+        }
+        for w in works
+    ]
+    return ToolExecution(
+        tool=TOOL_SEARCH_BY_CREATOR,
+        status="ok" if result_rows else "empty",
+        summary=(
+            f"本地创作者检索：「{creator_res.canonical}」"
+            f"（match_kind={creator_res.match_kind}, confidence={round(creator_res.confidence, 3)}），"
+            f"共 {len(creator_res.works)} 部作品，返回 {len(result_rows)} 条"
+        ),
+        data={
+            "trace_id": trace_id,
+            "trace_stage": "agent.tool.search_by_creator",
+            "found": True,
+            "canonical_creator": creator_res.canonical,
+            "match_kind": creator_res.match_kind,
+            "confidence": round(creator_res.confidence, 3),
+            "media_type_hint": creator_res.media_type_hint,
+            "works_count": len(creator_res.works),
+            "results": result_rows,
+        },
+    )
+
+
 def _match_local_terms(haystacks: list[str], vocabulary: list[str], limit: int = 12) -> list[str]:
     matched: list[str] = []
     plain_haystacks = [str(item or "") for item in haystacks if str(item or "").strip()]
@@ -4251,16 +4697,20 @@ def _tool_expand_mediawiki_concept(query: str, trace_id: str = "") -> ToolExecut
             data=cached,
         )
     if not _is_abstract_media_concept_query(query):
-        data = {
-            "trace_id": trace_id,
-            "trace_stage": "agent.tool.expand_mediawiki_concept",
-            "results": [],
-            "concept": _strip_query_scaffolding(query) or str(query or "").strip(),
-            "filters": {},
-            "authors": [],
-            "aliases": [],
-        }
-        return ToolExecution(tool=TOOL_EXPAND_MEDIAWIKI_CONCEPT, status="skipped", summary="当前问题不需要外部概念展开", data=data)
+        # Also allow creator names to proceed (so we can fetch their Wikipedia page
+        # as an external bibliographic reference for creator collection queries).
+        _mw_creator_hint = er_resolve_creator(query, min_confidence=0.5)
+        if not _mw_creator_hint:
+            data = {
+                "trace_id": trace_id,
+                "trace_stage": "agent.tool.expand_mediawiki_concept",
+                "results": [],
+                "concept": _strip_query_scaffolding(query) or str(query or "").strip(),
+                "filters": {},
+                "authors": [],
+                "aliases": [],
+            }
+            return ToolExecution(tool=TOOL_EXPAND_MEDIAWIKI_CONCEPT, status="skipped", summary="当前问题不需要外部概念展开", data=data)
 
     search_tool = _tool_search_mediawiki_action(query, trace_id, limit=4)
     search_rows = search_tool.data.get("results", []) if isinstance(search_tool.data, dict) else []
@@ -4652,7 +5102,8 @@ def _rewrite_tool_queries_with_llm(
         "- media_query must be short, retrieval-grade, and include the concrete title/scope.\n"
         "- Avoid generic phrasing like 请概述一下内容 / 介绍一下 / 那个怎么样.\n"
         "- Preserve entity, filter, and time constraints from the structured decision.\n"
-        "- Prefer local personal-review wording for evaluation questions.\n\n"
+        "- Prefer local personal-review wording for evaluation questions.\n"
+        "- For person/creator entity queries that do not mention a specific media type, keep media_query as the person name only — do NOT add category words like 电影, 书籍, 音乐.\n\n"
         f"Previous structured state:\n{json.dumps(prior_scope, ensure_ascii=False)}\n\n"
         f"Current structured decision:\n{json.dumps(decision_payload, ensure_ascii=False)}\n\n"
         f"Current question:\n{question}"
@@ -4729,6 +5180,15 @@ def _build_tool_grade_rewritten_queries(
             "doc_query": str(question or "").strip(),
             "web_query": str(question or "").strip(),
         }
+    # For creator collection queries, pin media_query to the canonical author name.
+    # The filters.author already narrows to this creator; injecting media-type words
+    # (e.g. "电影作品") would silently bias ranking against non-video works.
+    _cr_ev = decision.evidence if isinstance(decision.evidence, dict) else {}
+    if _cr_ev.get("creator_collection_query"):
+        _cr_info = _cr_ev.get("creator_resolution") or {}
+        _cr_canonical = str(_cr_info.get("canonical") or "").strip()
+        if _cr_canonical:
+            deterministic["media_query"] = _cr_canonical
     candidate_queries = dict(llm_queries or {})
     if decision.entities and (not deterministic.get("media_query") or _looks_like_generic_tool_query(deterministic.get("media_query"))):
         entity = decision.entities[0]
@@ -4766,9 +5226,76 @@ def _apply_router_semantic_repairs(
         decision.ranking = {**dict(decision.ranking or {}), "mode": ranking_mode, "source": "semantic_repair"}
         decision.sort = ranking_mode
 
+    # Music work-version compare repair:
+    # Detect composer + work signature (e.g., "Tchaikovsky Violin Concerto")
+    # and force local-first media compare path instead of mixed/doc-rag path.
+    music_work_hints = _extract_music_work_hints(question, decision.filters)
+    _filter_music_signature = _has_music_signature_filters(decision.filters)
+    if music_work_hints["composer_hints"] and (music_work_hints["work_signature"] or _filter_music_signature):
+        _merge_filter_values(decision.filters, "author", list(music_work_hints["composer_hints"]))
+        if decision.lookup_mode == "general_lookup":
+            decision.lookup_mode = "filter_search"
+            repairs.append("lookup_mode:music_general_to_filter")
+        comparison_cues = ("比较", "对比", "版本", "演绎", "评价", "咋样", "如何")
+        if decision.needs_comparison or any(cue in str(question or "") for cue in comparison_cues):
+            decision.needs_comparison = True
+        if decision.intent != "media_lookup":
+            decision.intent = "media_lookup"
+            repairs.append("intent:mixed_to_media_for_music_work_compare")
+        if decision.domain != "media":
+            decision.domain = "media"
+            repairs.append("domain:force_media_for_music_work_compare")
+        if decision.needs_doc_rag:
+            decision.needs_doc_rag = False
+            repairs.append("needs_doc_rag:disabled_for_music_work_compare")
+        decision.needs_media_db = True
+        decision.arbitration = "music_work_compare_wins"
+        reasons_wo_arb = [r for r in decision.reasons if not str(r).startswith("arbitration:")]
+        decision.reasons = reasons_wo_arb + ["arbitration:music_work_compare_wins"]
+        ev = dict(decision.evidence or {})
+        ev["music_work_versions_compare"] = True
+        ev["music_work_hints"] = music_work_hints
+        decision.evidence = ev
+        repairs.append("music_work_signature:enforced")
+
     if decision.domain == "media" and decision.followup_mode == "none" and _state_has_media_context(previous_state) and _is_short_followup_surface(question):
         decision.followup_mode = "inherit_entity" if str(previous_state.get("entity") or "").strip() else "inherit_filters"
         repairs.append(f"followup:{decision.followup_mode}")
+
+    # ── Creator collection repair ────────────────────────────────────────────────
+    # Handles queries like "加缪的作品有哪些" where the LLM returns filter_search
+    # with empty filters because it didn't extract the creator as filters.author.
+    # Resolution: detect the creator pattern, resolve with entity_resolver, inject
+    # filters.author so the library filter-search finds actual works.
+    if (
+        decision.domain == "media"
+        and decision.lookup_mode in ("filter_search", "general_lookup")
+        and decision.followup_mode == "none"
+        and not decision.filters
+        and not decision.entities
+    ):
+        _creator_res = _extract_creator_from_collection_query(question)
+        if _creator_res:
+            decision.filters = {"author": [_creator_res.canonical]}
+            decision.lookup_mode = "filter_search"
+            # Enable external enrichment: MediaWiki for all creators;
+            # TMDB additionally for video-domain creators (directors).
+            if _creator_res.media_type_hint == "video":
+                decision.needs_external_media_db = True
+            _ev = dict(decision.evidence or {})
+            _ev["creator_collection_query"] = True
+            _ev["creator_resolution"] = {
+                "canonical": _creator_res.canonical,
+                "media_type_hint": _creator_res.media_type_hint,
+                "confidence": round(float(_creator_res.confidence), 4),
+                "match_kind": str(_creator_res.match_kind),
+            }
+            decision.evidence = _ev
+            if "arbitration:llm_media_weak_general" not in " ".join(decision.reasons):
+                decision.arbitration = "creator_collection_wins"
+                _existing = [r for r in decision.reasons if not r.startswith("arbitration:")]
+                decision.reasons = _existing + ["arbitration:creator_collection_wins"]
+            repairs.append("creator:resolved_from_collection_query")
 
     if decision.domain == "media" and decision.followup_mode == "inherit_entity" and not decision.entities:
         previous_entity = str(previous_state.get("entity") or "").strip()
@@ -4943,7 +5470,14 @@ def _score_value(row: dict[str, Any]) -> float | None:
         text = str(value).strip()
         return float(text) if text else None
     except Exception:
-        return None
+        match_confidence = row.get("match_confidence", None)
+        if isinstance(match_confidence, (int, float)):
+            return float(match_confidence)
+        try:
+            text = str(match_confidence).strip()
+            return float(text) if text else None
+        except Exception:
+            return None
 
 
 def _filter_rows(
@@ -5016,6 +5550,10 @@ def _apply_reference_limits(tool_results: list[ToolExecution], search_mode: str,
     doc_limit = max(1, int(doc_limit_base + limit_delta))
     media_limit = max(1, int(media_limit_base + limit_delta))
     web_limit = max(0, int(web_limit_base + limit_delta))
+    # For list_plus_expand collection queries expand the cap so all candidate
+    # items survive before per-item external enrichment is applied.
+    if str(query_profile.get("answer_shape", "") or "") == "list_plus_expand":
+        media_limit = max(media_limit, COLLECTION_FILTER_TOP_K_MEDIA)
     doc_threshold = float(query_profile.get("doc_score_threshold", DOC_SCORE_THRESHOLD))
     media_keyword_threshold = float(query_profile.get("media_keyword_score_threshold", MEDIA_KEYWORD_SCORE_THRESHOLD))
     media_vector_threshold = float(query_profile.get("media_vector_score_threshold", MEDIA_VECTOR_SCORE_THRESHOLD))
@@ -5302,13 +5840,17 @@ def _build_keyword_score_map(queries: list[str], vector_top_n: int) -> dict[str,
 
 
 def _rerank_merged_doc_rows(rows: list[dict[str, Any]], keyword_scores: dict[str, float]) -> list[dict[str, Any]]:
+    # Normalize BM25 keyword scores to [0, 1] before fusion so the weights
+    # are meaningful alongside cosine-similarity vector scores.
+    max_kw = max(keyword_scores.values(), default=0.0)
+    norm = max_kw if max_kw > 0.0 else 1.0
     reranked: list[dict[str, Any]] = []
     for row in rows:
         item = dict(row)
         path = str(item.get("path", "")).strip()
         vector_score = _safe_score(item.get("vector_score"))
-        keyword_score = keyword_scores.get(path, 0.0)
-        final_score = (0.85 * vector_score) + (0.15 * keyword_score)
+        keyword_score = min(1.0, keyword_scores.get(path, 0.0) / norm)
+        final_score = (0.75 * vector_score) + (0.25 * keyword_score)
         item["keyword_score"] = keyword_score
         item["score"] = final_score
         reranked.append(item)
@@ -5716,6 +6258,332 @@ def _media_title_match_boost_any(title: str, entities: list[str]) -> float:
     return max((_media_title_match_boost(title, entity) for entity in entities), default=0.0)
 
 
+def _title_matches_music_work_signature(
+    title: str,
+    work_signature: list[str],
+    composer_hints: list[str],
+    instrument_hints: list[str] | None = None,
+    form_hints: list[str] | None = None,
+    work_family_hints: list[str] | None = None,
+) -> bool:
+    normalized = _normalize_media_title_for_match(title)
+    if not normalized:
+        return False
+
+    def _contains_any(tokens: list[str]) -> bool:
+        for token in tokens:
+            clean = _normalize_media_title_for_match(token)
+            if clean and clean in normalized:
+                return True
+        return False
+
+    def _contains_all(tokens: list[str]) -> bool:
+        checks = [_normalize_media_title_for_match(token) for token in tokens if _normalize_media_title_for_match(token)]
+        return bool(checks) and all(token in normalized for token in checks)
+
+    composer_ok = _contains_any(composer_hints) if composer_hints else True
+    if composer_hints and not composer_ok:
+        # Cross-language composer identity bridge: compare resolver canonicals
+        # from query hints and title-leading composer tokens.
+        try:
+            query_canonicals: set[str] = set()
+            for hint in composer_hints:
+                _res = er_resolve_creator(hint, min_confidence=0.5)
+                if _res and str(_res.canonical or "").strip():
+                    query_canonicals.add(str(_res.canonical).strip().casefold())
+
+            title_candidates: list[str] = []
+            raw_title = str(title or "").strip()
+            if raw_title:
+                leading = raw_title.split(":", 1)[0].split("：", 1)[0].strip()
+                if leading:
+                    title_candidates.append(leading)
+                for token in re.split(r"[;&/&]| and ", leading):
+                    clean = str(token or "").strip()
+                    if clean and clean not in title_candidates:
+                        title_candidates.append(clean)
+
+            title_canonicals: set[str] = set()
+            for candidate in title_candidates:
+                _res = er_resolve_creator(candidate, min_confidence=0.5)
+                if _res and str(_res.canonical or "").strip():
+                    title_canonicals.add(str(_res.canonical).strip().casefold())
+
+            composer_ok = bool(query_canonicals and title_canonicals and query_canonicals.intersection(title_canonicals))
+        except Exception:
+            composer_ok = False
+    _instrument_hints = [str(item).strip() for item in (instrument_hints or []) if str(item).strip()]
+    _form_hints = [str(item).strip() for item in (form_hints or []) if str(item).strip()]
+    _work_family_hints = [str(item).strip() for item in (work_family_hints or []) if str(item).strip()]
+    work_tokens = [str(item).strip() for item in work_signature if str(item).strip()]
+
+    # Backward compatibility: if explicit buckets are missing, infer from signature.
+    if not _instrument_hints:
+        _instrument_hints = [
+            token for token in work_tokens
+            if is_instrument_alias(token)
+        ]
+    if not _form_hints:
+        _form_hints = [
+            token for token in work_tokens
+            if is_form_alias(token)
+        ]
+    if not _work_family_hints:
+        _work_family_hints = [
+            token for token in work_tokens
+            if is_work_family_alias(token)
+        ]
+
+    family_hit = _contains_any(_work_family_hints)
+    instrument_hit = _contains_any(_instrument_hints) if _instrument_hints else False
+    form_hit = _contains_any(_form_hints) if _form_hints else False
+    if _instrument_hints and _form_hints:
+        work_ok = family_hit or (instrument_hit and form_hit)
+    elif _work_family_hints:
+        work_ok = family_hit
+    else:
+        work_ok = _contains_any(work_tokens)
+
+    # If specific numeric/opus markers are present in signature, require at
+    # least one marker to match so broad families (e.g. piano concerto) do not
+    # pull unrelated composers/works.
+    def _is_specific_music_marker(token: str) -> bool:
+        raw_token = str(token or "").strip().lower()
+        normalized_token = _normalize_media_title_for_match(raw_token)
+        if not raw_token and not normalized_token:
+            return False
+        if re.search(r"op\.?\s*\d+", raw_token):
+            return True
+        if re.search(r"no\.?\s*\d+", raw_token):
+            return True
+        if re.search(r"第\s*\d+", str(token or "")):
+            return True
+        if normalized_token.startswith("op") and any(ch.isdigit() for ch in normalized_token):
+            return True
+        if normalized_token.startswith("no") and any(ch.isdigit() for ch in normalized_token):
+            return True
+        return False
+
+    specific_tokens = [tok for tok in work_tokens if _is_specific_music_marker(tok)]
+    if work_ok and specific_tokens:
+        work_ok = _contains_any(specific_tokens)
+
+    return composer_ok and work_ok
+
+
+def _filter_music_compare_rows(
+    rows: list[dict[str, Any]],
+    *,
+    work_signature: list[str],
+    composer_hints: list[str],
+    instrument_hints: list[str],
+    form_hints: list[str],
+    work_family_hints: list[str],
+) -> list[dict[str, Any]]:
+    strict = [
+        row
+        for row in rows
+        if _title_matches_music_work_signature(
+            str(row.get("title") or ""),
+            work_signature=work_signature,
+            composer_hints=composer_hints,
+            instrument_hints=instrument_hints,
+            form_hints=form_hints,
+            work_family_hints=work_family_hints,
+        )
+    ]
+    if strict:
+        return strict
+
+    # Fallback for cross-language composer alias gaps:
+    # keep strong work-family constraints but relax composer-title hit.
+    relaxed = [
+        row
+        for row in rows
+        if _title_matches_music_work_signature(
+            str(row.get("title") or ""),
+            work_signature=work_signature,
+            composer_hints=[],
+            instrument_hints=instrument_hints,
+            form_hints=form_hints,
+            work_family_hints=work_family_hints,
+        )
+    ]
+    return relaxed
+
+
+def _extract_music_work_hints(
+    question: str,
+    filters: dict[str, list[str]] | None = None,
+) -> dict[str, list[str]]:
+    text = str(question or "").strip()
+    lowered = text.lower()
+    normalized_filters = _normalize_media_filter_map(filters)
+
+    media_type_values = [str(item).strip().lower() for item in normalized_filters.get("media_type", []) if str(item).strip()]
+    filter_surface = " ".join(
+        str(value)
+        for key, values in normalized_filters.items()
+        for value in ([key] + (values if isinstance(values, list) else []))
+    )
+    mixed_surface = f"{text} {filter_surface}".strip()
+    mixed_lower = mixed_surface.lower()
+    ontology_hints = collect_music_ontology_hints(mixed_surface)
+    instrument_hints = [str(item).strip() for item in ontology_hints.get("instrument_hints", []) if str(item).strip()]
+    form_hints = [str(item).strip() for item in ontology_hints.get("form_hints", []) if str(item).strip()]
+    work_family_hints = [str(item).strip() for item in ontology_hints.get("work_family_hints", []) if str(item).strip()]
+    work_family_keys = [str(item).strip() for item in ontology_hints.get("work_family_keys", []) if str(item).strip()]
+
+    music_surface = (
+        "music" in media_type_values
+        or any(k in normalized_filters for k in ("乐器", "作品类型", "instrument", "work_type"))
+        or bool(instrument_hints)
+        or bool(form_hints)
+        or bool(work_family_hints)
+        or "听过" in text
+    )
+    if not music_surface:
+        return {
+            "composer_hints": [],
+            "instrument_hints": [],
+            "form_hints": [],
+            "work_family_hints": [],
+            "work_signature": [],
+        }
+
+    work_signature: list[str] = [*instrument_hints, *form_hints, *work_family_hints]
+    no_match = re.search(r"(?:no\.?|number|第)\s*([0-9]{1,2})", mixed_lower)
+    if no_match:
+        idx = no_match.group(1)
+        work_signature.extend([f"no.{idx}", f"no {idx}", f"第{idx}"])
+    op_match = re.search(r"op\.?\s*(\d{1,3})", lowered)
+    if op_match:
+        op_no = op_match.group(1)
+        work_signature.extend([f"op.{op_no}", f"op {op_no}"])
+
+    composer_hints: list[str] = []
+    seed_candidates: list[str] = []
+    if "柴可夫斯基" in text:
+        seed_candidates.append("柴可夫斯基")
+    if "tchaikovsky" in lowered:
+        seed_candidates.append("Tchaikovsky")
+
+    for cn_name in re.findall(r"[\u4e00-\u9fff]{2,8}", text):
+        if cn_name not in seed_candidates:
+            seed_candidates.append(cn_name)
+    for en_name in re.findall(r"[A-Za-z][A-Za-z\-\s]{2,32}", text):
+        clean_en = str(en_name).strip()
+        if clean_en and clean_en not in seed_candidates:
+            seed_candidates.append(clean_en)
+
+    for candidate in seed_candidates[:10]:
+        resolved = er_resolve_creator(candidate, min_confidence=0.6)
+        if resolved and str(resolved.canonical or "").strip():
+            canonical = str(resolved.canonical).strip()
+            if canonical not in composer_hints:
+                composer_hints.append(canonical)
+            # Enrich aliases from resolved creator works. In classical metadata,
+            # author may be performer/conductor while composer appears in title.
+            for _work in list(getattr(resolved, "works", []) or [])[:80]:
+                try:
+                    _author = str(getattr(_work, "author", "") or "").strip()
+                    if _author and _author not in composer_hints:
+                        composer_hints.append(_author)
+                    _title = str(getattr(_work, "canonical", "") or "").strip()
+                    if not _title:
+                        _title = str(getattr(_work, "title", "") or "").strip()
+                    if ":" in _title or "：" in _title:
+                        _prefix = _title.split(":", 1)[0].split("：", 1)[0].strip()
+                        if _prefix and len(_prefix) <= 40 and _prefix not in composer_hints:
+                            composer_hints.append(_prefix)
+                except Exception:
+                    continue
+
+    # Cross-language composer alias expansion via entity_resolver alias table.
+    try:
+        from nav_dashboard.web.services import entity_resolver as _er_mod  # noqa: PLC0415
+
+        _norm = getattr(_er_mod, "_norm", None)
+        _aliases = getattr(_er_mod, "_ALIASES", None)
+        if callable(_norm) and isinstance(_aliases, dict):
+            extra_aliases: list[str] = []
+            for hint in list(composer_hints):
+                key = _norm(hint)
+                for alt in list(_aliases.get(key, []) or [])[:12]:
+                    clean_alt = str(alt or "").strip()
+                    if clean_alt:
+                        extra_aliases.append(clean_alt)
+            for alias in extra_aliases:
+                if alias not in composer_hints:
+                    composer_hints.append(alias)
+    except Exception:
+        pass
+
+    # Extend composer hints from ontology aliases so maintainers can add names
+    # without touching algorithm code.
+    for alias in collect_composer_alias_hints(mixed_surface):
+        if alias not in composer_hints:
+            composer_hints.append(alias)
+
+    # Title-driven alias discovery: resolve "composer + work_family" against local
+    # titles, then mine the lead token before ':' as a canonical composer hint.
+    for _composer in list(composer_hints)[:8]:
+        for _family in list(work_family_hints)[:6]:
+            _probe = f"{_composer} {_family}".strip()
+            _resolved_title = er_resolve_title(_probe, min_confidence=0.45)
+            if not _resolved_title:
+                continue
+            _canon_title = str(getattr(_resolved_title, "canonical", "") or "").strip()
+            if not _canon_title:
+                continue
+            if ":" in _canon_title or "：" in _canon_title:
+                _prefix = _canon_title.split(":", 1)[0].split("：", 1)[0].strip()
+                if _prefix and len(_prefix) <= 40 and _prefix not in composer_hints:
+                    composer_hints.append(_prefix)
+
+    for token in composer_override_signature_tokens(composer_hints, work_family_keys):
+        if token not in work_signature:
+            work_signature.append(token)
+
+    dedup_composers: list[str] = []
+    seen_composers: set[str] = set()
+    for item in composer_hints:
+        key = str(item).strip().casefold()
+        if not key or key in seen_composers:
+            continue
+        seen_composers.add(key)
+        dedup_composers.append(str(item).strip())
+
+    dedup_signature: list[str] = []
+    seen_signature: set[str] = set()
+    for item in work_signature:
+        key = str(item).strip().casefold()
+        if not key or key in seen_signature:
+            continue
+        seen_signature.add(key)
+        dedup_signature.append(str(item).strip())
+
+    return {
+        "composer_hints": dedup_composers,
+        "instrument_hints": [item for item in dict.fromkeys(instrument_hints) if str(item).strip()],
+        "form_hints": [item for item in dict.fromkeys(form_hints) if str(item).strip()],
+        "work_family_hints": [item for item in dict.fromkeys(work_family_hints) if str(item).strip()],
+        "work_signature": dedup_signature,
+    }
+
+
+def _has_music_signature_filters(filters: dict[str, list[str]] | None) -> bool:
+    normalized = _normalize_media_filter_map(filters)
+
+    def _contains_alias(field: str, predicate) -> bool:
+        values = [str(item).strip() for item in normalized.get(field, []) if str(item).strip()]
+        return any(predicate(value) for value in values)
+
+    has_instrument = _contains_alias("instrument", is_instrument_alias) or _contains_alias("work_type", is_instrument_alias)
+    has_concerto = _contains_alias("work_type", is_form_alias) or _contains_alias("instrument", is_form_alias)
+    return has_instrument and has_concerto
+
+
 def _build_answer_focus_hints(question: str, tool_results: list[ToolExecution]) -> str:
     lines: list[str] = []
     normalized_question = str(question or "")
@@ -5723,8 +6591,17 @@ def _build_answer_focus_hints(question: str, tool_results: list[ToolExecution]) 
     wants_summary = any(token in normalized_question for token in ["剧情", "简介", "介绍", "讲了什么"])
 
     media_result = next((item for item in tool_results if item.tool == TOOL_QUERY_MEDIA), None)
+    creator_result = next((item for item in tool_results if item.tool == TOOL_SEARCH_BY_CREATOR), None)
     tmdb_result = next((item for item in tool_results if item.tool == TOOL_SEARCH_TMDB), None)
     mediawiki_result = next((item for item in tool_results if item.tool in {TOOL_SEARCH_MEDIAWIKI, TOOL_PARSE_MEDIAWIKI, TOOL_EXPAND_MEDIAWIKI_CONCEPT}), None)
+
+    # For creator collection queries, the primary evidence is from search_by_creator.
+    if creator_result and isinstance(creator_result.data, dict):
+        canonical = str(creator_result.data.get("canonical_creator") or "").strip()
+        works = creator_result.data.get("results") if isinstance(creator_result.data.get("results"), list) else []
+        if canonical and works:
+            lines.append(f"本地创作者检索命中：「{canonical}」，共找到 {len(works)} 部作品，请基于这些作品列表作答。")
+            lines.append("如无特殊说明，回答应列出本地库中的作品，外部 Wiki 信息作补充标注。")
 
     if media_result and isinstance(media_result.data, dict):
         exact_match = media_result.data.get("top_exact_match") if isinstance(media_result.data.get("top_exact_match"), dict) else None
@@ -5766,6 +6643,14 @@ def _build_answer_focus_hints(question: str, tool_results: list[ToolExecution]) 
     if mediawiki_result and isinstance(mediawiki_result.data, dict):
         rows = mediawiki_result.data.get("results", []) if isinstance(mediawiki_result.data.get("results"), list) else []
         if rows:
+            _mw_first = rows[0] if isinstance(rows[0], dict) else {}
+            _mw_extract = str(_mw_first.get("extract") or "").strip()
+            _mw_title = str(_mw_first.get("display_title") or _mw_first.get("title") or "").strip()
+            if len(_mw_extract) > 100:
+                lines.append(
+                    f"外部 Wiki 参考资料（标注为外部来源后可纳入正文）——「{_mw_title}」："
+                    + _clip_text(_mw_extract, 400)
+                )
             lines.append("若引用 Wiki，请明确标注为外部参考，不要表述成你的本地知识库内容。")
 
     return "\n".join(lines).strip()
@@ -5791,12 +6676,57 @@ def _tool_query_media_record(
     normalized_option_filters = selection_filters or _normalize_media_filter_map(tool_options.get("filters"))
     raw_option_filters = dict(normalized_option_filters)
     media_entities, inferred_filters = _normalize_media_entities_and_filters(media_entities, normalized_option_filters)
+    composer_hints = [
+        str(item).strip()
+        for item in (tool_options.get("composer_hints") or [])
+        if str(item).strip()
+    ]
+    work_signature = [
+        str(item).strip()
+        for item in (tool_options.get("work_signature") or [])
+        if str(item).strip()
+    ]
+    instrument_hints = [
+        str(item).strip()
+        for item in (tool_options.get("instrument_hints") or [])
+        if str(item).strip()
+    ]
+    form_hints = [
+        str(item).strip()
+        for item in (tool_options.get("form_hints") or [])
+        if str(item).strip()
+    ]
+    work_family_hints = [
+        str(item).strip()
+        for item in (tool_options.get("work_family_hints") or [])
+        if str(item).strip()
+    ]
+    query_class = str(tool_options.get("query_class") or "").strip()
+    force_signature_lookup = (
+        query_class == "music_work_versions_compare"
+        and (bool(work_family_hints) or (bool(instrument_hints) and bool(form_hints)))
+    )
+    if query_class == "music_work_versions_compare":
+        for _field in ("author",):
+            normalized_option_filters.pop(_field, None)
+            inferred_filters.pop(_field, None)
     # Resolve any unmatched entities as creators and augment author filter
     for _ent in list(media_entities):
         if not er_resolve_title(_ent, min_confidence=0.5):
             _cr = er_resolve_creator(_ent, min_confidence=0.7)
             if _cr:
                 _merge_filter_values(inferred_filters, "author", [_cr.canonical])
+    if query_class != "music_work_versions_compare":
+        for _composer in composer_hints:
+            _merge_filter_values(inferred_filters, "author", [_composer])
+    # P1 fallback: filter_search arrived with empty entities AND no author filter
+    # (e.g. router received lookup_mode=filter_search, entities=[], filters={}
+    # because the LLM saw "creator collection" but didn't structurise the creator).
+    # Try to extract the creator directly from the query text as a last resort.
+    if lookup_mode == "filter_search" and not media_entities and not inferred_filters.get("author"):
+        _cr_fallback = _extract_creator_from_collection_query(tool_query or source_query)
+        if _cr_fallback:
+            _merge_filter_values(inferred_filters, "author", [_cr_fallback.canonical])
     option_projection = _schema_adapter.project(inferred_filters, resolved_question=tool_query)
     inferred_filters = option_projection.filters
     extracted_entity = media_entities[0] if media_entities else ""
@@ -5805,6 +6735,22 @@ def _tool_query_media_record(
     date_window = _date_window_from_state(tool_options)
     if not date_window and lookup_mode == "general_lookup":
         date_window = _parse_media_date_window(tool_query)
+    # ── time_scope_type: route date constraint to the correct field ──────────
+    # consumption_date (default) → filter on item's `date` field (when the user
+    #   read/watched it); handled downstream by _matches_media_date_window.
+    # publication_date → filter on item's `year` field (the work's release year);
+    #   convert the date window to a year range added to the filter dict so the
+    #   library search API applies it, then clear date_window to avoid double
+    #   filtering on the consumption date.
+    time_scope_type = str(tool_options.get("time_scope_type") or "").strip()
+    if time_scope_type == "publication_date" and date_window:
+        # Use range semantics (year_range=[start, end]) rather than enumerating
+        # every year; _matches_filters in library_service handles this key.
+        _start_year_str = str(date_window.get("start") or "")[:4]
+        _end_year_str = str(date_window.get("end") or "")[:4]
+        if _start_year_str.isdigit() and _end_year_str.isdigit():
+            _merge_filter_values(inferred_filters, "year_range", [_start_year_str, _end_year_str])
+        date_window = {}  # suppress consumption-date filtering
     ranking = tool_options.get("ranking") if isinstance(tool_options.get("ranking"), dict) else {}
     sort_preference = str(ranking.get("mode") or tool_options.get("sort") or "relevance").strip() or "relevance"
     if sort_preference == "relevance" and lookup_mode == "general_lookup":
@@ -5864,6 +6810,22 @@ def _tool_query_media_record(
         keyword_queries.append(extracted_entity)
     if rewritten_query and rewritten_query not in keyword_queries:
         keyword_queries.append(rewritten_query)
+
+    # ── Entity-resolver alias expansion (MediaWiki-independent) ─────────────
+    # For each entity that resolves as a creator, inject the canonical
+    # (library-stored) author name into both keyword and vector queries.
+    # This covers cross-language aliases like 柴可夫斯基 → Tchaikovsky
+    # without requiring MediaWiki to have run first.
+    _resolver_canonicals: list[str] = []
+    for _alias_ent in media_entities:
+        _cr_exp = er_resolve_creator(_alias_ent, min_confidence=0.5)
+        if _cr_exp and _cr_exp.canonical:
+            _canon = _cr_exp.canonical.strip()
+            if _canon and _canon not in keyword_queries:
+                keyword_queries.append(_canon)
+            if _canon not in _resolver_canonicals:
+                _resolver_canonicals.append(_canon)
+
     if isinstance(mediawiki_concept, dict):
         aliases = mediawiki_concept.get("aliases", []) if isinstance(mediawiki_concept.get("aliases"), list) else []
         authors = mediawiki_concept.get("authors", []) if isinstance(mediawiki_concept.get("authors"), list) else []
@@ -5878,6 +6840,21 @@ def _tool_query_media_record(
     for filter_query in filter_queries:
         if filter_query not in keyword_queries:
             keyword_queries.append(filter_query)
+    for sig in work_signature:
+        if sig and sig not in keyword_queries:
+            keyword_queries.append(sig)
+    for sig in instrument_hints:
+        if sig and sig not in keyword_queries:
+            keyword_queries.append(sig)
+    for sig in form_hints:
+        if sig and sig not in keyword_queries:
+            keyword_queries.append(sig)
+    for sig in work_family_hints:
+        if sig and sig not in keyword_queries:
+            keyword_queries.append(sig)
+    for hint in composer_hints:
+        if hint and hint not in keyword_queries:
+            keyword_queries.append(hint)
 
     vector_queries: list[str] = []
     for entity in media_entities:
@@ -5885,6 +6862,9 @@ def _tool_query_media_record(
             vector_queries.append(entity)
     if not vector_queries and vector_query:
         vector_queries.append(vector_query)
+    for _canon in _resolver_canonicals:
+        if _canon and _canon not in vector_queries:
+            vector_queries.append(_canon)
     if isinstance(mediawiki_concept, dict):
         for alias in mediawiki_concept.get("aliases", []) if isinstance(mediawiki_concept.get("aliases"), list) else []:
             clean_alias = str(alias).strip()
@@ -5893,8 +6873,23 @@ def _tool_query_media_record(
     for filter_query in filter_queries:
         if filter_query and filter_query not in vector_queries:
             vector_queries.append(filter_query)
+    for sig in work_signature:
+        if sig and sig not in vector_queries:
+            vector_queries.append(sig)
+    for sig in instrument_hints:
+        if sig and sig not in vector_queries:
+            vector_queries.append(sig)
+    for sig in form_hints:
+        if sig and sig not in vector_queries:
+            vector_queries.append(sig)
+    for sig in work_family_hints:
+        if sig and sig not in vector_queries:
+            vector_queries.append(sig)
+    for hint in composer_hints:
+        if hint and hint not in vector_queries:
+            vector_queries.append(hint)
 
-    if _needs_filter_only_media_lookup(tool_query, lookup_mode, media_entities, filters, date_window):
+    if _needs_filter_only_media_lookup(tool_query, lookup_mode, media_entities, filters, date_window) and not force_signature_lookup:
         fallback_payload = _http_json(
             "POST",
             f"{LIBRARY_TRACKER_BASE}/api/library/search",
@@ -5937,6 +6932,15 @@ def _tool_query_media_record(
             for row in fallback_rows
             if isinstance(row, dict) and _matches_media_date_window(row, date_window)
         ]
+        if query_class == "music_work_versions_compare" and (work_signature or composer_hints):
+            compact = _filter_music_compare_rows(
+                compact,
+                work_signature=work_signature,
+                composer_hints=composer_hints,
+                instrument_hints=instrument_hints,
+                form_hints=form_hints,
+                work_family_hints=work_family_hints,
+            )
         compact, validation = _apply_media_result_validator(compact, filters=filters, date_window=date_window)
         compact = _sort_media_results(compact, sort_preference)
         return ToolExecution(
@@ -6071,6 +7075,11 @@ def _tool_query_media_record(
     max_graph_prior = max((math.log(graph_degrees.get(str(item.get("id") or "").strip(), 0) + 1.0) for item in merged.values()), default=0.0)
 
     compact: list[dict[str, Any]] = []
+    signature_targets = [
+        str(item).strip()
+        for item in [*composer_hints, *instrument_hints, *form_hints, *work_family_hints, *work_signature]
+        if str(item).strip()
+    ]
     for item in merged.values():
         if not isinstance(item, dict):
             continue
@@ -6082,6 +7091,9 @@ def _tool_query_media_record(
         keyword_norm = (keyword_score / max_keyword_score) if max_keyword_score > 0 else 0.0
         graph_prior = (graph_prior_raw / max_graph_prior) if max_graph_prior > 0 else 0.0
         title_targets = media_entities or [extracted_entity or rewritten_query or query]
+        for target in signature_targets:
+            if target not in title_targets:
+                title_targets.append(target)
         title_boost = _media_title_match_boost_any(title, title_targets)
         score = (0.85 * semantic_score) + (0.10 * keyword_norm) + (0.05 * graph_prior) + title_boost
         compact.append(
@@ -6154,6 +7166,15 @@ def _tool_query_media_record(
                     )
                 )
     compact = _sort_media_results(compact, sort_preference)
+    if query_class == "music_work_versions_compare" and (work_signature or composer_hints):
+        compact = _filter_music_compare_rows(
+            compact,
+            work_signature=work_signature,
+            composer_hints=composer_hints,
+            instrument_hints=instrument_hints,
+            form_hints=form_hints,
+            work_family_hints=work_family_hints,
+        )
     used_query = f"vector:{' || '.join(vector_queries or [vector_query])}"
     if keyword_queries:
         used_query += f" | keyword:{' || '.join(keyword_queries)}"
@@ -6295,6 +7316,11 @@ def _execute_tool(call: PlannedToolCall, query_profile: dict[str, Any], trace_id
             result = _tool_expand_mediawiki_concept(call.query, trace_id)
         elif call.name == TOOL_SEARCH_TMDB:
             result = _tool_search_tmdb_media(call.query, trace_id)
+        elif call.name == TOOL_SEARCH_BY_CREATOR:
+            # call.options may carry creator_name (canonical) and media_type
+            creator_name = str(call.options.get("creator_name") or call.query or "").strip()
+            media_type = str(call.options.get("media_type") or "").strip()
+            result = _tool_search_by_creator(creator_name, trace_id, media_type=media_type)
         else:
             result = ToolExecution(tool=call.name, status="skipped", summary="未知工具", data={})
         latency_ms = round((_time.perf_counter() - _tool_t0) * 1000, 1)
@@ -6350,6 +7376,11 @@ def _plan_tool_calls(
     query_classification["resolved_question"] = resolved_question
     query_classification["resolved_query_state"] = dict(context_resolution.resolved_query_state)
     query_classification["query_type"] = router_decision.query_type
+    query_classification["query_class"] = router_decision.query_class
+    query_classification["subject_scope"] = router_decision.subject_scope
+    query_classification["time_scope_type"] = router_decision.time_scope_type
+    query_classification["answer_shape"] = router_decision.answer_shape
+    query_classification["media_family"] = router_decision.media_family
     query_classification["execution_plan"] = _serialize_execution_plan(plan)
     query_classification["conversation_state_before"] = dict(context_resolution.conversation_state_before)
     query_classification["detected_followup"] = bool(context_resolution.detected_followup)
@@ -6374,6 +7405,525 @@ def _execute_tool_plan(calls: list[PlannedToolCall], query_profile: dict[str, An
             for future in as_completed(future_map):
                 results.append(future.result())
     return results
+
+
+# ── Per-item match helpers ────────────────────────────────────────────────────
+_TITLE_STRIP_RE = re.compile(r"[《》「」『』【】（）()\s　]+")
+_TITLE_YEAR_SUFFIX_RE = re.compile(r"\s*\(?[12]\d{3}\)?\s*$")
+# Full-width ASCII normalization (ａ→a, Ａ→A, ０→0, …)
+_FULLWIDTH_OFFSET_UPPER = ord("Ａ") - ord("A")
+_FULLWIDTH_OFFSET_LOWER = ord("ａ") - ord("a")
+_FULLWIDTH_OFFSET_DIGIT = ord("０") - ord("0")
+_CJK_RANGE_RE = re.compile(r"[\u3040-\u9fff\uf900-\ufaff\u3400-\u4dbf]+")
+
+
+def _normalize_fullwidth(text: str) -> str:
+    """Convert full-width ASCII letters/digits to ASCII equivalents."""
+    chars: list[str] = []
+    for ch in text:
+        cp = ord(ch)
+        if 0xFF01 <= cp <= 0xFF5E:
+            # Full-width forms: U+FF01..U+FF5E → U+0021..U+007E
+            chars.append(chr(cp - 0xFEE0))
+        else:
+            chars.append(ch)
+    return "".join(chars)
+
+
+def _cjk_bigrams(text: str) -> set[str]:
+    """Extract consecutive character bigrams from CJK runs in *text*.
+
+    CJK scripts have no whitespace between words, so token-splitting is useless.
+    Bigrams approximate a partial n-gram overlap for short CJK titles.
+
+    Example: "进击的巨人" → {"进击", "击的", "的巨", "巨人"}
+    """
+    bigrams: set[str] = []
+    for match in _CJK_RANGE_RE.finditer(text):
+        run = match.group()
+        for i in range(len(run) - 1):
+            bigrams.append(run[i : i + 2])
+    return set(bigrams)
+
+
+def _normalize_title_for_match(title: str) -> str:
+    """Normalise a title string for fuzzy equality checks.
+
+    Strips CJK/ASCII brackets, whitespace, and trailing year suffixes, then
+    lowercases.  Also normalises full-width ASCII characters.  The result is
+    used for token-overlap comparison only — the original title is always
+    presented to the user.
+    """
+    t = _normalize_fullwidth(title)
+    t = _TITLE_STRIP_RE.sub(" ", t).strip()
+    t = _TITLE_YEAR_SUFFIX_RE.sub("", t).strip()
+    return t.lower()
+
+
+def _title_similarity(a: str, b: str) -> float:
+    """Return a similarity score ∈ [0.0, 1.0] between two normalised title strings.
+
+    Uses CJK bigram Jaccard for titles containing CJK characters; falls back to
+    plain token Jaccard for purely Latin titles.  Exact/substring matches short-
+    circuit early.
+    """
+    if not a or not b:
+        return 0.0
+    if a == b:
+        return 1.0
+    # Substring containment with length-ratio guard
+    shorter, longer = sorted([a, b], key=len)
+    if shorter in longer and len(shorter) / max(len(longer), 1) >= 0.6:
+        return 0.85
+
+    has_cjk_a = bool(_CJK_RANGE_RE.search(a))
+    has_cjk_b = bool(_CJK_RANGE_RE.search(b))
+    if has_cjk_a or has_cjk_b:
+        # CJK bigram Jaccard
+        bg_a = _cjk_bigrams(a)
+        bg_b = _cjk_bigrams(b)
+        # Also include ASCII tokens for hybrid titles (e.g. "Re:Zero")
+        tok_a = set(re.findall(r"[a-z0-9]{2,}", a))
+        tok_b = set(re.findall(r"[a-z0-9]{2,}", b))
+        combined_a = bg_a | tok_a
+        combined_b = bg_b | tok_b
+        union = combined_a | combined_b
+        if not union:
+            return 0.0
+        return round(len(combined_a & combined_b) / len(union), 3)
+    else:
+        # Latin-only: token Jaccard
+        tok_a = set(a.split())
+        tok_b = set(b.split())
+        union = tok_a | tok_b
+        if not union:
+            return 0.0
+        return round(len(tok_a & tok_b) / len(union), 3)
+
+
+def _validate_per_item_tmdb_match(local_title: str, tmdb_row: dict[str, Any]) -> float:
+    """Return a confidence score ∈ [0.0, 1.0] that *tmdb_row* matches *local_title*.
+
+    Checks both the display title and the original title (romanised/JP) from TMDB
+    against the local title using CJK-bigram-aware similarity.  The highest score
+    across all alias candidates wins.
+
+    Note: local_date is the *consumption* date, not the release year, so year
+    comparison between local and TMDB is intentionally omitted to avoid false
+    negatives for older titles watched recently.
+    """
+    if not local_title:
+        return 0.0
+
+    local_norm = _normalize_title_for_match(local_title)
+    if not local_norm:
+        return 0.0
+
+    # Collect all name candidates from the TMDB row
+    candidates_raw = [
+        str(tmdb_row.get("title") or "").strip(),
+        str(tmdb_row.get("original_title") or "").strip(),
+        str(tmdb_row.get("name") or "").strip(),
+        str(tmdb_row.get("original_name") or "").strip(),
+    ]
+    best = 0.0
+    for cand in candidates_raw:
+        if not cand:
+            continue
+        cand_norm = _normalize_title_for_match(cand)
+        if not cand_norm:
+            continue
+        score = _title_similarity(local_norm, cand_norm)
+        if score > best:
+            best = score
+    return round(best, 3)
+
+
+def _validate_per_item_bangumi_match(local_title: str, bgm_row: dict[str, Any]) -> float:
+    """Return a confidence score ∈ [0.0, 1.0] that *bgm_row* matches *local_title*.
+
+    Bangumi provides both `name` (usually Japanese) and `name_cn` (Chinese), so
+    we check both — especially useful when the local record stores the Chinese
+    name while Bangumi's search returns the Japanese canonical name.
+    """
+    if not local_title:
+        return 0.0
+
+    local_norm = _normalize_title_for_match(local_title)
+    if not local_norm:
+        return 0.0
+
+    candidates_raw = [
+        str(bgm_row.get("name_cn") or "").strip(),   # Chinese name — check first
+        str(bgm_row.get("name") or "").strip(),       # Japanese/canonical name
+    ]
+    best = 0.0
+    for cand in candidates_raw:
+        if not cand:
+            continue
+        cand_norm = _normalize_title_for_match(cand)
+        if not cand_norm:
+            continue
+        score = _title_similarity(local_norm, cand_norm)
+        if score > best:
+            best = score
+    return round(best, 3)
+
+
+def _tool_search_bangumi(
+    title: str,
+    trace_id: str = "",
+    *,
+    subject_type: int = BANGUMI_SUBJECT_TYPE_ANIME,
+    limit: int = 5,
+) -> ToolExecution:
+    """Search Bangumi (bgm.tv) for a subject by title.
+
+    Uses POST /v0/search/subjects with an optional subject_type filter.
+    Requires BANGUMI_ACCESS_TOKEN and a descriptive User-Agent per Bangumi policy.
+
+    Returns a ToolExecution whose data["results"] contains compact subject dicts
+    with fields: id, name (JP), name_cn (CN), summary, date, score, source.
+    """
+    if not BANGUMI_ACCESS_TOKEN:
+        return ToolExecution(
+            tool=TOOL_SEARCH_BANGUMI,
+            status="empty",
+            summary="未配置 Bangumi Access Token",
+            data={"trace_id": trace_id, "trace_stage": "agent.tool.search_bangumi", "results": []},
+        )
+
+    url = f"{BANGUMI_API_BASE_URL}/v0/search/subjects?limit={limit}"
+    headers = {
+        "Authorization": f"Bearer {BANGUMI_ACCESS_TOKEN}",
+        "Content-Type": "application/json",
+        "Accept": "application/json",
+        # Bangumi policy requires a descriptive User-Agent
+        "User-Agent": "personal-ai-stack/1.0 (https://github.com/personal)",
+    }
+    if trace_id:
+        headers["X-Trace-Id"] = trace_id
+
+    body: dict[str, Any] = {"keyword": title, "sort": "match"}
+    if subject_type:
+        body["filter"] = {"type": [subject_type]}
+
+    try:
+        raw = _http_json("POST", url, payload=body, timeout=BANGUMI_TIMEOUT, headers=headers)
+    except Exception as exc:  # noqa: BLE001
+        return ToolExecution(
+            tool=TOOL_SEARCH_BANGUMI,
+            status="error",
+            summary=f"Bangumi 搜索失败：{exc}",
+            data={"trace_id": trace_id, "trace_stage": "agent.tool.search_bangumi", "results": []},
+        )
+
+    rows = raw.get("data") or [] if isinstance(raw, dict) else []
+    compact: list[dict[str, Any]] = []
+    for row in rows:
+        if not isinstance(row, dict):
+            continue
+        bgm_id = row.get("id")
+        name = str(row.get("name") or "").strip()
+        name_cn = str(row.get("name_cn") or "").strip()
+        if not name and not name_cn:
+            continue
+        rating_block = row.get("rating") or {}
+        score = float(rating_block.get("score") or 0.0) if isinstance(rating_block, dict) else 0.0
+        compact.append({
+            "id": bgm_id,
+            "name": name,           # Japanese/canonical name
+            "name_cn": name_cn,     # Chinese name
+            "title": name_cn or name,  # display title
+            "summary": _clip_text(str(row.get("summary") or ""), 320),
+            "date": str(row.get("date") or "").strip(),
+            "score": score,
+            "type": row.get("type"),
+            "source": "bangumi",
+            "url": f"https://bgm.tv/subject/{bgm_id}" if bgm_id else "",
+        })
+
+    compact.sort(key=lambda item: float(item.get("score") or 0.0), reverse=True)
+
+    return ToolExecution(
+        tool=TOOL_SEARCH_BANGUMI,
+        status="ok" if compact else "empty",
+        summary=f"Bangumi 命中 {len(compact)} 条结果（keyword={title!r}）",
+        data={
+            "trace_id": trace_id,
+            "trace_stage": "agent.tool.search_bangumi",
+            "results": compact,
+        },
+    )
+
+
+def _execute_per_item_expansion(
+    tool_results: list[ToolExecution],
+    *,
+    trace_id: str,
+    media_family: str = "",
+) -> list[ToolExecution]:
+    """Phase-2 generic per-item fan-out enrichment.
+
+    Called after local results are finalized.  For each title in the local
+    media result set, fetches external background data from the most suitable
+    source given *media_family*:
+
+      audiovisual  → Bangumi (anime) or TMDB; tries Bangumi first when the token
+                     is available, then falls back to TMDB if Bangumi returns no
+                     confident match.  For non-anime titles TMDB is tried first.
+      bookish      → MediaWiki parse per-title
+      music        → MediaWiki parse per-title
+      game         → MediaWiki parse per-title
+      ""           → MediaWiki parse (safe default)
+
+    Match confidence is validated using CJK-bigram-aware _title_similarity; any
+    candidate scoring below the relevant MIN_CONFIDENCE constant is discarded so
+    wrong-item overviews never reach the LLM.
+
+    The enriched data is provided in two complementary forms:
+      per_item_data  — structured list of {local_title, local_date, local_rating,
+                        local_review, external_title, external_overview,
+                        external_source, match_confidence} dicts, one per item
+                        that successfully resolved.  The composer and LLM prompt
+                        use this for bucketed, deterministic rendering.
+      results        — raw external rows (backward-compatible field for
+                        _format_tool_result / fallback rendering).
+      per_item_fanout_stats — lightweight list of {local_title, external_title,
+                        match_confidence, source} for trace reporting.
+
+    Returns *tool_results* unchanged if no enrichable local rows exist or if
+    the fan-out produced zero results.
+    """
+    media_result = next(
+        (r for r in tool_results if r.tool == TOOL_QUERY_MEDIA and r.status in {"ok", "partial"}),
+        None,
+    )
+    if media_result is None or not isinstance(media_result.data, dict):
+        return tool_results
+
+    local_rows = [r for r in (media_result.data.get("results") or []) if isinstance(r, dict)]
+    if not local_rows:
+        return tool_results
+
+    sample = local_rows[:PER_ITEM_EXPAND_LIMIT]
+
+    _is_audiovisual = media_family == "audiovisual"
+    _use_bangumi = _is_audiovisual and bool(BANGUMI_ACCESS_TOKEN)
+    _use_tmdb = _is_audiovisual and bool(TMDB_API_KEY or TMDB_READ_ACCESS_TOKEN)
+
+    def _fetch_bangumi(row: dict[str, Any]) -> dict[str, Any] | None:
+        """Try Bangumi first (anime type), then type-agnostic if no hit."""
+        title = str(row.get("title") or "").strip()
+        if not title:
+            return None
+        # Try anime type first, then real (type=6) as fallback for live-action
+        for subject_type in (BANGUMI_SUBJECT_TYPE_ANIME, BANGUMI_SUBJECT_TYPE_REAL):
+            try:
+                result = _tool_search_bangumi(title, trace_id, subject_type=subject_type)
+            except Exception:  # noqa: BLE001
+                continue
+            if result.status not in {"ok", "partial"} or not isinstance(result.data, dict):
+                continue
+            bgm_rows = result.data.get("results") or []
+            for candidate in (bgm_rows[:3] if isinstance(bgm_rows, list) else []):
+                if not isinstance(candidate, dict):
+                    continue
+                confidence = _validate_per_item_bangumi_match(title, candidate)
+                if confidence >= PER_ITEM_BANGUMI_MIN_CONFIDENCE:
+                    ext_title = str(candidate.get("name_cn") or candidate.get("name") or "").strip()
+                    ext_overview = _clip_text(str(candidate.get("summary") or ""), 200)
+                    return {
+                        "local_title": title,
+                        "local_date": str(row.get("date") or "").strip(),
+                        "local_rating": row.get("rating"),
+                        "local_review": _clip_text(str(row.get("review") or ""), 120),
+                        "external_title": ext_title,
+                        "external_overview": ext_overview,
+                        "external_source": "bangumi",
+                        "match_confidence": confidence,
+                        "id": candidate.get("id"),
+                        "url": str(candidate.get("url") or "").strip(),
+                        "score": candidate.get("score", confidence),
+                        # Backward-compat
+                        "title": ext_title,
+                        "overview": ext_overview,
+                        "_source_title": title,
+                    }
+        return None
+
+    def _fetch_tmdb(row: dict[str, Any]) -> dict[str, Any] | None:
+        title = str(row.get("title") or "").strip()
+        if not title:
+            return None
+        try:
+            result = _tool_search_tmdb_media(title, trace_id)
+        except Exception:  # noqa: BLE001
+            return None
+        if result.status not in {"ok", "partial"} or not isinstance(result.data, dict):
+            return None
+        tmdb_rows = result.data.get("results") or []
+        for candidate in (tmdb_rows[:3] if isinstance(tmdb_rows, list) else []):
+            if not isinstance(candidate, dict):
+                continue
+            confidence = _validate_per_item_tmdb_match(title, candidate)
+            if confidence >= PER_ITEM_TMDB_MIN_CONFIDENCE:
+                ext_title = str(candidate.get("title") or "").strip()
+                ext_overview = _clip_text(str(candidate.get("overview") or ""), 200)
+                return {
+                    "local_title": title,
+                    "local_date": str(row.get("date") or "").strip(),
+                    "local_rating": row.get("rating"),
+                    "local_review": _clip_text(str(row.get("review") or ""), 120),
+                    "external_title": ext_title,
+                    "external_overview": ext_overview,
+                    "external_source": "tmdb",
+                    "match_confidence": confidence,
+                    "id": candidate.get("id"),
+                    "url": str(candidate.get("url") or "").strip(),
+                    "score": candidate.get("score", confidence),
+                    # Keep raw fields for backward-compat rendering
+                    "title": ext_title,
+                    "overview": ext_overview,
+                    "media_type": str(candidate.get("media_type") or "").strip(),
+                    "date": str(candidate.get("date") or "").strip(),
+                    "_source_title": title,
+                }
+        return None
+
+    def _fetch_wiki(row: dict[str, Any]) -> dict[str, Any] | None:
+        title = str(row.get("title") or "").strip()
+        if not title:
+            return None
+        try:
+            result = _tool_parse_mediawiki_page(title, trace_id)
+        except Exception:  # noqa: BLE001
+            return None
+        if result.status not in {"ok", "partial"} or not isinstance(result.data, dict):
+            return None
+        page = result.data.get("page")
+        if not isinstance(page, dict):
+            # Fallback: try search-then-first-result
+            try:
+                search_res = _tool_search_mediawiki_action(title, trace_id, limit=2)
+            except Exception:  # noqa: BLE001
+                return None
+            if not isinstance(search_res.data, dict):
+                return None
+            sr_rows = search_res.data.get("results") or []
+            top = next((r for r in sr_rows if isinstance(r, dict)), None)
+            if not top:
+                return None
+            page = top
+        ext_title = str(page.get("display_title") or page.get("title") or "").strip()
+        extract = _clip_text(str(page.get("extract") or page.get("snippet") or ""), 200)
+        if not ext_title and not extract:
+            return None
+        conf = _title_similarity(
+            _normalize_title_for_match(title),
+            _normalize_title_for_match(ext_title),
+        ) if ext_title else 0.7
+        return {
+            "local_title": title,
+            "local_date": str(row.get("date") or "").strip(),
+            "local_rating": row.get("rating"),
+            "local_review": _clip_text(str(row.get("review") or ""), 120),
+            "external_title": ext_title,
+            "external_overview": extract,
+            "external_source": "wiki",
+            "match_confidence": max(conf, 0.5),
+            "url": str(page.get("url") or "").strip(),
+            "score": max(conf, 0.5),
+            # Backward-compat fields
+            "title": ext_title,
+            "overview": extract,
+            "_source_title": title,
+        }
+
+    def _fetch_audiovisual(row: dict[str, Any]) -> dict[str, Any] | None:
+        """For audiovisual: try Bangumi first, fall back to TMDB."""
+        if _use_bangumi:
+            result = _fetch_bangumi(row)
+            if result is not None:
+                return result
+        if _use_tmdb:
+            return _fetch_tmdb(row)
+        return None
+
+    fetch_fn = _fetch_audiovisual if _is_audiovisual else _fetch_wiki
+
+    per_item_data: list[dict[str, Any]] = []
+    with ThreadPoolExecutor(max_workers=min(PER_ITEM_EXPAND_LIMIT, len(sample))) as pool:
+        futures = {pool.submit(fetch_fn, row): row for row in sample}
+        for future in as_completed(futures):
+            item = future.result()
+            if item is not None:
+                per_item_data.append(item)
+
+    if not per_item_data:
+        return tool_results
+
+    # Determine the dominant source for naming the ToolExecution
+    source_counts: dict[str, int] = {}
+    for item in per_item_data:
+        src = str(item.get("external_source") or "wiki")
+        source_counts[src] = source_counts.get(src, 0) + 1
+    external_source_label = max(source_counts, key=source_counts.__getitem__) if source_counts else "wiki"
+    mixed_sources = len(source_counts) > 1
+
+    if external_source_label == "bangumi":
+        fanout_tool = TOOL_SEARCH_BANGUMI
+        source_display = "Bangumi"
+    elif external_source_label == "tmdb":
+        fanout_tool = TOOL_SEARCH_TMDB
+        source_display = "TMDB"
+    else:
+        fanout_tool = TOOL_EXPAND_MEDIAWIKI_CONCEPT
+        source_display = "Wiki"
+
+    # Lightweight per-item stats for trace reporting
+    per_item_fanout_stats = [
+        {
+            "local_title": item.get("local_title", ""),
+            "external_title": item.get("external_title", ""),
+            "match_confidence": item.get("match_confidence", 0.0),
+            "source": item.get("external_source", ""),
+        }
+        for item in per_item_data
+    ]
+
+    fanout_exec = ToolExecution(
+        tool=fanout_tool,
+        status="ok",
+        summary=(
+            f"{source_display} 逐项补充 "
+            f"{len(per_item_data)}/{len(sample)} 条（per-item fan-out, source={external_source_label}"
+            f"{', mixed' if mixed_sources else ''}）"
+        ),
+        data={
+            "trace_id": trace_id,
+            "trace_stage": f"agent.tool.per_item_fanout.{external_source_label}",
+            "results": per_item_data,  # backward-compat: raw rows
+            "per_item_fanout": True,
+            "per_item_data": per_item_data,  # structured buckets for composer
+            "per_item_source": external_source_label,
+            "per_item_sources": sorted(source_counts.keys()),
+            "source_counts": dict(source_counts),
+            "mixed_sources": mixed_sources,
+            "source_title_count": len(sample),
+            "per_item_fanout_stats": per_item_fanout_stats,
+        },
+    )
+
+    # Replace any prior whole-query result for the same tool; insert right after
+    # the local media result for coherent ordering.
+    updated = [r for r in tool_results if r.tool != fanout_tool]
+    media_idx = next(
+        (i for i, r in enumerate(updated) if r.tool == TOOL_QUERY_MEDIA),
+        len(updated) - 1,
+    )
+    updated.insert(media_idx + 1, fanout_exec)
+    return updated
 
 
 def _quota_exceeded(plan: list[PlannedToolCall], backend: str, quota_state: dict[str, Any]) -> list[dict[str, Any]]:
@@ -6420,6 +7970,7 @@ def _summarize_answer(
     trace_id: str,
     debug_sink: dict[str, Any] | None = None,
     llm_stats_sink: dict[str, Any] | None = None,
+    answer_strategy: "_AnswerStrategy | None" = None,
 ) -> str:
     hist_lines = _trim_history_for_prompt(history)
     clipped_memory_context = _clip_memory_context(memory_context)
@@ -6427,6 +7978,8 @@ def _summarize_answer(
 
     normalized_search_mode = _normalize_search_mode(search_mode)
     has_web_tool = any(result.tool == TOOL_SEARCH_WEB for result in tool_results)
+
+    # ── Base system prompt ─────────────────────────────────────────
     system_prompt = (
         "你是个人助理。请综合工具结果回答用户问题。"
         "如果某个工具失败/为空，明确说明并尽量用其它工具补足。"
@@ -6434,8 +7987,106 @@ def _summarize_answer(
         "只允许使用工具结果中的事实；如果工具未给出证据必须明确说不确定。"
         "遇到同名/近似作品时优先按标题精确匹配（例如含数字续作）。"
     )
+
+    # ── ResponseComposer: propagate response_structure + evidence_policy ──
+    # answer_strategy carries structured signals from AnswerPolicy.  Use them
+    # to give the LLM explicit section-layout instructions so it knows how to
+    # organise multi-source results (local-first, then labelled external).
+    if answer_strategy is not None:
+        _style = answer_strategy.style_hints
+        _response_structure = str(_style.get("response_structure") or "")
+        _ep: dict[str, Any] = _style.get("evidence_policy") or {}
+        if _response_structure == "local_list_plus_external_background":
+            system_prompt += (
+                "请先列出本地库中检索到的所有相关作品（每条带：标题、观看/阅读日期、评分、短评），"
+                "列表结束后另起一段，以「外部补充」为标题，"
+                "补充创作者背景或该类型作品的整体特点（来自 Wiki / TMDB）。"
+            )
+        elif _response_structure == "local_record_plus_external_info":
+            system_prompt += (
+                "请先基于本地库记录回答（观看/阅读日期、评分、个人短评），"
+                "再另起段落，以「外部参考」为标题，"
+                "补充该作品的外部简介或创作背景（来自 TMDB / Wiki）。"
+            )
+        elif _response_structure == "thematic_list":
+            system_prompt += (
+                "请按主题或类型特征组织作品列表，结合本地库条目与外部资料，"
+                "说明这类作品的共同特征，每部作品标注本地库中的评分/日期（如有）。"
+            )
+        elif _response_structure == "compare":
+            system_prompt += (
+                "用户要求对比多部作品。请为每部作品分别列出本地库记录（评分、日期、短评），"
+                "然后给出横向对比总结（如：共同点、差异点、推荐顺序）。"
+                "如有外部资料（TMDB / Wiki），可在对比表格或段落中注明来源。"
+            )
+        elif _response_structure == "local_list":
+            system_prompt += (
+                "请只列出本地库中的相关作品（标题、日期、评分、短评），不要引用外部文章或网络资料。"
+            )
+        if _ep.get("must_label_external"):
+            system_prompt += (
+                "所有来自外部资料（TMDB / Wiki / 网络）的内容必须用「外部参考」标注，"
+                "与本地库内容明确区分。"
+            )
+        if _ep.get("must_weaken_uncertain_claims"):
+            system_prompt += (
+                "对未在工具结果中得到验证的事实，请用“可能”“据外部资料”等措辞表达不确定性，"
+                "不要以肯定口吗断言。"
+            )
+        # ── subject_scope: personal_record frames local data as primary truth ──
+        _subject_scope = _style.get("subject_scope") or ""
+        if _subject_scope == "personal_record":
+            system_prompt += (
+                "这是个人观看/阅读记录类查询。请以本地库记录（日期、评分、个人短评）为主要依据，"
+                "外部参考（TMDB / Wiki）仅作补充标注，不要用外部资料覆盖或动摇本地记录。"
+            )
+        # ── needs_expansion: warn when expansion data is missing ──────
+        _needs_expansion_hint = bool(_style.get("needs_expansion"))
+        _expansion_unavailable = bool(_style.get("expansion_unavailable"))
+        _expansion_missing = bool(_style.get("expansion_missing"))
+        if _expansion_unavailable:
+            # All known expansion avenues exhausted — no repair path remains.
+            system_prompt += (
+                "用户希望对每部作品展开介绍。外部手册（TMDB / Wiki）已尝试装载但未返回有效内容。"
+                "请在正文首尾明确告知用户详细外部信息暂时无法获取，"
+                "仅基于本地库记录回答，并建议用户在外部平台（如 TMDB、豆瓣）查询详细介绍。"
+            )
+        elif _expansion_missing:
+            # Expansion tools were not scheduled at all (T1).
+            system_prompt += (
+                "用户希望对每部作品展开介绍，但本次未调用外部扩展工具。"
+                "请在本地库记录范围内尽可能展开说明，并明确告知用户详细介绍暂不可用。"
+            )
+        elif _needs_expansion_hint:
+            system_prompt += (
+                "用户希望对每部作品展开介绍，但外部扩展工具（TMDB / Wiki）未返回有效内容。"
+                "请在本地库记录范围内尽可能展开说明，并明确告知用户详细外部信息暂不可用。"
+            )
+
+    # ── Per-item fan-out enrichment: when per-item data was fetched per title, ──
+    # instruct the LLM to use the pre-bucketed blocks for per-item narration.
+    _fanout_result = next(
+        (r for r in tool_results
+         if isinstance(r.data, dict) and r.data.get("per_item_fanout")),
+        None,
+    )
+    if _fanout_result is not None:
+        _fanout_source = str((_fanout_result.data or {}).get("per_item_source") or "external")
+        _fanout_label = "TMDB" if _fanout_source == "tmdb" else "Wiki"
+        system_prompt += (
+            f"用户询问集合内各作品的具体内容。上方「已整理的逐项资料」中每个「## 《标题》」块"
+            f"已经包含该作品的本地记录（观看日期/评分/短评）和来自 {_fanout_label} 的剧情简介。"
+            "请直接按这些块逐项列出，每个作品一个条目："
+            "先写本地记录信息，再在该条目内附上「剧情/简介（外部参考）」。"
+            "如果某个作品没有外部简介，只列本地记录，无需额外说明。"
+            "不要把所有外部简介集中写在一段——必须每部作品各自内联展示。"
+        )
+
     if normalized_search_mode == "local_only" or not has_web_tool:
         system_prompt += "本轮未执行联网搜索，严禁写出“联网搜索”“网络搜索”“进行网络搜索”“经过搜索”等表述，也不要假装调用过外部 API。"
+
+    # Pre-assemble structured data blocks so the LLM polishes, not discovers.
+    _composed = _compose_response_sections(tool_results, answer_strategy)
 
     budgets = [PROMPT_TOOL_CONTEXT_MAX_CHARS, PROMPT_TOOL_CONTEXT_RETRY_CHARS, 1800]
     answer = ""
@@ -6453,6 +8104,45 @@ def _summarize_answer(
             prompt_blocks.extend(["", clipped_memory_context])
         if answer_focus_hints:
             prompt_blocks.extend(["", "回答提示：", answer_focus_hints])
+        # Inject pre-structured data blocks when the answer policy set a layout.
+        # This lets the LLM polish pre-assembled structure rather than extract
+        # it from raw tool JSON, making the response more deterministic.
+        _per_item_buckets = _composed.get("per_item_buckets") or []
+        if _per_item_buckets:
+            # The bucket blocks already contain the local records plus external
+            # overviews for each title. Re-including raw media/fanout tool JSON
+            # would duplicate the same information and blow up prompt tokens.
+            compact_tool_results = [
+                item
+                for item in tool_results
+                if item.tool not in {
+                    TOOL_QUERY_MEDIA,
+                    TOOL_SEARCH_BY_CREATOR,
+                    TOOL_SEARCH_TMDB,
+                    TOOL_SEARCH_BANGUMI,
+                    TOOL_EXPAND_MEDIAWIKI_CONCEPT,
+                    TOOL_SEARCH_MEDIAWIKI,
+                    TOOL_PARSE_MEDIAWIKI,
+                }
+            ]
+            context_parts = _build_tool_context_parts(compact_tool_results, max_total_chars=budget) if compact_tool_results else []
+            # Bucketed per-item data: each bucket is a self-contained block
+            # containing local record fields + external overview for one item.
+            # The LLM renders each block as a list entry without needing to
+            # cross-reference two separate flat lists.
+            prompt_blocks.extend(["", "[已整理的逐项资料（每个作品一个块）]"])
+            prompt_blocks.extend(["外部信息来源标注说明：Bangumi=bgm.tv动画数据库，TMDB=影视数据库，Wiki=维基百科。"])
+            prompt_blocks.extend(["注意：标注【外部信息可能非精确匹配】的条目请谨慎使用其外部简介。"])
+            prompt_blocks.extend(["", "[工具摘要]"])
+            prompt_blocks.extend(_build_compact_tool_summary_lines(tool_results))
+            prompt_blocks.extend(_per_item_buckets)
+        else:
+            if _composed["local_lines"]:
+                prompt_blocks.extend(["", "[已整理的本地记录]"])
+                prompt_blocks.extend(_composed["local_lines"])
+            if _composed["external_lines"]:
+                prompt_blocks.extend(["", "[已整理的外部资料]"])
+                prompt_blocks.extend(_composed["external_lines"])
         prompt_blocks.extend(["", *context_parts])
         user_prompt = "\n".join(prompt_blocks)
         context_tokens_est = _approx_tokens("\n".join(context_parts))
@@ -6787,14 +8477,32 @@ def _build_agent_trace_record(
     for item in tool_results:
         data = item.data if isinstance(item.data, dict) else {}
         results = data.get("results") if isinstance(data.get("results"), list) else []
+        source_counts = data.get("source_counts") if isinstance(data.get("source_counts"), dict) else {}
+        per_item_source = str(data.get("per_item_source", "") or "")
+        display_name = item.tool
+        if source_counts:
+            ordered_sources = ", ".join(
+                f"{name}:{count}"
+                for name, count in sorted(
+                    ((str(k), int(v or 0)) for k, v in source_counts.items() if str(k).strip()),
+                    key=lambda pair: (-pair[1], pair[0]),
+                )
+            )
+            display_name = f"{item.tool} [{ordered_sources}]"
+        elif per_item_source:
+            display_name = f"{item.tool} [{per_item_source}]"
         tools.append(
             {
                 "name": item.tool,
+                "display_name": display_name,
                 "status": item.status,
                 "latency_ms": data.get("latency_ms"),
                 "result_count": len(results),
                 "cache_hit": bool(data.get("cache_hit")),
                 "trace_stage": str(data.get("trace_stage", "") or ""),
+                "per_item_source": per_item_source,
+                "source_counts": dict(source_counts),
+                "mixed_sources": bool(data.get("mixed_sources")),
             }
         )
     return {
@@ -6831,6 +8539,27 @@ def _build_agent_trace_record(
             "retrieval_plan": [call.name for call in planned_tools],
             "reasons": list(router_decision.get("reasons") or []),
             "arbitration": str(router_decision.get("arbitration") or "unknown"),
+            "classification_conformance": (
+                lambda q=str(runtime_state.decision.raw_question or "").strip().lower(),
+                       d=str(router_decision.get("domain") or "general"),
+                       a=str(router_decision.get("arbitration") or "unknown"): (
+                    (lambda oracle=_CLASSIFICATION_ORACLE.get(q): (
+                        None if oracle is None else
+                        {
+                            "status": "match" if (
+                                d == oracle["domain"] and (
+                                    a == oracle["arbitration"] if isinstance(oracle["arbitration"], str)
+                                    else a in oracle["arbitration"]
+                                )
+                            ) else "mismatch",
+                            "expected_domain": oracle["domain"],
+                            "expected_arbitration": oracle["arbitration"],
+                            "actual_domain": d,
+                            "actual_arbitration": a,
+                        }
+                    ))()
+                )()
+            ),
         },
         "planner_snapshot": planner_snapshot,
         "execution_plan": execution_plan,
@@ -7532,10 +9261,26 @@ def run_agent_round(
     tool_results = _execute_tool_plan(allowed_plan, query_profile, resolved_trace_id)
     _tool_execution_seconds = _wall_time.perf_counter() - _tool_exec_t0
 
+    # Inject answer_shape from query_classification so _apply_reference_limits
+    # can raise the top-K cap for list_plus_expand collection queries.
+    _qc_answer_shape = str((query_classification or {}).get("answer_shape", "") or "")
+    if _qc_answer_shape:
+        query_profile = dict(query_profile)
+        query_profile["answer_shape"] = _qc_answer_shape
+
     # Keep planner order in final report.
     order = {call.name: i for i, call in enumerate(allowed_plan)}
     tool_results.sort(key=lambda x: order.get(x.tool, 999))
     tool_results = _apply_reference_limits(tool_results, normalized_search_mode, query_profile)
+    # Phase-2 fan-out: per-item external enrichment for all list_plus_expand
+    # collection queries.  media_family determines the external source:
+    #   audiovisual → TMDB per-title (validated match)
+    #   bookish / music / game / "" → MediaWiki parse per-title
+    _qc_media_family = str((query_classification or {}).get("media_family", "") or "")
+    if _qc_answer_shape == "list_plus_expand":
+        tool_results = _execute_per_item_expansion(
+            tool_results, trace_id=resolved_trace_id, media_family=_qc_media_family
+        )
     debug_trace["tool_results"] = [
         {"tool": r.tool, "status": r.status, "summary": r.summary, "data": r.data}
         for r in tool_results
@@ -7582,6 +9327,14 @@ def run_agent_round(
         "mode": answer_mode.get("mode", "normal"),
         "reasons": list(answer_mode.get("reasons") or []),
     }
+    _post_retrieval_outcome: _PostRetrievalOutcome = _PostRetrievalPolicy().evaluate(
+        runtime_state.decision, tool_results, guardrail_flags
+    )
+    _answer_strategy: _AnswerStrategy = _AnswerPolicy().determine(
+        runtime_state.decision, _post_retrieval_outcome
+    )
+    query_classification["post_retrieval_outcome"] = _dc_asdict(_post_retrieval_outcome)
+    query_classification["answer_strategy"] = _dc_asdict(_answer_strategy)
     if not benchmark_mode and any(call.name == TOOL_QUERY_MEDIA for call in allowed_plan) and not media_rows:
         _log_agent_media_miss(q, query_profile)
 
@@ -7671,6 +9424,7 @@ def run_agent_round(
                 trace_id=resolved_trace_id,
                 debug_sink=debug_trace if debug else None,
                 llm_stats_sink=_llm_stats,
+                answer_strategy=_answer_strategy,
             )
         except Exception as exc:  # noqa: BLE001
             # If local model is unavailable, provide a retrieval-only fallback reply.
@@ -7758,6 +9512,8 @@ def run_agent_round(
         tool_execution_seconds=_tool_execution_seconds,
         llm_seconds=_llm_seconds,
     )
+    trace_record["post_retrieval_outcome"] = query_classification.get("post_retrieval_outcome", {})
+    trace_record["answer_strategy"] = query_classification.get("answer_strategy", {})
     _write_agent_trace_record(trace_record)
 
     return {
@@ -7938,10 +9694,22 @@ def run_agent_round_stream(
             }
         _tool_execution_seconds = _wall_time.perf_counter() - _tool_exec_t0
 
+        # Inject answer_shape into query_profile for reference-limit expansion.
+        _qc_answer_shape = str((query_classification or {}).get("answer_shape", "") or "")
+        if _qc_answer_shape:
+            query_profile = dict(query_profile)
+            query_profile["answer_shape"] = _qc_answer_shape
+
         # Keep planner order in final report.
         order = {call.name: i for i, call in enumerate(allowed_plan)}
         tool_results.sort(key=lambda x: order.get(x.tool, 999))
         tool_results = _apply_reference_limits(tool_results, normalized_search_mode, query_profile)
+        # Phase-2 fan-out: per-item TMDB/Wiki enrichment for all list_plus_expand queries.
+        _qc_media_family = str((query_classification or {}).get("media_family", "") or "")
+        if _qc_answer_shape == "list_plus_expand":
+            tool_results = _execute_per_item_expansion(
+                tool_results, trace_id=resolved_trace_id, media_family=_qc_media_family
+            )
         debug_trace["tool_results"] = [
             {"tool": r.tool, "status": r.status, "summary": r.summary, "data": r.data}
             for r in tool_results
@@ -7986,6 +9754,14 @@ def run_agent_round_stream(
             "mode": answer_mode.get("mode", "normal"),
             "reasons": list(answer_mode.get("reasons") or []),
         }
+        _post_retrieval_outcome: _PostRetrievalOutcome = _PostRetrievalPolicy().evaluate(
+            runtime_state.decision, tool_results, guardrail_flags
+        )
+        _answer_strategy: _AnswerStrategy = _AnswerPolicy().determine(
+            runtime_state.decision, _post_retrieval_outcome
+        )
+        query_classification["post_retrieval_outcome"] = _dc_asdict(_post_retrieval_outcome)
+        query_classification["answer_strategy"] = _dc_asdict(_answer_strategy)
         if not benchmark_mode and any(call.name == TOOL_QUERY_MEDIA for call in allowed_plan) and not media_rows:
             _log_agent_media_miss(q, query_profile)
 
@@ -8075,6 +9851,7 @@ def run_agent_round_stream(
                     trace_id=resolved_trace_id,
                     debug_sink=debug_trace if debug else None,
                     llm_stats_sink=_llm_stats,
+                    answer_strategy=_answer_strategy,
                 )
             except Exception as exc:  # noqa: BLE001
                 if (backend or "local").strip().lower() == "local":
@@ -8160,6 +9937,8 @@ def run_agent_round_stream(
             tool_execution_seconds=_tool_execution_seconds,
             llm_seconds=_llm_seconds,
         )
+        trace_record["post_retrieval_outcome"] = query_classification.get("post_retrieval_outcome", {})
+        trace_record["answer_strategy"] = query_classification.get("answer_strategy", {})
         _write_agent_trace_record(trace_record)
 
         yield {

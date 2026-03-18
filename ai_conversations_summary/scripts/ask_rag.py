@@ -149,6 +149,7 @@ DEFAULT_ENABLE_QUERY_REWRITE = os.getenv("AI_SUMMARY_ENABLE_QUERY_REWRITE", "1")
 DEFAULT_QUERY_REWRITE_COUNT = max(1, min(2, int(os.getenv("AI_SUMMARY_QUERY_REWRITE_COUNT", "2"))))
 DEFAULT_PRIMARY_QUERY_SCORE_BONUS = float(os.getenv("AI_SUMMARY_PRIMARY_QUERY_SCORE_BONUS", "0.03") or "0.03")
 BUILD_INDEX_ON_DEMAND = os.getenv("AI_SUMMARY_RAG_BUILD_INDEX_ON_DEMAND", "0").strip().lower() in {"1", "true", "yes", "on"}
+DEFAULT_PASSAGE_FIRST_K = int(os.getenv("AI_SUMMARY_PASSAGE_FIRST_K", "3") or "3")
 _RERANKER_CACHE: dict[str, Any] = {}
 
 
@@ -301,9 +302,9 @@ def _parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--memory-context", default="", help="Serialized memory context for current session")
     parser.add_argument(
         "--context-mode",
-        default="topic",
-        choices=["topic", "full"],
-        help="Context assembly mode: topic=metadata-only (default), full=load markdown body",
+        default="passage_first",
+        choices=["topic", "full", "passage_first"],
+        help="Context assembly mode: passage_first=real content for top docs + metadata for rest (default), topic=metadata-only, full=all docs full markdown body",
     )
     parser.add_argument("--output-json", default="", help="Optional JSON output file path")
     parser.add_argument("--debug", default="false", help="Enable debug trace output in payload")
@@ -1329,6 +1330,167 @@ def _search_web_tavily(
     return result_rows, "ok"
 
 
+def _compute_retrieval_confidence(
+    *,
+    top1_final: float,
+    candidate_count: int,
+    top2_final: float = 0.0,
+) -> str:
+    """Return 'strong', 'moderate', 'weak', or 'none'.
+
+    Uses the definitive final score (rerank/fusion where available, vector
+    otherwise) as a single source of truth.  This avoids the old ambiguity
+    where top1_score, top2_score, and rerank_top1 could each be the rerank
+    score, causing double-counting.
+    """
+    if candidate_count == 0 or top1_final < 0.30:
+        return "none"
+    gap = top1_final - top2_final if candidate_count >= 2 else top1_final
+    if top1_final >= 0.60 and gap >= 0.10:
+        return "strong"
+    if top1_final >= 0.45:
+        return "moderate"
+    return "weak"
+
+
+# ── Citation contract helpers ────────────────────────────────────────────────
+_CITATION_REF_RE = re.compile(r"\[资料(\d+)\]")
+_THINK_BLOCK_RE = re.compile(r"<think>.*?</think>", re.DOTALL)
+
+
+def _parse_context_blocks(context_text: str) -> dict[int, str]:
+    """Return {doc_number: passage_content} from the formatted context string."""
+    result: dict[int, str] = {}
+    if not context_text:
+        return result
+    parts = re.split(r"(?=\[资料\d+\])", context_text)
+    for part in parts:
+        m = re.match(r"\[资料(\d+)\][^\n]*\n?(.*)", part, re.DOTALL)
+        if m:
+            result[int(m.group(1))] = m.group(2).strip()
+    return result
+
+
+def _citation_token_overlap(text_a: str, text_b: str) -> int:
+    """Count shared CJK bigrams + ASCII 2-char words between two strings."""
+    def _tok(s: str) -> set[str]:
+        toks: set[str] = set(re.findall(r"[a-z0-9]{2,}", s.lower()))
+        cjk = re.findall(r"[\u4e00-\u9fff\u3400-\u4dbf\uf900-\ufaff]", s)
+        toks.update(cjk[i] + cjk[i + 1] for i in range(len(cjk) - 1))
+        return toks
+    return len(_tok(text_a) & _tok(text_b))
+
+
+def _reconcile_citations(
+    answer: str,
+    used_docs: list[dict[str, Any]],
+    context_text: str,
+    *,
+    overlap_threshold: int = 5,
+) -> tuple[str, dict[str, Any]]:
+    """Paragraph-level citation contract: bind answer text to source passages.
+
+    This is a structural post-processing step that tightens the link between
+    answer text and the passages actually used, without requiring the LLM to
+    produce perfect citations.  It operates paragraph-by-paragraph:
+
+    1. **Phantom-ref stripping** — removes ``[资料N]`` where N > len(used_docs)
+       (hallucinated doc numbers that have no backing passage).
+    2. **Claim-to-doc mapping** — builds ``doc_to_claims`` from paragraphs
+       that already carry a valid ``[资料N]`` marker.
+    3. **Auto-annotation** — for uncited paragraphs with >= *overlap_threshold*
+       shared tokens against a context block, appends the best-matching
+       ``[资料N]`` inline.  Threshold default (5) is deliberately conservative.
+    4. **Think-block awareness** — ``<think>...</think>`` sections are passed
+       through unchanged and excluded from annotation.
+
+    Returns ``(augmented_answer, citation_map)`` where ``citation_map`` has:
+      cited_by_model  – doc indices the LLM explicitly cited
+      auto_annotated  – doc indices appended by this function
+      phantom_refs    – out-of-range doc indices the LLM emitted (stripped)
+      uncited_docs    – context doc indices never referenced in the answer
+      doc_to_claims   – {str(N): [para snippet, ...]} for downstream audit
+
+    Limitation: binding is at *paragraph* granularity, not individual claim
+    sentences.  A paragraph citing multiple facts from different docs will be
+    attributed to whichever doc has the highest token overlap.  Sentence-level
+    claim binding is the natural next step for stronger verifiability.
+    """
+    total_docs = len(used_docs)
+    context_blocks = _parse_context_blocks(context_text)
+
+    # Strip <think> blocks before semantic analysis; preserve them in output.
+    analysis_text = _THINK_BLOCK_RE.sub("", answer)
+
+    # All [资料N] numbers the model emitted (in analysis text only)
+    raw_cited = {int(m) for m in _CITATION_REF_RE.findall(analysis_text)}
+    cited_by_model = {n for n in raw_cited if 1 <= n <= total_docs}
+    phantom_refs = sorted(raw_cited - cited_by_model)
+
+    doc_to_claims: dict[str, list[str]] = {}
+    auto_annotated: set[int] = set()
+
+    # Process paragraph by paragraph
+    paras = answer.split("\n")
+    out_paras: list[str] = []
+    inside_think = False
+    for para in paras:
+        stripped = para.strip()
+        # Track <think> blocks so we don't annotate reasoning text
+        if "<think>" in stripped:
+            inside_think = True
+        if inside_think:
+            if "</think>" in stripped:
+                inside_think = False
+            out_paras.append(para)
+            continue
+        if not stripped:
+            out_paras.append(para)
+            continue
+
+        # Strip phantom refs (cited number out of valid range)
+        clean_para = para
+        if phantom_refs:
+            phantom_pat = re.compile(
+                r"\[资料(" + "|".join(str(n) for n in phantom_refs) + r")\]"
+            )
+            clean_para = phantom_pat.sub("", para).rstrip()
+
+        # Which valid docs does this paragraph already cite?
+        para_cited = {int(m) for m in _CITATION_REF_RE.findall(clean_para) if 1 <= int(m) <= total_docs}
+        for n in para_cited:
+            doc_to_claims.setdefault(str(n), []).append(clean_para[:200])
+
+        # Auto-annotate only if no citation and clear evidence found
+        if not para_cited and context_blocks and len(stripped) > 20:
+            best_n, best_score = 0, 0
+            for doc_n, passage in context_blocks.items():
+                if not (1 <= doc_n <= total_docs):
+                    continue
+                score = _citation_token_overlap(clean_para, passage)
+                if score > best_score:
+                    best_n, best_score = doc_n, score
+            if best_score >= overlap_threshold:
+                clean_para = clean_para + f" [资料{best_n}]"
+                doc_to_claims.setdefault(str(best_n), []).append(clean_para[:200])
+                auto_annotated.add(best_n)
+
+        out_paras.append(clean_para)
+
+    all_cited = cited_by_model | auto_annotated
+    uncited_docs = [n for n in range(1, total_docs + 1) if n not in all_cited]
+
+    citation_map: dict[str, Any] = {
+        "cited_by_model": sorted(cited_by_model),
+        "auto_annotated": sorted(auto_annotated),
+        "phantom_refs": phantom_refs,
+        "uncited_docs": uncited_docs,
+        "doc_to_claims": doc_to_claims,
+    }
+    return "\n".join(out_paras), citation_map
+
+
+# ─────────────────────────────────────────────────────────────────────────────
 def _build_topic_context_segment(item: dict[str, Any], index_no: int) -> tuple[str, dict[str, Any]]:
     rel = str(item.get("relative_path", "")).strip() or str(item.get("file_path", "")).strip() or "<unknown>"
     title = str(item.get("title", "")).strip()
@@ -1373,6 +1535,104 @@ def _build_topic_context_segment(item: dict[str, Any], index_no: int) -> tuple[s
     return "\n".join(body_lines), used_doc
 
 
+def _extract_relevant_passage(
+    text: str,
+    query: str,
+    max_chars: int,
+    *,
+    reranker_fn: Any | None = None,
+    passage_candidates: int = 12,
+) -> str:
+    """Extract the most query-relevant passage window from a markdown document.
+
+    Pipeline:
+    1. Split *text* into paragraphs at blank-line boundaries.
+    2. **Token-overlap pre-filter** — score every paragraph by shared CJK
+       bigrams + ASCII 2-char words with *query*; select the top
+       *passage_candidates* (default 12) that have at least one match.
+    3. **Semantic re-ranking** (when *reranker_fn* is provided) — run the
+       cross-encoder on (query, paragraph[:1200]) pairs from step 2 and
+       pick the highest-scoring paragraph.  Uses the already-warm reranker
+       from the doc-level rerank step (zero cold-start cost).
+    4. **Window expansion** — expand a contiguous window around the best
+       paragraph (alternating prev/next) until *max_chars* is reached.
+    5. Falls back to document prefix only when no query terms match at all.
+
+    Limitation: window expansion is fixed left-right alternation and does not
+    score neighbouring paragraphs by relevance.  This is the natural next
+    optimisation point if passage precision matters further.
+    """
+    if not text or max_chars <= 0:
+        return text[:max_chars] if max_chars > 0 else ""
+    if not query:
+        return text[:max_chars]
+
+    # Build query token set: ASCII words ≥2 chars + single CJK chars + CJK bigrams
+    q_low = query.lower()
+    q_tokens: set[str] = set(re.findall(r"[a-z0-9]{2,}", q_low))
+    cjk = re.findall(r"[\u4e00-\u9fff\u3400-\u4dbf\uf900-\ufaff]", query)
+    q_tokens.update(cjk)
+    q_tokens.update(cjk[i] + cjk[i + 1] for i in range(len(cjk) - 1))
+
+    paragraphs = [p for p in re.split(r"\n{2,}", text) if p.strip()]
+    if not paragraphs:
+        return text[:max_chars]
+
+    def _token_score(p: str) -> int:
+        low = p.lower()
+        return sum(1 for t in q_tokens if t in low)
+
+    token_scores = [_token_score(p) for p in paragraphs]
+    any_match = q_tokens and max(token_scores, default=0) > 0
+
+    best = -1
+
+    # Semantic selection: pre-filter to top-N by token overlap, then rerank
+    if reranker_fn is not None and any_match:
+        top_indices = sorted(
+            range(len(paragraphs)),
+            key=lambda i: token_scores[i],
+            reverse=True,
+        )[:passage_candidates]
+        candidate_indices = [i for i in top_indices if token_scores[i] > 0]
+        if candidate_indices:
+            pairs = [(query, paragraphs[i][:1200]) for i in candidate_indices]
+            try:
+                rk_scores = reranker_fn(pairs)
+                if len(rk_scores) == len(candidate_indices):
+                    best = candidate_indices[max(range(len(rk_scores)), key=lambda k: rk_scores[k])]
+            except Exception:
+                pass
+
+    # Token-overlap fallback
+    if best < 0:
+        if not any_match:
+            return text[:max_chars]
+        best = max(range(len(token_scores)), key=lambda i: token_scores[i])
+
+    # Expand window around best paragraph, alternating prev/next
+    lo = hi = best
+    total = len(paragraphs[best])
+    while True:
+        grew = False
+        if lo > 0:
+            add = len(paragraphs[lo - 1]) + 2  # +2 for the "\n\n" separator
+            if total + add <= max_chars:
+                lo -= 1
+                total += add
+                grew = True
+        if hi < len(paragraphs) - 1:
+            add = len(paragraphs[hi + 1]) + 2
+            if total + add <= max_chars:
+                hi += 1
+                total += add
+                grew = True
+        if not grew:
+            break
+
+    return "\n\n".join(paragraphs[lo : hi + 1])[:max_chars]
+
+
 def _load_context(
     *,
     results: list[dict[str, Any]],
@@ -1381,60 +1641,63 @@ def _load_context(
     max_context_docs: int,
     max_chars_per_doc: int,
     similarity_threshold: float = 0.0,
-    context_mode: str = "topic",
+    context_mode: str = "passage_first",
+    passage_first_k: int = 3,
+    query: str = "",
+    reranker_fn: Any | None = None,
 ) -> tuple[str, list[dict[str, Any]]]:
     """Load and build context from search results, filtering by similarity threshold.
-    
-    Args:
-        results: Search results with score field
-        documents_dir: Directory containing documents
-        max_context_chars: Maximum total context characters
-        max_chars_per_doc: Maximum characters per document
-        similarity_threshold: Minimum similarity score (0.0-1.0). Docs below this are filtered.
-    
-    Returns:
-        (context_text, used_docs) tuple
+
+    context_mode:
+      passage_first — top passage_first_k docs get real markdown content;
+                      remaining docs fall back to topic/summary metadata (default).
+      topic         — all docs use title/summary/keywords metadata only.
+      full          — all docs load full markdown body.
     """
-    # Filter results by similarity threshold first.
     filtered_results = [
         item for item in results
         if float(item.get("score", 0.0)) >= similarity_threshold
     ]
-    
+
     context_parts: list[str] = []
     used_docs: list[dict[str, Any]] = []
     total_chars = 0
 
-    mode = (context_mode or "topic").strip().lower()
+    mode = (context_mode or "passage_first").strip().lower()
+    pk = max(1, int(passage_first_k)) if mode == "passage_first" else 0
 
     for i, item in enumerate(filtered_results[: max(1, int(max_context_docs))], start=1):
-        if mode == "topic":
+        use_full = (mode == "full") or (mode == "passage_first" and i <= pk)
+
+        if not use_full:
             segment, used_doc = _build_topic_context_segment(item, i)
             segment = segment + "\n"
         else:
             file_path = _resolve_result_path(item, documents_dir)
             if file_path is None or not file_path.is_file():
-                continue
-
-            try:
-                raw_text = file_path.read_text(encoding="utf-8", errors="ignore")
-            except Exception:
-                continue
-
-            clipped_text = raw_text[:max_chars_per_doc]
-            rel = str(item.get("relative_path", "")).strip() or file_path.name
-            topic = str(item.get("topic", "")).strip()
-            score = float(item.get("score", 0.0))
-
-            segment = (
-                f"[资料{i}] path={rel} score={score:.4f} topic={topic}\n"
-                f"{clipped_text}\n"
-            )
-            used_doc = {
-                "path": rel,
-                "score": score,
-                "topic": topic,
-            }
+                # Fallback to topic/summary when file is missing
+                segment, used_doc = _build_topic_context_segment(item, i)
+                segment = segment + "\n"
+            else:
+                try:
+                    raw_text = file_path.read_text(encoding="utf-8", errors="ignore")
+                except Exception:
+                    segment, used_doc = _build_topic_context_segment(item, i)
+                    segment = segment + "\n"
+                else:
+                    clipped_text = _extract_relevant_passage(raw_text, query, max_chars_per_doc, reranker_fn=reranker_fn)
+                    rel = str(item.get("relative_path", "")).strip() or file_path.name
+                    topic = str(item.get("topic", "")).strip()
+                    score = float(item.get("score", 0.0))
+                    segment = (
+                        f"[资料{i}] path={rel} score={score:.4f} topic={topic}\n"
+                        f"{clipped_text}\n"
+                    )
+                    used_doc = {
+                        "path": rel,
+                        "score": score,
+                        "topic": topic,
+                    }
 
         if total_chars + len(segment) > max_context_chars:
             break
@@ -1506,7 +1769,10 @@ def _load_context_hybrid(
     max_context_docs: int,
     max_chars_per_doc: int,
     similarity_threshold: float = 0.0,
-    context_mode: str = "topic",
+    context_mode: str = "passage_first",
+    passage_first_k: int = 3,
+    query: str = "",
+    reranker_fn: Any | None = None,
 ) -> tuple[str, list[dict[str, Any]]]:
     """Build context from mixed local/web rows sorted by score (desc)."""
     def _sort_score(item: dict[str, Any]) -> float:
@@ -1522,12 +1788,14 @@ def _load_context_hybrid(
             return 0.0
 
     sorted_rows = sorted(rows, key=_sort_score, reverse=True)
-    mode = (context_mode or "topic").strip().lower()
+    mode = (context_mode or "passage_first").strip().lower()
+    pk = max(1, int(passage_first_k)) if mode == "passage_first" else 0
 
     context_parts: list[str] = []
     used_docs: list[dict[str, Any]] = []
     total_chars = 0
     idx = 1
+    local_count = 0  # track how many local docs have been included for passage_first
 
     for item in sorted_rows:
         if len(used_docs) >= max(1, int(max_context_docs)):
@@ -1535,7 +1803,6 @@ def _load_context_hybrid(
         source = str(item.get("source", "local")).strip().lower()
         score = float(item.get("score", 0.0))
 
-        # Keep existing threshold behavior for local vector hits only.
         if source != "web" and score < float(similarity_threshold):
             continue
 
@@ -1555,41 +1822,49 @@ def _load_context_hybrid(
                 "topic": "web_search",
             }
         else:
-            if mode == "topic":
+            local_count += 1
+            use_full = (mode == "full") or (mode == "passage_first" and local_count <= pk)
+
+            if not use_full:
                 segment, used_doc = _build_topic_context_segment(item, idx)
                 segment = segment + "\n"
             else:
                 file_path = _resolve_result_path(item, documents_dir)
                 if file_path is None or not file_path.is_file():
-                    continue
-                try:
-                    raw_text = file_path.read_text(encoding="utf-8", errors="ignore")
-                except Exception:
-                    continue
-                clipped_text = raw_text[:max_chars_per_doc]
-                rel = str(item.get("relative_path", "")).strip() or file_path.name
-                topic = str(item.get("topic", "")).strip()
-                rerank_score = item.get("rerank_score")
-                score_text = f"score={score:.4f}"
-                try:
-                    if rerank_score is not None:
-                        score_text = f"{score_text} rerank={float(rerank_score):.4f}"
-                except Exception:
-                    pass
-                segment = (
-                    f"[资料{idx}] path={rel} {score_text} topic={topic}\n"
-                    f"{clipped_text}\n"
-                )
-                used_doc = {
-                    "path": rel,
-                    "score": score,
-                    "topic": topic,
-                }
-                try:
-                    if rerank_score is not None:
-                        used_doc["rerank_score"] = float(rerank_score)
-                except Exception:
-                    pass
+                    # Fallback to topic/summary when file is missing
+                    segment, used_doc = _build_topic_context_segment(item, idx)
+                    segment = segment + "\n"
+                else:
+                    try:
+                        raw_text = file_path.read_text(encoding="utf-8", errors="ignore")
+                    except Exception:
+                        segment, used_doc = _build_topic_context_segment(item, idx)
+                        segment = segment + "\n"
+                    else:
+                        clipped_text = _extract_relevant_passage(raw_text, query, max_chars_per_doc, reranker_fn=reranker_fn)
+                        rel = str(item.get("relative_path", "")).strip() or file_path.name
+                        topic = str(item.get("topic", "")).strip()
+                        rerank_score = item.get("rerank_score")
+                        score_text = f"score={score:.4f}"
+                        try:
+                            if rerank_score is not None:
+                                score_text = f"{score_text} rerank={float(rerank_score):.4f}"
+                        except Exception:
+                            pass
+                        segment = (
+                            f"[资料{idx}] path={rel} {score_text} topic={topic}\n"
+                            f"{clipped_text}\n"
+                        )
+                        used_doc = {
+                            "path": rel,
+                            "score": score,
+                            "topic": topic,
+                        }
+                        try:
+                            if rerank_score is not None:
+                                used_doc["rerank_score"] = float(rerank_score)
+                        except Exception:
+                            pass
 
         if total_chars + len(segment) > max_context_chars:
             break
@@ -1616,6 +1891,7 @@ def _ask_llm(
     trace_id: str = "",
     debug_trace: dict[str, Any] | None = None,
     llm_stats_sink: dict[str, Any] | None = None,
+    retrieval_confidence: str = "",
 ) -> str:
     if not api_url or not api_key or not model:
         raise RuntimeError("Missing API settings: api_url/api_key/model are required")
@@ -1623,45 +1899,56 @@ def _ask_llm(
     response_max_tokens = DEFAULT_RESPONSE_MAX_TOKENS_WITH_CONTEXT if context_text.strip() else DEFAULT_RESPONSE_MAX_TOKENS_NO_CONTEXT
 
     system_prompt = (
-        "你是一个知识助手，回答原则“\n"
+        "你是一个知识助手。回答时区分三类证据来源：\n"
+        "① 本地资料事实 — 直接陈述，可用「[资料N]」轻度标注来源编号\n"
+        "② 通用知识补充 — 行内或末尾标注「[通用知识]」\n"
+        "③ 推断/外推 — 标注「[推断]」，语气保守\n"
+        "严禁混淆三类来源或编造资料中不存在的事实。\n"
         f"当前调用类型 call_type={call_type or 'answer'}。\n\n"
-        "1) 优先依据提供的检索资料，用中文思考和回答回答；\n"
-        "2) 如果资料不足，可以使用通用知识补充，但需标注“推断”\n"
-        "3) 不允许编造资料中不存在的事实\n"
         "4) 如果资料无法回答，应明确说明\n"
         "5) 输出使用Markdown\n"
-        "6) 默认给出更完整的解释，不要只用一两句话结束；优先包含结论、原因机制、影响或局限。\n"
+        "6) 默认给出更完整的解释；优先包含结论、原因机制、影响或局限。\n"
     )
     
-    # Build user prompt based on whether we have context or not.
     memory_block = (memory_context or "").strip()
     memory_section = f"\n会话记忆(可为空):\n{memory_block}\n" if memory_block else ""
+
+    # Retrieval confidence note — injected when results are weak or absent
+    _conf = (retrieval_confidence or "").strip().lower()
+    if _conf == "none":
+        confidence_note = "检索结果：本地知识库中未找到相关资料，请主要依赖通用知识（须标注「[通用知识]」）。\n"
+    elif _conf == "weak":
+        confidence_note = "检索置信度：弱（相关性偏低），资料仅供参考，请适当降低确定性，补充通用知识须标注「[通用知识]」。\n"
+    else:
+        confidence_note = ""
 
     if context_text.strip():
         user_prompt = (
             "请先阅读下面的本地检索资料，再回答用户问题。\n"
             "会话记忆：\n"
             f"{memory_section}"
+            f"{confidence_note}"
             "检索资料：\n"
             f"资料:\n{context_text}\n\n"
-            "用户问题：：\n"
+            "用户问题：\n"
             f"问题:\n{question}\n"
             "回答要求：\n"
             "1) 如果问题复杂，允许进行简短思考（不超过400字），用<think>思考内容</think>标签包裹；\n"
-            "2) 基于资料和会话记忆 (如果不为空)给出最终答案；\n"
-            "3) 资料不足或必要时可用通用知识补充\n"
+            "2) 基于资料和会话记忆（如果不为空）给出最终答案；\n"
+            "3) 资料不足或有必要时可用通用知识补充，须标注「[通用知识]」；\n"
             "4) 默认至少写成 3 个要点或 2 段以上，说明背景、关键机制、实际影响；\n"
             "5) 不要编造不存在的细节；\n"
-            "6) 不要引用资料编号。\n\n"
+            "6) 可用「[资料N]」格式轻度引用来源，末尾不必重复完整资料列表。\n\n"
         )
     else:
         user_prompt = (
             "会话记忆：\n"
             f"{memory_section}"
-            "用户问题：：\n"
+            f"{confidence_note}"
+            "用户问题：\n"
             f"问题:\n{question}\n"
             "本地知识库中未找到与问题高度相关的资料。\n"
-            "请基于你的通用知识尝试回答以下问题，但请明确标注这是基于通用知识的推断，而非本地资料。\n"
+            "请基于通用知识回答下面问题，并明确标注「[通用知识]」，区分已知事实与推断（标「[推断]」）。\n"
             "回答要求：\n"
             "1) 明确说明未找到相关本地资料；\n"
             "2) 基于通用知识给出尽量完整的分析，不要只给结论；\n"
@@ -2222,6 +2509,33 @@ def run_rag_query(
 
     _emit_progress(args, "正在装载上下文片段...", progress_callback)
 
+    # Build a passage-level reranker callable reusing the already-warm model
+    # from the doc-level rerank step above (zero cold-start cost).
+    _rk_model = str(args.reranker_model or DEFAULT_RERANKER_MODEL).strip()
+    _rk_sidecar = str(getattr(args, "reranker_server_url", "") or "").strip()
+
+    def _passage_reranker_fn(pairs: list[tuple[str, str]]) -> list[float]:
+        if _rk_sidecar:
+            try:
+                from urllib import request as _urlreq  # noqa: PLC0415
+                body = json.dumps({"model": _rk_model, "pairs": pairs}, ensure_ascii=False).encode()
+                req = _urlreq.Request(
+                    _rk_sidecar.rstrip("/"), data=body,
+                    headers={"Content-Type": "application/json"}, method="POST",
+                )
+                opener = _urlreq.build_opener(_urlreq.ProxyHandler({}))
+                with opener.open(req, timeout=10) as resp:
+                    return [float(s) for s in json.loads(resp.read().decode())["scores"]]
+            except Exception:
+                pass
+        _rk = _RERANKER_CACHE.get(_rk_model)
+        if _rk is None:
+            return []
+        try:
+            return [float(s) for s in _rk.predict(pairs)]
+        except Exception:
+            return []
+
     context_t0 = time.perf_counter()
     context_text, used_docs = _load_context_hybrid(
         rows=hybrid_rows,
@@ -2230,7 +2544,10 @@ def run_rag_query(
         max_context_docs=max_context_docs,
         max_chars_per_doc=max(500, int(args.max_chars_per_doc)),
         similarity_threshold=local_threshold,
-        context_mode=str(args.context_mode or "topic"),
+        context_mode=str(args.context_mode or "passage_first"),
+        passage_first_k=DEFAULT_PASSAGE_FIRST_K,
+        query=question,
+        reranker_fn=_passage_reranker_fn if enable_rerank else None,
     )
     timings["context_assembly_seconds"] = round(time.perf_counter() - context_t0, 6)
     timings["web_search_seconds"] = round(time.perf_counter() - web_t0, 3)
@@ -2246,6 +2563,17 @@ def run_rag_query(
         f"本地候选 {len(results)} -> 重排保留 {len(reranked_local_rows)}（阈值后可用 {filtered_count}），联网补充 {len(web_results)} 个结果，上下文已加载（{len(context_text)} 字符），正在请求模型生成回答...",
         progress_callback,
     )
+
+    # Multi-signal retrieval confidence — uses definitive final_score as sole source
+    _top2_final_score_after = float(
+        reranked_local_rows[1].get("final_score", reranked_local_rows[1].get("rerank_score", reranked_local_rows[1].get("score", 0.0))) or 0.0
+    ) if len(reranked_local_rows) >= 2 else 0.0
+    _retrieval_confidence = _compute_retrieval_confidence(
+        top1_final=_top1_final_score_after,
+        top2_final=_top2_final_score_after,
+        candidate_count=len(reranked_local_rows),
+    )
+    timings["retrieval_confidence"] = _retrieval_confidence
 
     llm_stats: dict[str, Any] = {}
     llm_t0 = time.perf_counter()
@@ -2264,6 +2592,7 @@ def run_rag_query(
             trace_id=trace_id,
             debug_trace=debug_trace if debug_enabled else None,
             llm_stats_sink=llm_stats,
+            retrieval_confidence=_retrieval_confidence,
         )
     except Exception as exc:  # noqa: BLE001
         if args.allow_local_fallback and _is_local_llm_unavailable_error(str(exc)):
@@ -2273,6 +2602,20 @@ def run_rag_query(
         else:
             raise
     llm_elapsed = round(time.perf_counter() - llm_t0, 6)
+
+    # Citation contract: structurally bind answer claims to source passages.
+    # Strips phantom refs, auto-annotates strongly-matched uncited paragraphs,
+    # and attaches a structured citation_map to the payload for downstream use.
+    if context_text.strip():
+        answer, citation_map = _reconcile_citations(answer, used_docs, context_text)
+    else:
+        citation_map: dict[str, Any] = {
+            "cited_by_model": [],
+            "auto_annotated": [],
+            "phantom_refs": [],
+            "uncited_docs": [],
+            "doc_to_claims": {},
+        }
 
     session_title = _fallback_session_title(question)
 
@@ -2295,6 +2638,7 @@ def run_rag_query(
         "graph_expansion_batches": expanded_batches,
         "used_context_docs": used_docs,
         "max_context_docs": max_context_docs,
+        "citation_map": citation_map,
         "timings": timings,
         "llm": {
             "model": str(args.model or "").strip(),

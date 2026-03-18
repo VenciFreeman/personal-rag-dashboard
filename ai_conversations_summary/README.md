@@ -21,11 +21,26 @@ Raw Inputs
 ## 2. RAG 实现细节
 
 1. Query Rewrite（可选，默认开启）：最多生成 2 条检索 query，并保留原 query 的更高优先级。
-2. 多路向量召回：每条 query 在 FAISS 中独立召回。
-3. Merge + Rerank：合并去重后进行交叉编码精排，默认使用 `BAAI/bge-reranker-base`。
-4. 阈值过滤：低相关结果不进入上下文。
-5. 回答生成：本地或云端 LLM 基于上下文生成答案。
-6. 会话落盘：写入 `data/rag_sessions/`，并记录检索指标。
+2. Query Expansion Graph：每条 rewrite query 会先做图谱扩展，再进入向量召回；当前图谱定位是 query expansion，而不是 GraphRAG 式证据推理。
+3. 多路向量召回：每条 query 在 FAISS 中独立召回。
+4. Merge + Rerank：合并去重后进行交叉编码精排，默认使用 `BAAI/bge-reranker-base`，并带有 top1 guard / dynamic fusion alpha。
+5. 稀疏检索：keyword search 已从 substring scan 升级为轻量 BM25（ASCII token + CJK bigram）。
+6. 上下文装配默认使用 `passage_first`：
+   - top 文档优先抽取真实相关段落
+   - 其余文档保留 `title / summary / topic / keywords` 元数据
+7. Passage 选择采用两段式：
+   - 先按 query token overlap 预筛段落
+   - 再复用已热加载的 reranker 做 passage-level semantic selection
+8. 回答生成：本地或云端 LLM 基于上下文生成答案，prompt 中区分：
+   - 本地资料事实
+   - 通用知识补充
+   - 推断/外推
+9. 回答后处理包含 citation reconciliation：
+   - 清理不存在的 `[资料N]`
+   - 自动补标强匹配但未标注的段落
+   - 生成 `citation_map`
+10. `no_context` 由统一函数判定，综合 `threshold` 与 `retrieval_confidence`，并同步进入 trace / metrics / prompt framing。
+11. 会话落盘：写入 `data/rag_sessions/`，并记录检索指标。
 
 补充说明：当前 RAG 服务已经与 `nav_dashboard` 共用部分共享能力，并通过 Dashboard 汇总检索时延、缓存命中率、未命中率、rerank 换榜率等观测指标。
 
@@ -89,6 +104,7 @@ launch_web.bat
   - `AI_SUMMARY_ENABLE_QUERY_REWRITE`
   - `AI_SUMMARY_QUERY_REWRITE_COUNT`
   - `AI_SUMMARY_PRIMARY_QUERY_SCORE_BONUS`
+  - `AI_SUMMARY_PASSAGE_FIRST_K`
 - 联网检索：`TAVILY_API_KEY`
 
 默认值：
@@ -108,9 +124,18 @@ launch_web.bat
 
 - `nav_dashboard` 的文档工具会调用本服务的检索能力。
 - Agent 的 mixed/tech 路由会参考文档 embedding similarity 决定是否加入文档检索。
-- 因此这里的 query rewrite、rerank、threshold 调整会直接影响 Dashboard Agent 的路由表现与最终回答。
+- 因此这里的 query rewrite、BM25/向量融合、passage 选择、retrieval confidence 与 citation contract，会直接影响 Dashboard Agent 的文档回答质量与 no-context 判定。
 
-## 9. 说明
+## 9. 当前实现边界
+
+- 当前图谱主要用于 query expansion，不负责证据路径推理。
+- 当前 citation contract 已经做到 paragraph-level reconciliation，但还不是 claim-level hard binding。
+- 当前实现已经具备较完整的个人项目 RAG 骨架；继续优化时，优先级应放在：
+  1. claim-level citation binding
+  2. retrieval confidence 校准
+  3. regression / eval 样本沉淀
+
+## 10. 说明
 
 本 README 聚焦架构与落地流程；更细的调参、故障场景和发布细节请查看：
 

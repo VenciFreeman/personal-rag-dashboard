@@ -9,7 +9,7 @@
   <link rel="icon" type="image/png" sizes="16x16" href="/static/favicon_logosc/favicon-16x16.png" />
   <link rel="shortcut icon" href="/static/favicon_logosc/favicon.ico" />
   <link rel="manifest" href="/static/favicon_logosc/site.webmanifest" />
-  <link rel="stylesheet" href="/static/app.css?v=20260316f" />
+  <link rel="stylesheet" href="/static/app.css?v={{ css_version }}" />
 </head>
 <body data-local-model="{{ local_model }}" data-deepseek-model="{{ deepseek_model }}" data-ai-summary-url="{{ ai_summary_url }}" data-library-url="{{ library_tracker_url }}">
   <header class="top">
@@ -44,7 +44,26 @@
 
       <section class="panel quick-links">
         <h3>快捷卡片</h3>
-        <div id="custom-card-grid" class="custom-card-grid"></div>
+        <div id="custom-card-grid" class="custom-card-grid">
+          {%- set max_cards = 8 -%}
+          {%- for i in range(max_cards) -%}
+            {%- set card = browser_cards[i] if i < browser_cards|length else {} -%}
+            {%- set title = card.title | default('') | trim -%}
+            {%- set url   = card.url   | default('') | trim -%}
+            {%- set image = card.image | default('') | trim -%}
+            {%- if title and url -%}
+              <a class="custom-square-card" href="{{ url | e }}" target="_blank" rel="noopener noreferrer" title="点击打开，长按编辑（卡片 {{ i + 1 }}）">
+                <div class="card-bg" {% if image %}style="background-image:url('{{ image | e }}')"{% else %}style="background:linear-gradient(135deg,#3a3f34,#262821)"{% endif %}></div>
+                <div class="card-overlay"></div>
+                <div class="card-text">{{ title | e }}</div>
+              </a>
+            {%- else -%}
+              <button type="button" class="custom-square-card placeholder" title="配置快捷卡片 {{ i + 1 }}">
+                <div class="card-text plus">+</div>
+              </button>
+            {%- endif -%}
+          {%- endfor -%}
+        </div>
       </section>
 
       <section class="panel notes">
@@ -67,13 +86,13 @@
             <button id="agent-new-session">新建</button>
             <button id="agent-delete-session" class="ghost">删除</button>
           </div>
-          <ul id="agent-session-list" class="list"></ul>
+          <ul id="agent-session-list" class="list">{{ agent_sessions_html | safe }}</ul>
         </aside>
 
         <div class="main-panel chat-layout">
           <div class="rag-head">
             <h2 class="panel-heading">个人数据助理</h2>
-            <p id="qa-model">当前模型：(加载中)</p>
+            <p id="qa-model">当前模型：{{ local_model | e }}</p>
           </div>
 
           <div id="qa-messages" class="doc chat-box markdown-body"></div>
@@ -102,34 +121,24 @@
           <div>
             <strong class="panel-heading">系统状态总览</strong>
             <div class="dashboard-meta-group">
-              <div id="dashboard-generated-at" class="dashboard-meta">等待加载...</div>
-              <div id="dashboard-deploy-time" class="dashboard-meta dashboard-deploy-meta"></div>
+              <div id="dashboard-generated-at" class="dashboard-meta">{% if dashboard_prefill.get('generated_at') %}数据生成：{{ dashboard_prefill['generated_at'][:16] | e }}{% else %}等待加载...{% endif %}</div>
+              <div id="dashboard-deploy-time" class="dashboard-meta dashboard-deploy-meta">{% if dashboard_prefill.get('deployed_at') %}部署时间：{{ dashboard_prefill['deployed_at'] | e }}{% endif %}</div>
             </div>
           </div>
           <button id="dashboard-refresh" class="ghost">刷新统计</button>
         </div>
 
-        <div id="dashboard-grid" class="dashboard-grid"></div>
+        <div id="dashboard-grid" class="dashboard-grid">{{ dashboard_grid_html | safe }}</div>
 
         <div class="stats-table-wrap dashboard-table-wrap">
           <table class="stats-table" id="dashboard-latency-table">
-            <tbody>
-              <tr>
-                <td>检索阶段时延</td>
-                <td>等待加载...</td>
-              </tr>
-            </tbody>
+            {{ dashboard_latency_table_html | safe }}
           </table>
         </div>
 
         <div class="stats-table-wrap dashboard-table-wrap">
           <table class="stats-table" id="dashboard-observability-table">
-            <tbody>
-              <tr>
-                <td>分层观测</td>
-                <td>等待加载...</td>
-              </tr>
-            </tbody>
+            {{ dashboard_observability_table_html | safe }}
           </table>
         </div>
 
@@ -160,31 +169,31 @@
             </div>
           </div>
           <div id="dashboard-jobs-list" class="dashboard-job-list">
-            <div class="dashboard-job-empty">等待加载任务...</div>
+            {{ dashboard_jobs_html | safe }}
           </div>
         </section>
 
         <section class="dashboard-ticket-insights">
           <section class="panel-shell dashboard-ticket-summary-panel">
             <div class="dashboard-log-head">近几周 Ticket 概览</div>
-            <div id="dashboard-ticket-summary-meta" class="dashboard-meta">等待加载 ticket 统计...</div>
+            <div id="dashboard-ticket-summary-meta" class="dashboard-meta">{{ dashboard_ticket_summary_meta | e }}</div>
             <div id="dashboard-ticket-summary-body" class="dashboard-ticket-summary-body">
-              <div class="ticket-trend-empty">等待加载统计...</div>
+              {{ dashboard_ticket_summary_html | safe }}
             </div>
           </section>
 
           <section class="panel-shell dashboard-ticket-trend-panel">
             <div class="dashboard-log-head">Ticket 周趋势</div>
-            <div id="dashboard-ticket-trend-meta" class="dashboard-meta">等待加载 ticket 周统计...</div>
+            <div id="dashboard-ticket-trend-meta" class="dashboard-meta">{{ dashboard_ticket_trend_meta | e }}</div>
             <div id="dashboard-ticket-trend-chart" class="ticket-trend-chart">
-              <div class="ticket-trend-empty">等待加载图表...</div>
+              {{ dashboard_ticket_trend_html | safe }}
             </div>
           </section>
         </section>
 
         <section class="dashboard-log-panel">
           <div class="dashboard-log-head">启动一致性检查日志</div>
-          <pre id="dashboard-startup-logs" class="dashboard-log-window">等待加载...</pre>
+          <pre id="dashboard-startup-logs" class="dashboard-log-window">{{ dashboard_startup_logs_text | e }}</pre>
         </section>
       </div>
     </section>
@@ -194,7 +203,7 @@
         <div class="stats-toolbar dashboard-toolbar">
           <div>
             <strong class="panel-heading">性能基准测试</strong>
-            <div class="dashboard-meta"><span id="benchmark-last-run">从未运行</span>&nbsp;&nbsp;<span id="bm-timer" class="bm-timer"></span></div>
+            <div class="dashboard-meta"><span id="benchmark-last-run">{{ benchmark_last_run_text | e }}</span>&nbsp;&nbsp;<span id="bm-timer" class="bm-timer"></span></div>
           </div>
         </div>
 
@@ -216,8 +225,7 @@
           </div>
           <label class="benchmark-inline-field">测试样本池
             <select id="bm-case-set-select" class="bm-testset-select">
-              <option value="smoke_v1">smoke_v1 / 快速烟测样本池</option>
-              <option value="regression_v1" selected>regression_v1 / 基线回归样本池</option>
+              {{ benchmark_case_set_options_html | safe }}
             </select>
           </label>
           <div class="benchmark-section-label" style="margin-top:8px">每类 Query 条数</div>
@@ -257,9 +265,7 @@
 
         <div class="stats-table-wrap">
           <table class="stats-table" id="bm-history-table">
-            <tbody>
-              <tr><td colspan="5" style="text-align:center;color:#7a7f6f">运行测试后查看历史对比数据</td></tr>
-            </tbody>
+            {{ benchmark_history_table_html | safe }}
           </table>
         </div>
 
@@ -273,6 +279,59 @@
             <div class="trace-result-empty">暂无 case trace 数据</div>
           </div>
         </section>
+
+        <section class="panel-shell bm-router-cls-panel">
+          <div class="dashboard-log-head bm-router-cls-head">
+            <span>Router 分类回归</span>
+            <div class="bm-router-cls-toolbar">
+              <span id="bm-router-cls-meta" class="dashboard-meta">对已知分类路径做一致性验证，不调用 LLM，秒级完成</span>
+              <button id="bm-router-cls-run" type="button">▶ 跑分类</button>
+            </div>
+          </div>
+          <div id="bm-router-cls-summary" class="bm-router-cls-summary hidden"></div>
+          <div id="bm-router-cls-table-wrap" class="stats-table-wrap hidden">
+            <table class="stats-table bm-router-cls-table" id="bm-router-cls-table">
+              <thead>
+                <tr>
+                  <th>Query</th>
+                  <th>期望 domain</th>
+                  <th>期望 arbitration</th>
+                  <th>实际 domain</th>
+                  <th>实际 arbitration</th>
+                  <th>结果</th>
+                  <th>备注</th>
+                </tr>
+              </thead>
+              <tbody id="bm-router-cls-tbody"></tbody>
+            </table>
+          </div>
+        </section>
+
+        <section class="panel-shell bm-unit-tests-panel">
+          <div class="dashboard-log-head bm-unit-tests-head">
+            <span>单元 / 回归测试</span>
+            <div class="bm-unit-tests-toolbar">
+              <span id="bm-unit-tests-meta" class="dashboard-meta">在进程内运行 unittest 套件，无需调用 LLM，秒级完成</span>
+              <button id="bm-unit-tests-run" type="button">▶ 跑测试</button>
+            </div>
+          </div>
+          <div class="bm-unit-tests-suite-select">
+            <label class="benchmark-checkbox-label">
+              <input type="checkbox" class="bm-ut-suite" value="regression_router" checked> Router 回归
+            </label>
+            <label class="benchmark-checkbox-label">
+              <input type="checkbox" class="bm-ut-suite" value="post_retrieval" checked> PostRetrieval Policy
+            </label>
+            <label class="benchmark-checkbox-label">
+              <input type="checkbox" class="bm-ut-suite" value="answer" checked> Answer Policy
+            </label>
+            <label class="benchmark-checkbox-label">
+              <input type="checkbox" class="bm-ut-suite" value="agent_e2e" checked> Agent E2E Chain
+            </label>
+          </div>
+          <div id="bm-unit-tests-summary" class="bm-router-cls-summary hidden"></div>
+          <div id="bm-unit-tests-results" class="bm-unit-tests-results hidden"></div>
+        </section>
       </div>
     </section>
 
@@ -282,7 +341,7 @@
           <div class="stats-toolbar">
             <div>
               <strong class="panel-heading">Issue Tickets</strong>
-              <div id="tickets-meta" class="dashboard-meta">等待加载 tickets...</div>
+              <div id="tickets-meta" class="dashboard-meta">{{ tickets_meta_text | e }}</div>
             </div>
             <div class="tickets-toolbar-actions">
               <button id="tickets-refresh-btn" class="ghost" type="button">刷新</button>
@@ -344,7 +403,7 @@
               </div>
             </div>
             <div id="tickets-list" class="tickets-list">
-              <div class="dashboard-job-empty">等待加载 tickets...</div>
+              {{ tickets_list_html | safe }}
             </div>
           </section>
 
@@ -689,6 +748,8 @@
 
   <script id="custom-cards-data" type="application/json">{{ custom_cards_json | safe }}</script>
   <script id="dashboard-prefill-data" type="application/json">{{ dashboard_prefill_json | safe }}</script>
+  <script id="tickets-prefill-data" type="application/json">{{ tickets_prefill_json | safe }}</script>
+  <script id="benchmark-prefill-data" type="application/json">{{ benchmark_prefill_json | safe }}</script>
 
   <div id="usage-edit-modal" class="card-modal hidden" aria-hidden="true">
     <div class="card-modal-backdrop" data-role="usage-edit-backdrop"></div>
@@ -710,6 +771,6 @@
     </div>
   </div>
 
-  <script src="/static/app.js?v=20260316f"></script>
+  <script src="/static/app.js?v={{ js_version }}" defer></script>
 </body>
 </html>

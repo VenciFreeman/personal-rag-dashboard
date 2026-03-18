@@ -4,6 +4,8 @@ let latestResults = [];
 let currentSearchOffset = 0;
 let currentSearchLimit = 50;
 let currentSearchTotal = 0;
+let _searchSerial = 0;
+let _searchAbortController = null;
 let currentPreviewIndex = -1;
 let editingItemId = "";
 let editingCoverPath = null;
@@ -14,6 +16,7 @@ let formSuggestionMeta = { fields: {} };
 const cardPointerState = new WeakMap();
 let currentRating = null;
 let statsBootstrapped = false;
+let _statsBootstrapping = false;
 const statsCharts = {};
 const STATS_MEDIA_TYPES = ["book", "video", "music", "game"];
 const FORM_SUGGESTION_FIELDS = ["author", "nationality", "category", "channel", "publisher"];
@@ -393,11 +396,13 @@ async function apiGet(url) {
   return r.json();
 }
 
-async function apiPost(url, payload) {
+async function apiPost(url, payload, options = {}) {
+  const { signal } = options;
   const r = await fetch(url, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify(payload),
+    ...(signal ? { signal } : {}),
   });
   if (!r.ok) throw new Error(await r.text());
   return r.json();
@@ -474,8 +479,10 @@ function setTab(name) {
     panel.classList.toggle("active", panel.id === `panel-${name}`);
   }
 
-  if (name === "stats" && !statsBootstrapped) {
+  if (name === "stats" && !statsBootstrapped && !_statsBootstrapping) {
+    _statsBootstrapping = true;
     bootstrapStatsTab().catch((err) => {
+      _statsBootstrapping = false;
       console.error(err);
       alert(`统计页初始化失败: ${err.message}`);
     });
@@ -686,7 +693,21 @@ async function refreshStatsCharts() {
   }
 }
 
+let _chartJsLoaded = false;
+
+async function _ensureChartJs() {
+  if (typeof Chart !== "undefined" || _chartJsLoaded) return;
+  await new Promise((resolve, reject) => {
+    const s = document.createElement("script");
+    s.src = "https://cdn.jsdelivr.net/npm/chart.js@4.4.3/dist/chart.umd.min.js";
+    s.onload = () => { _chartJsLoaded = true; resolve(); };
+    s.onerror = () => reject(new Error("Chart.js 加载失败"));
+    document.head.appendChild(s);
+  });
+}
+
 async function bootstrapStatsTab() {
+  await _ensureChartJs();
   const overview = await apiGet("/api/library/stats/overview");
   renderStatsOverview(overview);
   fillStatsFieldOptions(overview?.dimension_fields || []);
@@ -715,6 +736,7 @@ async function bootstrapStatsTab() {
 
   await refreshStatsCharts();
   statsBootstrapped = true;
+  _statsBootstrapping = false;
 }
 
 function selectedFilters() {
@@ -1493,12 +1515,26 @@ async function saveDialog() {
 
   const scrollTargetId = editingItemId || "";
   const savedOffset = currentSearchOffset;
+  // Capture scroll position before re-render so we can restore it exactly —
+  // the same reason cancel works perfectly: it never re-renders the list at all.
+  const mainPanel = document.querySelector(".main-panel");
+  const savedScrollTop = mainPanel ? mainPanel.scrollTop : 0;
   showToast("保存成功");
   document.getElementById("item-dialog").close();
   await runSearch(currentMode, { offset: savedOffset });
+  // Restore scroll position first; only scroll to the card if it ended up
+  // outside the visible area (e.g. the card grew/shrank and pushed it off-screen).
+  if (mainPanel) mainPanel.scrollTop = savedScrollTop;
   if (scrollTargetId) {
     const targetCard = document.querySelector(`[data-item-id="${scrollTargetId}"]`);
-    if (targetCard) targetCard.scrollIntoView({ block: "center", behavior: "smooth" });
+    if (targetCard) {
+      const panelRect = mainPanel ? mainPanel.getBoundingClientRect() : null;
+      const cardRect = targetCard.getBoundingClientRect();
+      const visible = panelRect
+        ? cardRect.top >= panelRect.top && cardRect.bottom <= panelRect.bottom
+        : cardRect.top >= 0 && cardRect.bottom <= window.innerHeight;
+      if (!visible) targetCard.scrollIntoView({ block: "nearest", behavior: "instant" });
+    }
   }
   const [metaPayload, suggestionPayload] = await Promise.all([
     apiGet("/api/library/meta"),
@@ -1528,14 +1564,36 @@ async function runSearch(mode, options = {}) {
   currentMode = mode;
   const query = document.getElementById("query-input").value || "";
   const offset = Number.isFinite(Number(options?.offset)) ? Math.max(0, Number(options.offset)) : 0;
-  const payload = await apiPost("/api/library/search", {
-    query,
-    mode,
-    limit: currentSearchLimit,
-    offset,
-    filters: selectedFilters(),
-  });
-  renderResults(payload);
+
+  // Cancel any in-flight request and bump the serial so stale results are dropped.
+  if (_searchAbortController) {
+    _searchAbortController.abort();
+  }
+  _searchAbortController = new AbortController();
+  const { signal } = _searchAbortController;
+  const serial = ++_searchSerial;
+
+  // Disable pagination buttons for the duration of this request.
+  const _pageIds = ["result-page-first", "result-page-prev", "result-page-next", "result-page-last"];
+  _pageIds.forEach((id) => { const el = document.getElementById(id); if (el) el.disabled = true; });
+
+  try {
+    const payload = await apiPost("/api/library/search", {
+      query,
+      mode,
+      limit: currentSearchLimit,
+      offset,
+      filters: selectedFilters(),
+    }, { signal });
+    if (serial !== _searchSerial) return; // stale — a newer request has already fired
+    renderResults(payload);
+  } catch (err) {
+    if (err && err.name === "AbortError") return; // cancelled intentionally
+    if (serial !== _searchSerial) return; // stale error, ignore
+    // Re-enable so the user can retry.
+    _pageIds.forEach((id) => { const el = document.getElementById(id); if (el) el.disabled = false; });
+    throw err;
+  }
 }
 
 async function refreshPendingEmbeddings() {
@@ -1765,20 +1823,43 @@ async function bootstrap() {
     await saveDialog();
   });
 
-  const [metaPayload, suggestionPayload] = await Promise.all([
-    apiGet("/api/library/meta"),
-    apiGet("/api/library/suggestions"),
-  ]);
-  filterMeta = metaPayload;
-  formSuggestionMeta = normalizeSuggestionPayload(suggestionPayload);
+  // Single bootstrap call replaces the sequential /meta + /suggestions + /facets + /search
+  // that used to fire 4 separate full-scan requests on every cold start.
+  let bootstrapData;
   try {
-    await refreshFacetsAndFilters();
+    bootstrapData = await apiGet("/api/library/bootstrap?limit=50");
   } catch (err) {
-    // Keep page usable even if facets endpoint is temporarily unavailable.
-    console.error(err);
-    renderFilters(filterMeta, null);
+    console.error("bootstrap failed, falling back:", err);
+    // Fallback: individual requests so the page still works if the endpoint is missing
+    const [metaPayload, suggestionPayload] = await Promise.all([
+      apiGet("/api/library/meta"),
+      apiGet("/api/library/suggestions"),
+    ]);
+    filterMeta = metaPayload;
+    formSuggestionMeta = normalizeSuggestionPayload(suggestionPayload);
+    try {
+      await refreshFacetsAndFilters();
+    } catch (e) {
+      console.error(e);
+      renderFilters(filterMeta, null);
+    }
+    await runSearch("keyword");
+    await tryOpenPreviewItemFromLocation();
+    window.addEventListener("hashchange", () => {
+      tryOpenPreviewItemFromLocation().catch(() => {});
+    });
+    return;
   }
-  await runSearch("keyword");
+
+  // Unpack the combined bootstrap payload
+  filterMeta = { filters: bootstrapData.filter_options || {} };
+  formSuggestionMeta = normalizeSuggestionPayload({ fields: bootstrapData.suggestions || {} });
+  // Render filters immediately using the returned facets (no extra round-trip needed)
+  renderFilters(filterMeta, bootstrapData.facets || {});
+  // Use the pre-fetched first-page results directly
+  if (bootstrapData.initial_search) {
+    renderResults(bootstrapData.initial_search);
+  }
   await tryOpenPreviewItemFromLocation();
   window.addEventListener("hashchange", () => {
     tryOpenPreviewItemFromLocation().catch(() => {});

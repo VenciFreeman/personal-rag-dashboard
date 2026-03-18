@@ -13,6 +13,9 @@ body {
   overflow-y: auto;
   touch-action: pan-y;
 }
+.hidden {
+  display: none !important;
+}
 .top {
   position: static;
   padding: 12px 16px;
@@ -48,9 +51,13 @@ body {
   color: #11120f;
   border-color: #66d9ef;
 }
-.tab-panel { display: none; }
+.tab-panel {
+  display: none;
+  pointer-events: none;
+}
 .tab-panel.active {
   display: block;
+  pointer-events: auto;
 }
 .panel {
   background: #2f3129;
@@ -60,6 +67,21 @@ body {
   height: 100%;
   min-height: 0;
   overflow: hidden;
+}
+
+.ui-debug-status {
+  position: fixed;
+  left: 10px;
+  bottom: 10px;
+  z-index: 1700;
+  max-width: min(92vw, 760px);
+  padding: 6px 10px;
+  border-radius: 8px;
+  border: 1px solid #7f894d;
+  background: rgba(18, 25, 14, 0.92);
+  color: #eaf2c6;
+  font: 12px/1.4 Consolas, "Courier New", monospace;
+  box-shadow: 0 4px 16px rgba(0, 0, 0, 0.35);
 }
 
 #panel-dashboard {
@@ -935,6 +957,23 @@ body {
   .dashboard-job-list {
     max-height: none;
     overflow: visible;
+  }
+
+  /* Task center: let content grow and show fully on mobile */
+  .dashboard-task-center {
+    overflow: visible;
+    grid-template-rows: auto auto;
+  }
+
+  /* Expanded job row: replace 1fr (collapses in auto-height parent) with auto */
+  .dashboard-job-expanded {
+    grid-template-rows: auto auto auto;
+  }
+
+  /* Benchmark panels: constrain to viewport width so inner table scroll works */
+  .stats-layout .panel-shell {
+    min-width: 0;
+    max-width: 100%;
   }
 
   .tickets-filter-grid {
@@ -2089,7 +2128,23 @@ button:disabled { opacity: 0.6; cursor: not-allowed; }
   }
 
   .dashboard-job-list {
-    max-height: 240px;
+    max-height: none;
+    overflow: visible;
+  }
+
+  .dashboard-task-center {
+    overflow: visible;
+    grid-template-rows: auto auto;
+  }
+
+  .dashboard-job-expanded {
+    grid-template-rows: auto auto auto;
+  }
+
+  .dashboard-job-log-window {
+    height: auto;
+    min-height: 160px;
+    max-height: min(42dvh, 320px);
   }
 }
 
@@ -2224,6 +2279,26 @@ button:disabled { opacity: 0.6; cursor: not-allowed; }
   .dashboard-task-center-head {
     align-items: flex-start;
     flex-direction: column;
+  }
+
+  .dashboard-task-center {
+    overflow: visible;
+    grid-template-rows: auto auto;
+  }
+
+  .dashboard-job-list {
+    max-height: none;
+    overflow: visible;
+  }
+
+  .dashboard-job-expanded {
+    grid-template-rows: auto auto auto;
+  }
+
+  .dashboard-job-log-window {
+    height: auto;
+    min-height: 160px;
+    max-height: min(42dvh, 320px);
   }
 
   .ticket-trend-chart {
@@ -2718,10 +2793,144 @@ button:disabled { opacity: 0.6; cursor: not-allowed; }
   font-size: 11px;
 }
 
+/* ─── Router Classification Panel ─────────────────────────────────────── */
+.bm-router-cls-panel {
+  margin-top: 10px;
+}
+
+.bm-router-cls-head {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-wrap: wrap;
+}
+
+.bm-router-cls-toolbar {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex: 1;
+  min-width: 0;
+}
+
+.bm-router-cls-summary {
+  padding: 6px 12px;
+  border-radius: 4px;
+  font-size: 13px;
+  font-weight: 600;
+  margin-bottom: 8px;
+}
+
+.bm-router-cls-summary.bm-cls-pass {
+  background: #d4edda;
+  color: #155724;
+}
+
+.bm-router-cls-summary.bm-cls-fail {
+  background: #f8d7da;
+  color: #721c24;
+}
+
+.bm-router-cls-table td,
+.bm-router-cls-table th {
+  font-size: 12px;
+  white-space: nowrap;
+}
+
+.bm-cls-query {
+  max-width: 200px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  cursor: default;
+}
+
+.bm-cls-note {
+  color: #7a7f6f;
+  font-size: 11px;
+  max-width: 160px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.bm-cls-row-fail {
+  background: #fff8f8;
+}
+
+.bm-cls-cell-fail {
+  color: #c0392b;
+  font-weight: 600;
+}
+
 .bm-assert-fail-more {
   color: #9da392;
   font-size: 11px;
 }
+
+/* ── Unit / regression test runner panel ──────────────────────────────────── */
+.bm-unit-tests-panel {
+  margin-top: 10px;
+}
+
+.bm-unit-tests-head {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-wrap: wrap;
+}
+
+.bm-unit-tests-toolbar {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex: 1;
+  min-width: 0;
+}
+
+.bm-unit-tests-suite-select {
+  display: flex;
+  gap: 16px;
+  flex-wrap: wrap;
+  padding: 8px 0 4px 0;
+}
+
+.bm-unit-tests-results {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  margin-top: 8px;
+}
+
+.bm-ut-suite-block {
+  border: 1px solid #35372f;
+  border-radius: 6px;
+  overflow: hidden;
+}
+
+.bm-ut-suite-pass .bm-ut-suite-header {
+  background: #d4edda;
+  color: #155724;
+}
+
+.bm-ut-suite-fail .bm-ut-suite-header {
+  background: #f8d7da;
+  color: #721c24;
+}
+
+.bm-ut-suite-header {
+  padding: 6px 12px;
+  font-size: 13px;
+  font-weight: 600;
+}
+
+.bm-ut-suite-table-wrap {
+  max-height: 320px;
+  overflow-y: auto;
+}
+
+.bm-cls-row-skip td {
+  color: #8a8f7f;
+}
+
 
 .bm-case-card {
   background: #1d1f1a;

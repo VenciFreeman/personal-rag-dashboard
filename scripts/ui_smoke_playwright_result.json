@@ -1,0 +1,98 @@
+{
+  "base": "http://127.0.0.1:8092",
+  "steps": [
+    {
+      "name": "tab-agent",
+      "selector": "#tab-agent",
+      "clicked": true,
+      "ok": true,
+      "detail": "#panel-agent active"
+    },
+    {
+      "name": "tab-dashboard",
+      "selector": "#tab-dashboard",
+      "clicked": true,
+      "ok": true,
+      "detail": "#panel-dashboard active"
+    },
+    {
+      "name": "tab-tickets",
+      "selector": "#tab-tickets",
+      "clicked": true,
+      "ok": true,
+      "detail": "#panel-tickets active"
+    },
+    {
+      "name": "tab-benchmark",
+      "selector": "#tab-benchmark",
+      "clicked": true,
+      "ok": true,
+      "detail": "#panel-benchmark active"
+    },
+    {
+      "name": "tab-agent-again",
+      "selector": "#tab-agent",
+      "clicked": true,
+      "ok": true,
+      "detail": "#panel-agent active"
+    },
+    {
+      "name": "ask-local",
+      "selector": "#qa-ask-local",
+      "clicked": true,
+      "ok": true,
+      "detail": ""
+    },
+    {
+      "name": "ask-hybrid",
+      "selector": "#qa-ask",
+      "clicked": true,
+      "ok": true,
+      "detail": ""
+    },
+    {
+      "name": "tab-tickets-again",
+      "selector": "#tab-tickets",
+      "clicked": true,
+      "ok": true,
+      "detail": "#panel-tickets active"
+    },
+    {
+      "name": "ticket-first-item",
+      "selector": "#tickets-list .ticket-list-item",
+      "clicked": true,
+      "ok": true,
+      "detail": ""
+    },
+    {
+      "name": "tab-benchmark-again",
+      "selector": "#tab-benchmark",
+      "clicked": true,
+      "ok": true,
+      "detail": "#panel-benchmark active"
+    },
+    {
+      "name": "benchmark-run",
+      "selector": "#bm-run-btn",
+      "clicked": true,
+      "ok": true,
+      "detail": ""
+    },
+    {
+      "name": "benchmark-router-cls",
+      "selector": "#bm-router-cls-run",
+      "clicked": true,
+      "ok": true,
+      "detail": ""
+    },
+    {
+      "name": "benchmark-unit-tests",
+      "selector": "#bm-unit-tests-run",
+      "clicked": true,
+      "ok": true,
+      "detail": ""
+    }
+  ],
+  "page_errors": [],
+  "console_errors": []
+}

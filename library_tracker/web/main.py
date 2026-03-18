@@ -33,11 +33,17 @@ app.include_router(library_router)
 
 @app.on_event("startup")
 async def _startup_embedding_check() -> None:
-    """On startup, finish any embedding/graph rebuilds that were interrupted last run."""
+    """On startup, finish any embedding/graph rebuilds that were interrupted last run.
+
+    Delayed by 8 seconds so the first user requests are not competing with
+    the embedding worker for CPU / IO.
+    """
     import threading
+    import time
     from web.services import library_service
 
     def _run():
+        time.sleep(8)
         try:
             library_service.refresh_pending_embeddings()
         except Exception:  # noqa: BLE001

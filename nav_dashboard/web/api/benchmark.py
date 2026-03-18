@@ -21,7 +21,9 @@ from __future__ import annotations
 
 import json
 import os
+import sys
 import time
+import unittest
 from datetime import datetime
 from pathlib import Path
 from typing import Any
@@ -868,7 +870,7 @@ ROUTER_CLASSIFICATION_CASES: list[dict[str, Any]] = [
     # ── entity_wins / media_surface_wins ──────────────────────────────────────
     {"query": "《教父》的导演是谁",              "mock_label": "MEDIA", "mock_domain": "media",  "mock_entities": ["教父"],   "mock_lu": "entity_lookup",   "exp_domain": "media",   "exp_arb_any": ["entity_wins", "media_surface_wins"], "note": "《》 title → surface or entity"},
     {"query": "《三体》作者刘慈欣的其他作品",    "mock_label": "MEDIA", "mock_domain": "media",  "mock_entities": ["三体"],   "mock_lu": "entity_lookup",   "exp_domain": "media",   "exp_arb_any": ["entity_wins", "media_surface_wins"], "note": "book entity"},
-    {"query": "波拉尼奥的小说有哪些",            "mock_label": "MEDIA", "mock_domain": "media",  "mock_entities": ["波拉尼奥"], "mock_lu": "entity_lookup",  "exp_domain": "media",   "exp_arb": "entity_wins",             "note": "author entity without 《》"},
+    {"query": "波拉尼奥的小说有哪些",            "mock_label": "MEDIA", "mock_domain": "media",  "mock_entities": ["波拉尼奥"], "mock_lu": "entity_lookup",  "exp_domain": "media",   "exp_arb_any": ["entity_wins", "media_surface_wins"], "note": "author entity; 小说 fires media_surface_wins too"},
     # ── media_surface_wins ────────────────────────────────────────────────────
     {"query": "推荐几部法国新浪潮电影",          "mock_label": "MEDIA", "mock_domain": "media",  "mock_entities": [],        "mock_lu": "filter_search",   "exp_domain": "media",   "exp_arb": "media_surface_wins",      "note": "电影 surface cue"},
     {"query": "2023年值得一看的日本动漫",        "mock_label": "MEDIA", "mock_domain": "media",  "mock_entities": [],        "mock_lu": "filter_search",   "exp_domain": "media",   "exp_arb": "media_surface_wins",      "note": "动漫 surface + year"},
@@ -1038,3 +1040,163 @@ def post_router_classification() -> dict[str, Any]:
 @router.get("/router-classification/history")
 def get_router_classification_history() -> dict[str, Any]:
     return {"results": _load_router_cls_history()}
+
+
+# ─── Unit / regression test runner ───────────────────────────────────────────
+
+_REPO_ROOT = Path(__file__).resolve().parents[3]
+
+UNIT_TEST_SUITES: dict[str, dict[str, Any]] = {
+    "regression_router": {
+        "label": "Router 回归",
+        "file": _REPO_ROOT / "scripts" / "regression_router.py",
+    },
+    "post_retrieval": {
+        "label": "PostRetrieval Policy",
+        "file": _REPO_ROOT / "tests" / "post_retrieval" / "test_policy.py",
+    },
+    "answer": {
+        "label": "Answer Policy",
+        "file": _REPO_ROOT / "tests" / "answer" / "test_policy.py",
+    },
+    "agent_e2e": {
+        "label": "Agent E2E Chain",
+        "file": _REPO_ROOT / "tests" / "agent_e2e" / "test_chain.py",
+    },
+}
+
+
+class _CollectingResult(unittest.TestResult):
+    """Custom TestResult that captures per-test outcomes with short messages."""
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.test_outcomes: list[dict[str, Any]] = []
+
+    def addSuccess(self, test: unittest.TestCase) -> None:
+        self.test_outcomes.append({"id": test.id(), "status": "pass", "message": ""})
+
+    def addFailure(self, test: unittest.TestCase, err: Any) -> None:
+        super().addFailure(test, err)
+        msg = str(err[1])[:300] if err and err[1] else ""
+        self.test_outcomes.append({"id": test.id(), "status": "fail", "message": msg})
+
+    def addError(self, test: unittest.TestCase, err: Any) -> None:
+        super().addError(test, err)
+        msg = str(err[1])[:300] if err and err[1] else ""
+        self.test_outcomes.append({"id": test.id(), "status": "error", "message": msg})
+
+    def addSkip(self, test: unittest.TestCase, reason: str) -> None:
+        super().addSkip(test, reason)
+        self.test_outcomes.append({"id": test.id(), "status": "skip", "message": reason})
+
+
+def _run_unit_test_suite(suite_id: str, suite_def: dict[str, Any]) -> dict[str, Any]:
+    """Dynamically load a unittest file and run it in-process."""
+    import importlib.util as _ilu
+    import sys as _sys
+
+    file_path = Path(suite_def["file"])
+    label = str(suite_def.get("label") or suite_id)
+
+    if not file_path.is_file():
+        return {
+            "id": suite_id,
+            "label": label,
+            "elapsed_seconds": 0.0,
+            "passed": 0,
+            "failed": 0,
+            "errors": 1,
+            "tests": [{"id": "<setup>", "status": "error", "message": f"File not found: {file_path}"}],
+        }
+
+    # Ensure repo root is on sys.path (needed by test modules that import from tests.conftest)
+    repo_root = str(_REPO_ROOT)
+    if repo_root not in _sys.path:
+        _sys.path.insert(0, repo_root)
+
+    try:
+        module_name = f"_bm_dynsuite_{suite_id}"
+        spec = _ilu.spec_from_file_location(module_name, file_path)
+        if spec is None or spec.loader is None:
+            raise ImportError(f"Cannot create spec for {file_path}")
+        module = _ilu.module_from_spec(spec)
+        _sys.modules[module_name] = module  # must be registered before exec so @dataclass can resolve cls.__module__
+        spec.loader.exec_module(module)  # type: ignore[union-attr]
+
+        loader = unittest.TestLoader()
+        suite = loader.loadTestsFromModule(module)
+
+        result = _CollectingResult()
+        t0 = time.perf_counter()
+        suite.run(result)
+        elapsed = round(time.perf_counter() - t0, 3)
+
+        passed = sum(1 for t in result.test_outcomes if t["status"] == "pass")
+        failed = sum(1 for t in result.test_outcomes if t["status"] == "fail")
+        errors = sum(1 for t in result.test_outcomes if t["status"] == "error")
+
+        return {
+            "id": suite_id,
+            "label": label,
+            "elapsed_seconds": elapsed,
+            "passed": passed,
+            "failed": failed,
+            "errors": errors,
+            "tests": result.test_outcomes,
+        }
+    except Exception as exc:
+        return {
+            "id": suite_id,
+            "label": label,
+            "elapsed_seconds": 0.0,
+            "passed": 0,
+            "failed": 0,
+            "errors": 1,
+            "tests": [{"id": "<import>", "status": "error", "message": str(exc)[:400]}],
+        }
+
+
+class UnitTestPayload(BaseModel):
+    suites: list[str] = Field(
+        default_factory=lambda: list(UNIT_TEST_SUITES.keys())
+    )
+
+
+@router.get("/unit-tests/suites")
+def get_unit_test_suites() -> dict[str, Any]:
+    """Return available unittest suite definitions."""
+    return {
+        "suites": [
+            {"id": sid, "label": sdef["label"]}
+            for sid, sdef in UNIT_TEST_SUITES.items()
+        ]
+    }
+
+
+@router.post("/unit-tests")
+def post_unit_tests(payload: UnitTestPayload) -> dict[str, Any]:
+    """Run selected unittest suites in-process without LLM calls."""
+    suites_to_run = [s for s in payload.suites if s in UNIT_TEST_SUITES]
+    if not suites_to_run:
+        raise HTTPException(status_code=400, detail="未选择有效测试套件")
+
+    suite_results: list[dict[str, Any]] = []
+    total_passed = 0
+    total_failed = 0
+    total_errors = 0
+
+    for suite_id in suites_to_run:
+        result = _run_unit_test_suite(suite_id, UNIT_TEST_SUITES[suite_id])
+        suite_results.append(result)
+        total_passed += result["passed"]
+        total_failed += result["failed"]
+        total_errors += result["errors"]
+
+    return {
+        "timestamp": datetime.now().isoformat(timespec="seconds"),
+        "total_passed": total_passed,
+        "total_failed": total_failed,
+        "total_errors": total_errors,
+        "suites": suite_results,
+    }

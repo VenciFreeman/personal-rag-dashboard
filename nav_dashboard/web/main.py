@@ -93,6 +93,856 @@ SOURCE_LABELS = {
     "rag_chat": "RAG 问答",
 }
 templates = Jinja2Templates(directory=str(APP_DIR / "templates"))
+
+
+def _static_version(filename: str) -> str:
+    """Return a cache-busting token derived from the file's mtime.
+
+    Using hex mtime keeps URLs short and changes automatically on every
+    deploy/edit without requiring a manual version bump.
+    """
+    p = APP_DIR / "static" / filename
+    try:
+        return format(int(os.path.getmtime(p)), "x")
+    except OSError:
+        return "0"
+
+
+# ── Dashboard SSR helpers ─────────────────────────────────────────────────────
+def _esc(s: object) -> str:
+    """HTML-escape a value for embedding in attribute or text content."""
+    import html as _html
+    return _html.escape(str(s) if s is not None else "")
+
+
+def _fmt_n(v: object) -> str:
+    """Format a number as comma-separated integer, or '—' if missing/invalid."""
+    try:
+        return f"{int(round(float(v))):,}"  # type: ignore[arg-type]
+    except (TypeError, ValueError):
+        return "\u2014"
+
+
+def _fmt_r(v: object) -> str:
+    """Format a fraction as '12.3%', or '—' if missing/invalid."""
+    try:
+        return f"{float(v) * 100:.1f}%"  # type: ignore[arg-type]
+    except (TypeError, ValueError):
+        return "\u2014"
+
+
+def _fmt_duration(v: object) -> str:
+    """Format seconds like the dashboard JS formatter."""
+    try:
+        n = float(v)  # type: ignore[arg-type]
+    except (TypeError, ValueError):
+        return "\u2014"
+    if n < 0:
+        return "\u2014"
+    if n >= 1:
+        return f"{n:.2f}s"
+    if n >= 0.001:
+        return f"{n * 1000:.1f}ms"
+    if n > 0:
+        return f"{int(round(n * 1_000_000))}\u00b5s"
+    return "0s"
+
+
+def _fmt_size(v: object) -> str:
+    try:
+        n = float(v)  # type: ignore[arg-type]
+    except (TypeError, ValueError):
+        return "0 MB"
+    if n <= 0:
+        return "0 MB"
+    if n >= 1024 * 1024 * 1024:
+        return f"{n / (1024 * 1024 * 1024):.2f} GB"
+    if n >= 1024 * 1024:
+        return f"{n / (1024 * 1024):.2f} MB"
+    if n >= 1024:
+        return f"{n / 1024:.1f} KB"
+    return f"{int(round(n))} B"
+
+
+def _fmt_signed(v: object, digits: int = 4) -> str:
+    try:
+        n = float(v)  # type: ignore[arg-type]
+    except (TypeError, ValueError):
+        return "\u2014"
+    text = f"{n:.{digits}f}"
+    return f"+{text}" if n > 0 else text
+
+
+def _css_token(value: object) -> str:
+    return re.sub(r"[^a-z0-9_-]+", "-", str(value or "").strip().lower())
+
+
+def _stat_card(title: str, value: str, sub: str = "", role: str = "", state: str = "") -> str:
+    extra = f' data-role="{_esc(role)}"' if role else ""
+    classes = "stat-card" + (f" {_esc(state)}" if state else "")
+    return (
+        f'<article class="{classes}"{extra}>'
+        f'<div class="stat-title">{_esc(title)}</div>'
+        f'<div class="stat-value">{_esc(value)}</div>'
+        f'<div class="stat-sub">{_esc(sub)}</div>'
+        f"</article>"
+    )
+
+
+def _render_dashboard_core_cards_html(prefill: dict) -> str:  # type: ignore[type-arg]
+    """Return pre-rendered stat-card HTML from overview data.
+
+    Uses detailed latency/cache/rerank values when the full overview is
+    available, and falls back to neutral placeholders when only the lighter
+    prefill payload is present.
+    """
+    if not prefill or not isinstance(prefill, dict):
+        return ""
+    rag = prefill.get("rag") or {}
+    lib = prefill.get("library") or {}
+    gq = lib.get("graph_quality") or {}
+    api = prefill.get("api_usage") or {}
+    agent = prefill.get("agent") or {}
+    rqa = prefill.get("rag_qa") or {}
+    latency = prefill.get("retrieval_latency") or {}
+    latency_stages = latency.get("stages") or {}
+    cache_stats = prefill.get("cache_stats") or {}
+    rerank_quality = prefill.get("rerank_quality") or {}
+    rag_rerank = rerank_quality.get("rag") or {}
+    agent_rerank = rerank_quality.get("agent") or {}
+    missing_queries = prefill.get("missing_queries_last_30d") or {}
+    agent_wall_clock = prefill.get("agent_wall_clock") or {}
+    runtime_data = prefill.get("runtime_data") or {}
+    chat_feedback = prefill.get("chat_feedback") or {}
+    warns = prefill.get("warnings") or []
+
+    nodes_per_doc = rag.get("nodes_per_doc")
+    edges_per_node = rag.get("edges_per_node")
+    pending = int(rag.get("changed_pending") or 0)
+    warn_sub = " | ".join(str(w) for w in warns[:2]) if warns else "\u65e0\u544a\u8b66"
+
+    dash = "\u2014"
+    neutral_sub = "\u8be6\u60c5\u7edf\u8ba1\u52a0\u8f7d\u4e2d"
+
+    total_stage = latency_stages.get("total") or {}
+    rerank_stage = latency_stages.get("rerank_seconds") or {}
+    elapsed_stage = latency_stages.get("elapsed_seconds") or {}
+
+    cards = [
+        _stat_card("RAG \u5df2\u7d22\u5f15\u6587\u6863", _fmt_n(rag.get("indexed_documents")),
+                   f"\u603b\u6587\u6863\u6570 {_fmt_n(rag.get('source_markdown_files'))}"),
+        _stat_card("\u4e66\u5f71\u97f3\u6e38\u620f\u603b\u6761\u76ee", _fmt_n(lib.get("total_items")),
+                   f"\u4eca\u5e74\u6761\u76ee {_fmt_n(lib.get('this_year_items'))}"),
+        _stat_card("RAG Graph \u8282\u70b9\u6570", _fmt_n(rag.get("graph_nodes")),
+                   f"\u8fb9\u6570 {_fmt_n(rag.get('graph_edges'))}"),
+        _stat_card("Library Graph \u8282\u70b9\u6570", _fmt_n(lib.get("graph_nodes")),
+                   f"\u8fb9\u6570 {_fmt_n(lib.get('graph_edges'))} | \u8986\u76d6 {_fmt_r(gq.get('item_coverage_rate'))} | \u5b64\u70b9 {_fmt_r(gq.get('isolated_node_rate'))}",
+                   "library-graph-summary"),
+        _stat_card("RAG \u5e73\u5747\u8282\u70b9\u6570",
+                   f"{float(nodes_per_doc):.2f}" if nodes_per_doc is not None else dash,
+                   f"\u6bcf\u8282\u70b9\u5e73\u5747\u8fb9\u6570 {float(edges_per_node):.2f}" if edges_per_node is not None else f"\u6bcf\u8282\u70b9\u5e73\u5747\u8fb9\u6570 {dash}"),
+        _stat_card("RAG \u5f85\u91cd\u5efa\u6587\u6863", _fmt_n(pending),
+                   "\u7b49\u5f85\u540e\u53f0\u540c\u6b65" if pending > 0 else "\u5df2\u5168\u90e8\u540c\u6b65",
+                   "rag-changed-pending"),
+        _stat_card("\u672c\u6708 Tavily API \u8c03\u7528", _fmt_n(api.get("month_web_search_calls")),
+                   f"\u4eca\u65e5 {_fmt_n(api.get('today_web_search'))} / \u9650\u989d {_fmt_n(api.get('daily_web_limit'))}",
+                   "web-search-usage"),
+        _stat_card("\u672c\u6708 DeepSeek API \u8c03\u7528", _fmt_n(api.get("month_deepseek_calls")),
+                   f"\u4eca\u65e5 {_fmt_n(api.get('today_deepseek'))} / \u9650\u989d {_fmt_n(api.get('daily_deepseek_limit'))}",
+                   "deepseek-usage"),
+        _stat_card("Agent \u6d88\u606f\u603b\u6570", _fmt_n(agent.get("message_count")),
+                   f"\u4f1a\u8bdd\u6570 {_fmt_n(agent.get('session_count'))}"),
+        _stat_card("RAG Q&A \u6d88\u606f\u603b\u6570", _fmt_n(rqa.get("message_count")),
+                   f"\u4f1a\u8bdd\u6570 {_fmt_n(rqa.get('session_count'))}"),
+        _stat_card(
+            "\u5411\u91cf\u53ec\u56de\u5747\u503c",
+            _fmt_duration(total_stage.get("avg")) if total_stage else dash,
+            f"\u8fd1 {_fmt_n(total_stage.get('count'))} \u6b21 | p50 {_fmt_duration(total_stage.get('p50'))}" if total_stage else neutral_sub,
+        ),
+        _stat_card(
+            "RAG \u6a21\u578b\u91cd\u6392\u5747\u503c",
+            _fmt_duration(rerank_stage.get("avg")) if rerank_stage else dash,
+            f"\u8fd1 {_fmt_n(rerank_stage.get('count'))} \u6b21" if rerank_stage else neutral_sub,
+        ),
+        _stat_card(
+            "\u68c0\u7d22\u5206\u4f4d p50",
+            _fmt_duration(total_stage.get("p50")) if total_stage else dash,
+            f"p95 {_fmt_duration(total_stage.get('p95'))} | p99 {_fmt_duration(total_stage.get('p99'))}" if total_stage else neutral_sub,
+        ),
+        _stat_card(
+            "RAG \u5168\u6d41\u7a0b p50",
+            _fmt_duration(elapsed_stage.get("p50")) if elapsed_stage else dash,
+            f"p95 {_fmt_duration(elapsed_stage.get('p95'))} | Agent p50 {_fmt_duration(agent_wall_clock.get('p50'))}" if elapsed_stage or agent_wall_clock else neutral_sub,
+        ),
+        _stat_card(
+            "RAG \u91cd\u6392\u5e8f\u6362\u699c\u7387",
+            _fmt_r(rag_rerank.get("top1_identity_change_rate")) if rag_rerank else dash,
+            f"Agent \u6362\u699c\u7387 {_fmt_r(agent_rerank.get('top1_identity_change_rate'))}" if rag_rerank or agent_rerank else neutral_sub,
+        ),
+        _stat_card(
+            "RAG \u5e73\u5747\u6362\u699c",
+            _fmt_signed(rag_rerank.get("avg_rank_shift"), 2) if rag_rerank else dash,
+            f"Agent \u5e73\u5747\u6362\u699c {_fmt_signed(agent_rerank.get('avg_rank_shift'), 2)}" if rag_rerank or agent_rerank else neutral_sub,
+        ),
+        _stat_card(
+            "Embedding \u7f13\u5b58\u547d\u4e2d\u7387",
+            _fmt_r(cache_stats.get("rag_embed_cache_hit_rate")) if cache_stats else dash,
+            f"\u8fd1 {_fmt_n(latency.get('record_count'))} \u6b21" if cache_stats or latency else neutral_sub,
+        ),
+        _stat_card(
+            "Agent \u6587\u6863\u8c03\u7528\u7387",
+            _fmt_r(cache_stats.get("agent_rag_trigger_rate")) if cache_stats else dash,
+            f"Media {_fmt_r(cache_stats.get('agent_media_trigger_rate'))} | Web {_fmt_r(cache_stats.get('agent_web_trigger_rate'))}" if cache_stats else neutral_sub,
+        ),
+        _stat_card(
+            "RAG Top1 \u5747\u503c",
+            f"{float(rag_rerank.get('avg_top1_local_doc_score')):.4f}" if rag_rerank.get("avg_top1_local_doc_score") is not None else dash,
+            f"Agent Top1 \u5747\u503c {float(agent_rerank.get('avg_top1_local_doc_score')):.4f}" if agent_rerank.get("avg_top1_local_doc_score") is not None else neutral_sub,
+        ),
+        _stat_card(
+            "RAG \u672a\u547d\u4e2d\u7387",
+            _fmt_r(cache_stats.get("rag_no_context_rate")) if cache_stats else dash,
+            f"Agent \u672a\u547d\u4e2d\u7387 {_fmt_r(cache_stats.get('agent_no_context_rate'))}" if cache_stats else neutral_sub,
+        ),
+        _stat_card("\u6708\u68c0\u7d22\u7f3a\u5931\u95ee\u9898\u6570", _fmt_n(missing_queries.get("count")) if missing_queries else dash, "\u957f\u6309\u67e5\u770b\u5bfc\u51fa" if missing_queries else neutral_sub, "missing-queries-summary"),
+        _stat_card("\u804a\u5929\u53cd\u9988\u6570", _fmt_n(chat_feedback.get("count")) if chat_feedback else dash, "\u957f\u6309\u67e5\u770b\u5bfc\u51fa" if chat_feedback else neutral_sub, "feedback-summary"),
+        _stat_card("\u8fd0\u884c\u65f6\u6570\u636e", _fmt_size(runtime_data.get("total_size_bytes")) if runtime_data else dash, f"\u975e\u7a7a {_fmt_n(runtime_data.get('nonzero_items'))} \u9879 | \u957f\u6309\u67e5\u770b" if runtime_data else neutral_sub, "runtime-data-summary"),
+        _stat_card("\u7cfb\u7edf\u544a\u8b66", _fmt_n(len(warns)), warn_sub, "warnings-summary"),
+    ]
+    return "\n".join(cards)
+
+
+def _render_dashboard_latency_table_html(data: dict[str, Any]) -> str:
+    latency = data.get("retrieval_latency") or {}
+    stages = latency.get("stages") or {}
+    if not isinstance(stages, dict) or not stages:
+        return (
+            "<tbody>"
+            "<tr><td colspan=\"5\">暂无最近20次记录</td></tr>"
+            "</tbody>"
+        )
+
+    stage_order = [
+        ("total", "向量召回"),
+        ("rerank_seconds", "模型重排"),
+        ("context_assembly_seconds", "上下文组装"),
+        ("web_search_seconds", "网络检索"),
+        ("elapsed_seconds", "端到端总时长"),
+    ]
+    known = {key for key, _label in stage_order}
+    extra = [key for key in stages.keys() if key not in known and key != "reranker_load_seconds"]
+    ordered = stage_order[:-1] + [(key, key) for key in extra] + [stage_order[-1]]
+
+    rows: list[str] = []
+    for key, label in ordered:
+        stat = stages.get(key)
+        if not isinstance(stat, dict):
+            continue
+        tr_class = ' class="latency-row-total"' if key == "elapsed_seconds" else ""
+        rows.append(
+            f"<tr{tr_class}>"
+            f"<td>{_esc(label)}</td>"
+            f"<td>{_esc(_fmt_duration(stat.get('avg')))}</td>"
+            f"<td>{_esc(_fmt_duration(stat.get('p50')))}</td>"
+            f"<td>{_esc(_fmt_duration(stat.get('p95')))}</td>"
+            f"<td>{_esc(_fmt_duration(stat.get('p99')))}</td>"
+            "</tr>"
+        )
+
+    body = "".join(rows) or '<tr><td colspan="5">暂无数据</td></tr>'
+    return (
+        "<thead><tr><th>阶段</th><th>均值</th><th>p50</th><th>p95</th><th>p99</th></tr></thead>"
+        f"<tbody>{body}</tbody>"
+    )
+
+
+def _ordered_bucket_entries(bucket: dict[str, Any], ordered_keys: list[str]) -> list[tuple[str, Any]]:
+    seen: set[str] = set()
+    rows: list[tuple[str, Any]] = []
+    for key in ordered_keys:
+        seen.add(key)
+        rows.append((key, bucket.get(key) or {}))
+    for key, value in bucket.items():
+        if key in seen:
+            continue
+        rows.append((key, value))
+    return rows
+
+
+def _render_dashboard_observability_table_html(data: dict[str, Any]) -> str:
+    rag_profiles = data.get("retrieval_by_profile") or {}
+    rag_modes = data.get("retrieval_by_search_mode") or {}
+    agent_profiles = data.get("agent_by_profile") or {}
+    agent_modes = data.get("agent_by_search_mode") or {}
+    rows: list[str] = []
+
+    def push_section(title: str) -> None:
+        rows.append(
+            "<tr class=\"dashboard-observability-section\">"
+            f"<td colspan=\"6\"><span class=\"dashboard-observability-title\">{_esc(title)}</span></td>"
+            "</tr>"
+        )
+
+    def push_row(name: str, c1: str, c2: str, c3: str, c4: str, c5: str) -> None:
+        rows.append(
+            f"<tr><td>{_esc(name)}</td><td>{_esc(c1)}</td><td>{_esc(c2)}</td><td>{_esc(c3)}</td><td>{_esc(c4)}</td><td>{_esc(c5)}</td></tr>"
+        )
+
+    profile_names = {"short": "短查询", "medium": "中查询", "long": "长查询"}
+    profile_keys = ["short", "medium", "long"]
+    mode_keys = ["local_only", "hybrid"]
+
+    if isinstance(rag_profiles, dict) and rag_profiles:
+        push_section("RAG 分层观测")
+        for key, value in _ordered_bucket_entries(rag_profiles, profile_keys):
+            value = value if isinstance(value, dict) else {}
+            push_row(
+                f"{profile_names.get(key, key)} ({_fmt_n(value.get('count'))})",
+                _fmt_r(value.get("no_context_rate")),
+                _fmt_r(value.get("embed_cache_hit_rate")),
+                _fmt_r(value.get("query_rewrite_rate")),
+                _fmt_duration(((value.get("stages") or {}).get("elapsed_seconds") or {}).get("p50")),
+                _fmt_duration(((value.get("stages") or {}).get("total") or {}).get("p50")),
+            )
+
+    if isinstance(rag_modes, dict) and rag_modes:
+        push_section("RAG 检索模式")
+        for key, value in _ordered_bucket_entries(rag_modes, mode_keys):
+            value = value if isinstance(value, dict) else {}
+            push_row(
+                f"{key} ({_fmt_n(value.get('count'))})",
+                _fmt_r(value.get("no_context_rate")),
+                _fmt_r(value.get("embed_cache_hit_rate")),
+                _fmt_r(value.get("query_rewrite_rate")),
+                _fmt_duration((value.get("elapsed") or {}).get("p50")),
+                _fmt_duration((value.get("total") or {}).get("p50")),
+            )
+
+    if isinstance(agent_profiles, dict) and agent_profiles:
+        push_section("Agent 分层观测")
+        for key, value in _ordered_bucket_entries(agent_profiles, profile_keys):
+            value = value if isinstance(value, dict) else {}
+            push_row(
+                f"{profile_names.get(key, key)} ({_fmt_n(value.get('count'))})",
+                _fmt_r(value.get("no_context_rate")),
+                _fmt_r(value.get("embed_cache_hit_rate")),
+                _fmt_r(value.get("query_rewrite_rate")),
+                _fmt_duration((value.get("wall_clock") or {}).get("p50")),
+                _fmt_duration((value.get("vector_recall") or {}).get("p50")),
+            )
+
+    if isinstance(agent_modes, dict) and agent_modes:
+        push_section("Agent 检索模式")
+        for key, value in _ordered_bucket_entries(agent_modes, mode_keys):
+            value = value if isinstance(value, dict) else {}
+            push_row(
+                f"{key} ({_fmt_n(value.get('count'))})",
+                _fmt_r(value.get("no_context_rate")),
+                _fmt_r(value.get("embed_cache_hit_rate")),
+                _fmt_r(value.get("query_rewrite_rate")),
+                _fmt_duration((value.get("wall_clock") or {}).get("p50")),
+                _fmt_duration((value.get("vector_recall") or {}).get("p50")),
+            )
+
+    if not rows:
+        return "<tbody><tr><td colspan=\"6\">暂无分层观测数据</td></tr></tbody>"
+
+    return (
+        "<thead><tr><th>维度</th><th>检索未命中</th><th>Embed 缓存命中率</th><th>问题重写率</th><th>端到端用时</th><th>召回用时</th></tr></thead>"
+        f"<tbody>{''.join(rows)}</tbody>"
+    )
+
+
+def _job_type_label(value: object) -> str:
+    labels = {
+        "benchmark": "Benchmark",
+        "rag_sync": "RAG 同步",
+        "library_graph_rebuild": "Library Graph",
+        "runtime_cleanup": "运行时清理",
+    }
+    key = str(value or "")
+    return labels.get(key, key or "未知任务")
+
+
+def _job_status_label(value: object) -> str:
+    labels = {
+        "queued": "排队中",
+        "running": "运行中",
+        "completed": "已完成",
+        "failed": "失败",
+        "cancelled": "已取消",
+    }
+    key = str(value or "")
+    return labels.get(key, key or "未知")
+
+
+def _render_dashboard_jobs_html(payload: dict[str, Any]) -> str:
+    jobs = payload.get("jobs") if isinstance(payload, dict) else []
+    if not isinstance(jobs, list) or not jobs:
+        return '<div class="dashboard-job-empty">当前暂无后台任务</div>'
+
+    selected_id = str((jobs[0] or {}).get("id") or "")
+    parts: list[str] = []
+    for job in jobs:
+        if not isinstance(job, dict):
+            continue
+        job_id = str(job.get("id") or "")
+        status = str(job.get("status") or "queued")
+        selected_cls = " is-selected" if job_id == selected_id else ""
+        running_cls = (
+            " is-running" if status == "running"
+            else " is-failed" if status == "failed"
+            else " is-cancelled" if status == "cancelled"
+            else ""
+        )
+        summary = str(job.get("message") or "等待开始")
+        metadata = job.get("metadata") if isinstance(job.get("metadata"), dict) else {}
+        module_meta = "+".join(str(item or "") for item in (metadata.get("modules") or []) if str(item or "").strip())
+        created_at = str(job.get("created_at") or "")
+        logs = job.get("logs") if isinstance(job.get("logs"), list) else []
+        log_text = "\n".join(str(line or "") for line in logs) if logs else (str(job.get("error") or "") or "暂无日志")
+        can_cancel = status in {"queued", "running"}
+        expanded = ""
+        if job_id == selected_id:
+            expanded = (
+                '<div class="dashboard-job-expanded">'
+                f'<div class="dashboard-meta">{_esc(_job_type_label(job.get("type")))} | {_esc(_job_status_label(status))} | 创建 {_esc(created_at or "-")}</div>'
+                f'<pre class="dashboard-job-log-window">{_esc(log_text)}</pre>'
+                '<div class="card-modal-actions dashboard-job-actions">'
+                f'<button class="ghost" data-job-cancel-id="{_esc(job_id)}"{"" if can_cancel else " disabled"}>取消任务</button>'
+                '</div></div>'
+            )
+        parts.append(
+            f'<div class="dashboard-job-card{selected_cls}{running_cls}" data-job-id="{_esc(job_id)}">'
+            '<div class="dashboard-job-title">'
+            f'<strong>{_esc(job.get("label") or _job_type_label(job.get("type")))}</strong>'
+            f'<span class="dashboard-job-badge status-{_esc(_css_token(status))}">{_esc(_job_status_label(status))}</span>'
+            '</div>'
+            f'<div class="dashboard-job-meta-line">{_esc(_job_type_label(job.get("type")))}{(" | " + _esc(module_meta)) if module_meta else ""}</div>'
+            f'<div class="dashboard-job-meta-line">{_esc(summary)}</div>'
+            f'<div class="dashboard-job-meta-line">{_esc(created_at)}</div>'
+            f'{expanded}'
+            '</div>'
+        )
+    return "\n".join(parts)
+
+
+def _dashboard_ticket_breakdown_html(counts: dict[str, Any]) -> str:
+    if not isinstance(counts, dict) or not counts:
+        return '<span class="ticket-empty-state">暂无数据</span>'
+    items = sorted(counts.items(), key=lambda item: int(item[1] or 0), reverse=True)
+    return "".join(
+        f'<span class="dashboard-ticket-chip"><span class="dashboard-ticket-chip-label">{_esc(label or "unknown")}</span><strong>{_esc(_fmt_n(count))}</strong></span>'
+        for label, count in items
+    )
+
+
+def _render_dashboard_ticket_summary_meta_text(stats: dict[str, Any]) -> str:
+    summary = stats.get("summary") if isinstance(stats, dict) else {}
+    if not isinstance(summary, dict) or not summary:
+        return "暂无 ticket 统计"
+    return (
+        f"当前遗留 {_fmt_n(summary.get('current_open_total') or 0)} | "
+        f"近 1 周提交 {_fmt_n(summary.get('submitted_last_week') or 0)} | "
+        f"近 1 周关闭 {_fmt_n(summary.get('closed_last_week') or 0)}"
+    )
+
+
+def _render_dashboard_ticket_summary_html(stats: dict[str, Any]) -> str:
+    weeks = stats.get("weeks") if isinstance(stats, dict) else []
+    if not isinstance(weeks, list) or not weeks:
+        return '<div class="ticket-trend-empty">暂无统计数据</div>'
+    summary = stats.get("summary") if isinstance(stats.get("summary"), dict) else {}
+    status_counts = stats.get("status_counts") if isinstance(stats.get("status_counts"), dict) else {}
+    priority_counts = stats.get("priority_counts") if isinstance(stats.get("priority_counts"), dict) else {}
+    return (
+        '<div class="dashboard-ticket-summary-grid">'
+        f'<div class="dashboard-ticket-summary-card"><span>当前遗留</span><strong>{_esc(_fmt_n(summary.get("current_open_total") or 0))}</strong></div>'
+        f'<div class="dashboard-ticket-summary-card"><span>Ticket 总数</span><strong>{_esc(_fmt_n(summary.get("ticket_total") or 0))}</strong></div>'
+        f'<div class="dashboard-ticket-summary-card"><span>近 1 周提交</span><strong>{_esc(_fmt_n(summary.get("submitted_last_week") or 0))}</strong></div>'
+        f'<div class="dashboard-ticket-summary-card"><span>近 1 月提交</span><strong>{_esc(_fmt_n(summary.get("submitted_last_month") or 0))}</strong></div>'
+        f'<div class="dashboard-ticket-summary-card"><span>近 1 周关闭</span><strong>{_esc(_fmt_n(summary.get("closed_last_week") or 0))}</strong></div>'
+        f'<div class="dashboard-ticket-summary-card"><span>当前最长遗留天数</span><strong>{_esc(_fmt_n(summary.get("current_longest_open_days") or 0))}</strong></div>'
+        '</div>'
+        '<div class="dashboard-ticket-breakdown">'
+        '<section class="dashboard-ticket-breakdown-group"><h4>状态分布（未关闭）</h4>'
+        f'<div class="dashboard-ticket-chip-row">{_dashboard_ticket_breakdown_html(status_counts)}</div></section>'
+        '<section class="dashboard-ticket-breakdown-group"><h4>优先级分布（未关闭）</h4>'
+        f'<div class="dashboard-ticket-chip-row">{_dashboard_ticket_breakdown_html(priority_counts)}</div></section>'
+        '</div>'
+    )
+
+
+def _render_dashboard_ticket_trend_meta_text(stats: dict[str, Any]) -> str:
+    weeks = stats.get("weeks") if isinstance(stats, dict) else []
+    if not isinstance(weeks, list) or not weeks:
+        return "暂无 ticket 周统计"
+    return f"近 {len(weeks)} 周 | 每周提交趋势 | 每周关闭趋势（仅 closed）"
+
+
+def _render_dashboard_ticket_trend_html(stats: dict[str, Any]) -> str:
+    weeks = stats.get("weeks") if isinstance(stats, dict) else []
+    if not isinstance(weeks, list) or not weeks:
+        return '<div class="ticket-trend-empty">暂无图表数据</div>'
+
+    submitted = [int((item or {}).get("submitted") or 0) for item in weeks if isinstance(item, dict)]
+    closed = [int((item or {}).get("closed") or 0) for item in weeks if isinstance(item, dict)]
+    max_value = max([1, *submitted, *closed])
+    width = 620
+    height = 180
+    pad_left = 40
+    pad_right = 18
+    pad_top = 12
+    pad_bottom = 34
+    plot_width = width - pad_left - pad_right
+    plot_height = height - pad_top - pad_bottom
+
+    def x_for(index: int) -> float:
+        if len(weeks) == 1:
+            return pad_left + plot_width / 2
+        return pad_left + (plot_width * index) / (len(weeks) - 1)
+
+    def y_for(value: int) -> float:
+        return pad_top + plot_height - (plot_height * value) / max_value
+
+    submitted_points = " ".join(f"{x_for(index)},{y_for(value)}" for index, value in enumerate(submitted))
+    closed_points = " ".join(f"{x_for(index)},{y_for(value)}" for index, value in enumerate(closed))
+    y_ticks = sorted({0, int((max_value + 1) / 2), max_value})
+    x_label_step = 2 if len(weeks) > 8 else 1
+
+    return (
+        '<div class="ticket-trend-legend">'
+        '<span class="ticket-trend-legend-item"><i class="ticket-trend-legend-swatch submitted"></i>每周提交</span>'
+        '<span class="ticket-trend-legend-item"><i class="ticket-trend-legend-swatch closed"></i>每周关闭</span>'
+        '</div>'
+        f'<svg class="ticket-trend-svg" viewBox="0 0 {width} {height}" role="img" aria-label="每周 Ticket 提交和关闭趋势图">'
+        + "".join(
+            f'<line class="ticket-trend-grid" x1="{pad_left}" y1="{y_for(tick)}" x2="{width - pad_right}" y2="{y_for(tick)}"></line>'
+            f'<text class="ticket-trend-label" x="{pad_left - 8}" y="{y_for(tick) + 4}" text-anchor="end">{tick}</text>'
+            for tick in y_ticks
+        )
+        + f'<line class="ticket-trend-axis" x1="{pad_left}" y1="{pad_top}" x2="{pad_left}" y2="{pad_top + plot_height}"></line>'
+        + f'<line class="ticket-trend-axis" x1="{pad_left}" y1="{pad_top + plot_height}" x2="{width - pad_right}" y2="{pad_top + plot_height}"></line>'
+        + f'<polyline class="ticket-trend-line submitted" points="{submitted_points}"></polyline>'
+        + f'<polyline class="ticket-trend-line closed" points="{closed_points}"></polyline>'
+        + "".join(
+            f'<circle class="ticket-trend-dot submitted" cx="{x_for(index)}" cy="{y_for(submitted[index])}" r="3.5"></circle>'
+            f'<circle class="ticket-trend-dot closed" cx="{x_for(index)}" cy="{y_for(closed[index])}" r="3.5"></circle>'
+            + (f'<text class="ticket-trend-label" x="{x_for(index)}" y="{height - 10}" text-anchor="middle">{_esc(str((item or {}).get("label") or ""))}</text>' if index % x_label_step == 0 or index == len(weeks) - 1 else "")
+            for index, item in enumerate(weeks)
+            if isinstance(item, dict)
+        )
+        + '</svg>'
+    )
+
+
+def _render_dashboard_startup_logs_text(data: dict[str, Any]) -> str:
+    startup = data.get("startup") or {}
+    logs = startup.get("logs") if isinstance(startup, dict) else []
+    logs = logs if isinstance(logs, list) else []
+    status = str((startup or {}).get("status") or "unknown")
+    checked_at = str((startup or {}).get("last_checked_at") or "")
+    head = f"status={status}{f' | checked_at={checked_at}' if checked_at else ''}"
+    if not logs:
+        return f"{head}\n暂无日志"
+    return f"{head}\n" + "\n".join(str(line or "") for line in logs)
+
+
+def _ticket_badge_class(prefix: str, value: object) -> str:
+    suffix = _css_token(value)
+    return f"{prefix}-{suffix}" if suffix else ""
+
+
+def _render_tickets_meta_text(payload: dict[str, Any]) -> str:
+    items = payload.get("items") if isinstance(payload, dict) else []
+    count = payload.get("count") if isinstance(payload, dict) else 0
+    return f"当前 {_fmt_n(count or (len(items) if isinstance(items, list) else 0))} 条 ticket"
+
+
+def _render_tickets_list_html(payload: dict[str, Any]) -> str:
+    items = payload.get("items") if isinstance(payload, dict) else []
+    if not isinstance(items, list) or not items:
+        return '<div class="ticket-empty-state">当前筛选下暂无 ticket</div>'
+    parts: list[str] = []
+    for ticket in items:
+        if not isinstance(ticket, dict):
+            continue
+        ticket_id = str(ticket.get("ticket_id") or "")
+        title = str(ticket.get("title") or "未命名 Ticket")
+        status = str(ticket.get("status") or "open")
+        priority = str(ticket.get("priority") or "medium")
+        domain = str(ticket.get("domain") or "—")
+        category = str(ticket.get("category") or "—")
+        updated = str(ticket.get("updated_at") or ticket.get("created_at") or "")
+        parts.append(
+            f'<article class="ticket-list-item" data-ticket-id="{_esc(ticket_id)}">'
+            '<div class="ticket-list-top"><div>'
+            f'<div class="ticket-list-title">{_esc(title)}</div>'
+            f'<div class="ticket-list-id">{_esc(ticket_id or "未保存")}</div>'
+            f'</div><div class="dashboard-meta">{_esc(updated)}</div></div>'
+            '<div class="ticket-badge-row">'
+            f'<span class="ticket-badge {_esc(_ticket_badge_class("status", status))}">{_esc(status)}</span>'
+            f'<span class="ticket-badge {_esc(_ticket_badge_class("priority", priority))}">{_esc(priority)}</span>'
+            f'<span class="ticket-badge">{_esc(domain)}</span>'
+            f'<span class="ticket-badge">{_esc(category)}</span>'
+            '</div></article>'
+        )
+    return "".join(parts)
+
+
+def _summarize_assertion_scope_html(scope: dict[str, Any] | None) -> str:
+    checks = scope.get("checks") if isinstance(scope, dict) else []
+    if not isinstance(checks, list) or not checks:
+        return "<span style=\"color:#5a5f50\">—</span>"
+    passed = sum(1 for item in checks if isinstance(item, dict) and item.get("passed"))
+    failed = len(checks) - passed
+    base = f'<span style="color:{"#8fb08d" if failed == 0 else "#d9a6a6"}">{passed}/{len(checks)}</span>'
+    return base if failed == 0 else f'{base} <span style="color:#d9a6a6">失败 {failed}</span>'
+
+
+def _summarize_assertion_failures_html(scope: dict[str, Any] | None) -> str:
+    checks = scope.get("checks") if isinstance(scope, dict) else []
+    failed = [item for item in checks if isinstance(item, dict) and not item.get("passed")]
+    if not failed:
+        return '<span style="color:#8fb08d">全部通过</span>'
+    parts: list[str] = []
+    for item in failed:
+        name = _esc(item.get("name") or "unknown")
+        trace_ids = [str(value or "").strip() for value in (item.get("trace_ids") or []) if str(value or "").strip()]
+        if not trace_ids:
+            parts.append(f'<span class="bm-assert-fail-item">{name}</span>')
+            continue
+        preview = "".join(f'<span class="bm-assert-fail-trace"><code>{_esc(value)}</code></span>' for value in trace_ids[:2])
+        more = f'<span class="bm-assert-fail-more">+{len(trace_ids) - 2} more</span>' if len(trace_ids) > 2 else ""
+        parts.append(f'<span class="bm-assert-fail-item"><span>{name}</span>{preview}{more}</span>')
+    return " ".join(parts)
+
+
+def _render_benchmark_last_run_text(prefill: dict[str, Any]) -> str:
+    results = ((prefill.get("history") or {}).get("results") or []) if isinstance(prefill, dict) else []
+    if not isinstance(results, list) or not results:
+        return "从未运行"
+    last = results[-1] if isinstance(results[-1], dict) else {}
+    summary = last.get("assertion_summary") if isinstance(last.get("assertion_summary"), dict) else None
+    assertion_text = f" | 断言 {summary.get('passed', 0)}/{int(summary.get('passed', 0)) + int(summary.get('failed', 0))}" if summary else ""
+    return f"上次运行: {str(last.get('timestamp') or '')}{assertion_text}"
+
+
+def _render_benchmark_case_set_options_html(prefill: dict[str, Any]) -> str:
+    case_sets = ((prefill.get("cases") or {}).get("case_sets") or []) if isinstance(prefill, dict) else []
+    if not isinstance(case_sets, list) or not case_sets:
+        return (
+            '<option value="smoke_v1">smoke_v1 / 快速烟测样本池</option>'
+            '<option value="regression_v1" selected>regression_v1 / 基线回归样本池</option>'
+        )
+    parts: list[str] = []
+    for item in case_sets:
+        if not isinstance(item, dict):
+            continue
+        case_id = str(item.get("id") or "")
+        label = str(item.get("label") or item.get("id") or "")
+        selected = " selected" if case_id == "regression_v1" else ""
+        desc = f"{case_id} / {label}"
+        parts.append(f'<option value="{_esc(case_id)}"{selected}>{_esc(desc)}</option>')
+    return "".join(parts)
+
+
+def _render_benchmark_history_table_html(prefill: dict[str, Any], test_set: str = "rag/short") -> str:
+    results = ((prefill.get("history") or {}).get("results") or []) if isinstance(prefill, dict) else []
+    if not isinstance(results, list) or not results:
+        return '<tbody><tr><td colspan="6" style="text-align:center;color:#7a7f6f">运行测试后查看历史对比数据</td></tr></tbody>'
+
+    module, length = (test_set.split("/", 1) + ["short"])[:2]
+    relevant = [row for row in results if isinstance(row, dict) and isinstance(row.get(module), dict) and isinstance((row.get(module) or {}).get("by_length"), dict) and ((row.get(module) or {}).get("by_length") or {}).get(length)]
+    if not relevant:
+        mod = {"rag": "RAG", "agent": "AGENT", "hybrid": "HYBRID"}.get(module, module.upper())
+        len_label = {"short": "短", "medium": "中", "long": "长"}.get(length, length)
+        return f'<tbody><tr><td colspan="6" style="text-align:center;color:#7a7f6f">当前测试集（{_esc(mod)} / {_esc(len_label)}查询）暂无数据，请先运行包含该模块的测试</td></tr></tbody>'
+
+    recent = list(reversed(relevant[-5:]))
+
+    def fmt(v: object) -> str:
+        try:
+            n = float(v)  # type: ignore[arg-type]
+        except (TypeError, ValueError):
+            return "<span style='color:#5a5f50'>—</span>"
+        if n <= 0:
+            return "<span style='color:#5a5f50'>—</span>"
+        if n >= 1:
+            text = f"{n:.2f}s"
+        elif n >= 0.001:
+            text = f"{n * 1000:.1f}ms"
+        else:
+            text = f"{int(round(n * 1_000_000))}µs"
+        return f'<span style="font-variant-numeric:tabular-nums">{text}</span>'
+
+    def fmt_zeroable(v: object) -> str:
+        try:
+            n = float(v)  # type: ignore[arg-type]
+        except (TypeError, ValueError):
+            return "<span style='color:#5a5f50'>—</span>"
+        if n == 0:
+            return '<span style="font-variant-numeric:tabular-nums">0ms</span>'
+        return fmt(n)
+
+    rag_rows = [
+        ("总时长均值", lambda d, _r: fmt(d.get("avg_wall_clock_s"))),
+        ("总时长 p95", lambda d, _r: fmt(d.get("p95_wall_clock_s"))),
+        ("端到端均值", lambda d, _r: fmt(d.get("avg_elapsed_s"))),
+        ("向量召回均值", lambda d, _r: fmt(d.get("avg_total_s"))),
+        ("向量召回 p95", lambda d, _r: fmt(d.get("p95_total_s"))),
+        ("模型重排均值", lambda d, _r: fmt(d.get("avg_rerank_seconds_s"))),
+        ("模型重排 p95", lambda d, _r: fmt(d.get("p95_rerank_seconds_s"))),
+    ]
+    agent_rows = [
+        ("总时长均值", lambda d, _r: fmt(d.get("avg_wall_clock_s"))),
+        ("总时长 p95", lambda d, _r: fmt(d.get("p95_wall_clock_s"))),
+        ("端到端均值", lambda d, _r: fmt(d.get("avg_elapsed_s") if d.get("avg_elapsed_s") is not None else d.get("avg_wall_clock_s"))),
+        ("端到端 p95", lambda d, _r: fmt(d.get("p95_elapsed_s") if d.get("p95_elapsed_s") is not None else d.get("p95_wall_clock_s"))),
+        ("向量召回均值", lambda d, _r: fmt(d.get("avg_vector_recall_seconds_s"))),
+        ("向量召回 p95", lambda d, _r: fmt(d.get("p95_vector_recall_seconds_s"))),
+        ("融合排序均值", lambda d, _r: fmt_zeroable(d.get("avg_rerank_seconds_s"))),
+        ("融合排序 p95", lambda d, _r: fmt_zeroable(d.get("p95_rerank_seconds_s"))),
+    ]
+    row_defs = (rag_rows if module == "rag" else agent_rows) + [
+        ("当前集断言", lambda _d, run: _summarize_assertion_scope_html((((run.get("assertions") or {}).get(module) or {}).get("by_length") or {}).get(length)),),
+        ("全局断言", lambda _d, run: _summarize_assertion_scope_html((((run.get("assertions") or {}).get(module) or {}).get("global"))),),
+        ("当前集失败项", lambda _d, run: _summarize_assertion_failures_html((((run.get("assertions") or {}).get(module) or {}).get("by_length") or {}).get(length)),),
+    ]
+
+    head_cells: list[str] = []
+    for index, run in enumerate(recent):
+        ts = str(run.get("timestamp") or "").replace("T", " ")[5:16]
+        mods = "+".join(
+            {"rag": "RAG", "agent": "AGENT", "hybrid": "HYBRID"}.get(str(item), str(item).upper())
+            for item in ((run.get("config") or {}).get("modules") or [])
+        )
+        latest_class = ' class="bm-latest"' if index == 0 else ""
+        head_cells.append(
+            f'<th{latest_class}>{_esc(ts)}<br><small style="font-weight:normal;color:#9a9f8f">{_esc(mods)}</small></th>'
+        )
+    thead = '<thead><tr><th style="min-width:120px">指标</th>' + "".join(head_cells) + '</tr></thead>'
+    rows = []
+    for label, getter in row_defs:
+        cell_class = "benchmark-assert-cell" if ("断言" in label or "失败项" in label) else "benchmark-metric-cell"
+        cells = []
+        for run in recent:
+            module_payload = run.get(module) if isinstance(run.get(module), dict) else {}
+            by_length = module_payload.get("by_length") if isinstance(module_payload, dict) else {}
+            data = by_length.get(length) if isinstance(by_length, dict) else {}
+            cells.append(f'<td class="{cell_class}">{getter(data if isinstance(data, dict) else {}, run)}</td>')
+        rows.append(f'<tr><td style="white-space:nowrap;color:#b0b89a;font-size:0.82em">{_esc(label)}</td>{"".join(cells)}</tr>')
+    return f'{thead}<tbody>{"".join(rows)}</tbody>'
+
+
+def _get_dashboard_prefill() -> dict[str, Any]:
+    """Return the dashboard SSR payload.
+
+    Prefer the full overview so the first HTML already contains the latency,
+    observability, startup, and ticket insight blocks. If that build fails,
+    fall back to the lighter core payload plus lightweight extras.
+    """
+    try:
+        return get_dashboard_overview(force=False)
+    except Exception:
+        base = get_dashboard_overview_core()
+        prefill: dict[str, Any] = dict(base)
+        if "startup" not in prefill:
+            try:
+                prefill["startup"] = _load_startup_status_cached()
+            except Exception:
+                pass
+        if "ticket_weekly_stats" not in prefill:
+            try:
+                prefill["ticket_weekly_stats"] = build_ticket_weekly_stats(weeks=12)
+            except Exception:
+                pass
+        return prefill
+
+
+def _tickets_prefill_data() -> dict[str, Any]:
+    """Return the default non_closed ticket list for SSR JSON embedding.
+
+    Matches the shape returned by GET /api/dashboard/tickets so that
+    bootstrapTicketsTab() can consume it directly on first paint without
+    making a network request.
+    """
+    try:
+        items = list_tickets(status="non_closed", limit=200, sort="updated_desc")
+        all_items = list_tickets(limit=5000, sort="updated_desc")
+        return {
+            "ok": True,
+            "count": len(items),
+            "items": items,
+            "filters": build_ticket_facets(all_items),
+            "applied_filters": {
+                "status": "non_closed",
+                "priority": "all",
+                "domain": "all",
+                "category": "all",
+                "search": "",
+                "created_from": "",
+                "created_to": "",
+                "sort": "updated_desc",
+            },
+        }
+    except Exception:
+        return {"ok": False, "count": 0, "items": [], "filters": {}, "applied_filters": {}}
+
+
+def _benchmark_prefill_data() -> dict[str, Any]:
+    """Return benchmark history + case sets for SSR JSON embedding.
+
+    Lets bootstrapBenchmarkTab() render the history table and populate the
+    case-set select on first paint, before any network requests fire.
+    """
+    try:
+        from web.api.benchmark import _load_history as _bm_load_history
+        from web.api.benchmark import get_benchmark_case_sets as _bm_cases
+        return {
+            "history": {"results": _bm_load_history()},
+            "cases": _bm_cases(),
+        }
+    except Exception:
+        return {"history": {"results": []}, "cases": {"case_sets": [], "chains": []}}
+
+
+def _agent_sessions_html_ssr(max_sessions: int = 30) -> str:
+    """Return pre-rendered <li> session items for the initial page load.
+
+    Reads only the summary fields (id, title, updated_at) from each session
+    file, avoiding the heavy message payloads loaded by list_sessions().
+    """
+    sessions_dir = APP_DIR.parent / "data" / "agent_sessions"
+    if not sessions_dir.exists():
+        return ""
+    rows: list[dict[str, str]] = []
+    for path in sessions_dir.glob("session_*.json"):
+        try:
+            payload = json.loads(path.read_text(encoding="utf-8"))
+        except Exception:
+            continue
+        if not isinstance(payload, dict):
+            continue
+        rows.append({
+            "id": str(payload.get("id") or ""),
+            "title": str(payload.get("title") or "\u65b0\u4f1a\u8bdd"),
+            "updated_at": str(payload.get("updated_at") or ""),
+        })
+    rows.sort(key=lambda s: s["updated_at"], reverse=True)
+    rows = rows[:max_sessions]
+    if not rows:
+        return ""
+    parts = [
+        f'<li data-session-id="{_esc(s["id"])}" title="{_esc(s["title"])}">'
+        f'<div class="title">{_esc(s["title"])}</div>'
+        f'<div class="meta">{_esc(s["updated_at"])}</div>'
+        f"</li>"
+        for s in rows
+    ]
+    return "\n".join(parts)
+
+
 BUG_TICKET_SYNC_SCRIPT = PROJECT_ROOT / "scripts" / "bug_ticket_sync_hook.py"
 BUG_TICKET_SYNC_FILE = PROJECT_ROOT / "nav_dashboard" / "data" / "tickets.jsonl"
 BUG_TICKET_BACKFILL_STATE_FILE = PROJECT_ROOT / "nav_dashboard" / "data" / "bug_ticket_backfill_state.json"
@@ -1818,6 +2668,93 @@ def _build_overview() -> dict[str, Any]:
     }
 
 
+def _build_overview_core() -> dict[str, Any]:
+    """Fast subset of overview: only the counters needed for first-paint cards.
+
+    Skips: latency traces, agent metrics, missing queries, feedback,
+    runtime data, ticket trends — those are all deferred to the full overview.
+    """
+    rag_docs, rag_changed, rag_sources = _count_rag_index_docs()
+    lib_total, lib_by_media, lib_vector_rows, lib_graph_nodes, lib_graph_edges, lib_this_year = _library_counts()
+    lib_graph_quality = _library_graph_quality(lib_total, lib_vector_rows)
+    rag_graph_nodes, rag_graph_edges = _rag_graph_counts()
+    month_web, month_deepseek, quota_daily = _load_monthly_quota_counts()
+    session_count, message_count = _agent_session_counts()
+    rag_qa_sessions, rag_qa_messages = _rag_qa_session_counts()
+    startup = _load_startup_status_cached()
+
+    warnings: list[str] = []
+    if startup.get("status") == "unreachable":
+        warnings.append("Startup-status 接口不可达")
+    if (lib_graph_quality.get("item_coverage_rate") or 0) < 0.7 and lib_total > 0:
+        warnings.append("Library Graph 条目覆盖率偏低")
+    if (lib_graph_quality.get("isolated_node_rate") or 0) > 0.2:
+        warnings.append("Library Graph 孤点率偏高")
+
+    return {
+        "ok": True,
+        "is_core": True,
+        "generated_at": datetime.now().isoformat(timespec="seconds"),
+        "deployed_at": _DEPLOY_TIME,
+        "month": datetime.now().strftime("%Y-%m"),
+        "rag": {
+            "indexed_documents": rag_docs,
+            "changed_pending": rag_changed,
+            "source_markdown_files": rag_sources,
+            "graph_nodes": rag_graph_nodes,
+            "graph_edges": rag_graph_edges,
+            "nodes_per_doc": _safe_div(rag_graph_nodes, rag_docs),
+            "edges_per_node": _safe_div(rag_graph_edges, rag_graph_nodes),
+        },
+        "library": {
+            "total_items": lib_total,
+            "by_media": lib_by_media,
+            "vector_rows": lib_vector_rows,
+            "graph_nodes": lib_graph_nodes,
+            "graph_edges": lib_graph_edges,
+            "graph_quality": lib_graph_quality,
+            "this_year_items": lib_this_year,
+        },
+        "api_usage": {
+            "month_web_search_calls": month_web,
+            "month_deepseek_calls": month_deepseek,
+            **quota_daily,
+        },
+        "agent": {
+            "session_count": session_count,
+            "message_count": message_count,
+        },
+        "rag_qa": {
+            "session_count": rag_qa_sessions,
+            "message_count": rag_qa_messages,
+        },
+        "startup": startup,
+        # Heavy fields are absent in core; frontend treats missing keys as {}
+        "retrieval_latency": {},
+        "cache_stats": {},
+        "retrieval_by_profile": {},
+        "retrieval_by_search_mode": {},
+        "agent_by_profile": {},
+        "agent_by_search_mode": {},
+        "agent_by_query_type": {},
+        "rerank_quality": {},
+        "missing_queries_last_30d": {"count": 0, "items": [], "sample_queries": []},
+        "chat_feedback": {"count": 0, "items": []},
+        "ticket_weekly_stats": {},
+        "agent_wall_clock": {},
+        "runtime_data": {},
+        "warnings": warnings,
+    }
+
+
+# ── Core overview cache (separate from full cache) ────────────────────────────
+_OVERVIEW_CORE_CACHE_TTL = float(os.getenv("NAV_DASHBOARD_CORE_CACHE_TTL", "15"))
+_overview_core_cache: dict[str, Any] | None = None
+_overview_core_cache_at: float = 0.0
+_overview_core_cache_lock = threading.Lock()
+
+
+
 @app.get("/api/dashboard/overview")
 def get_dashboard_overview(force: bool = False) -> dict[str, Any]:
     global _overview_cache, _overview_cache_at  # noqa: PLW0603
@@ -1830,6 +2767,27 @@ def get_dashboard_overview(force: bool = False) -> dict[str, Any]:
         _overview_cache = result
         _overview_cache_at = time.monotonic()
     return result
+
+
+@app.get("/api/dashboard/overview/core")
+def get_dashboard_overview_core() -> dict[str, Any]:
+    """Fast-path overview: core counters only, no latency/traces/feedback/tickets.
+
+    Served from a 15-second cache.  The frontend calls this on first bootstrap
+    to paint cards quickly, then fires the full /api/dashboard/overview in the
+    background to fill in the detail tables.
+    """
+    global _overview_core_cache, _overview_core_cache_at  # noqa: PLW0603
+    now = time.monotonic()
+    with _overview_core_cache_lock:
+        if _overview_core_cache is not None and (now - _overview_core_cache_at) < _OVERVIEW_CORE_CACHE_TTL:
+            return _overview_core_cache
+    result = _build_overview_core()
+    with _overview_core_cache_lock:
+        _overview_core_cache = result
+        _overview_core_cache_at = time.monotonic()
+    return result
+
 
 
 @app.get("/api/dashboard/missing-queries")
@@ -2418,7 +3376,12 @@ async def index(request: Request):
 
     local_model = os.getenv("AI_SUMMARY_LOCAL_LLM_MODEL", "qwen2.5-7b-instruct").strip() or "qwen2.5-7b-instruct"
     deepseek_model = os.getenv("DEEPSEEK_MODEL", "deepseek-chat").strip() or "deepseek-chat"
-    dashboard_prefill = get_dashboard_overview()
+    # Use the richest available overview for SSR prefill: full cached data
+    # when warm (the common case), otherwise augmented core on cold boot.
+    dashboard_prefill = _get_dashboard_prefill()
+    dashboard_jobs_prefill = list_dashboard_jobs(only_active=True)
+    tickets_prefill = _tickets_prefill_data()
+    benchmark_prefill = _benchmark_prefill_data()
 
     return templates.TemplateResponse(
         "index.html",
@@ -2428,8 +3391,29 @@ async def index(request: Request):
             "library_tracker_url": library_tracker_url,
             "local_model": local_model,
             "deepseek_model": deepseek_model,
+            "browser_cards": browser_cards,
             "custom_cards_json": json.dumps(browser_cards, ensure_ascii=False),
             "dashboard_prefill_json": json.dumps(dashboard_prefill, ensure_ascii=False),
+            "dashboard_prefill": dashboard_prefill,
+            "dashboard_grid_html": _render_dashboard_core_cards_html(dashboard_prefill),
+            "dashboard_latency_table_html": _render_dashboard_latency_table_html(dashboard_prefill),
+            "dashboard_observability_table_html": _render_dashboard_observability_table_html(dashboard_prefill),
+            "dashboard_jobs_html": _render_dashboard_jobs_html(dashboard_jobs_prefill),
+            "dashboard_ticket_summary_meta": _render_dashboard_ticket_summary_meta_text(dashboard_prefill.get("ticket_weekly_stats") if isinstance(dashboard_prefill, dict) else {}),
+            "dashboard_ticket_summary_html": _render_dashboard_ticket_summary_html(dashboard_prefill.get("ticket_weekly_stats") if isinstance(dashboard_prefill, dict) else {}),
+            "dashboard_ticket_trend_meta": _render_dashboard_ticket_trend_meta_text(dashboard_prefill.get("ticket_weekly_stats") if isinstance(dashboard_prefill, dict) else {}),
+            "dashboard_ticket_trend_html": _render_dashboard_ticket_trend_html(dashboard_prefill.get("ticket_weekly_stats") if isinstance(dashboard_prefill, dict) else {}),
+            "dashboard_startup_logs_text": _render_dashboard_startup_logs_text(dashboard_prefill),
+            "agent_sessions_html": _agent_sessions_html_ssr(),
+            "tickets_meta_text": _render_tickets_meta_text(tickets_prefill),
+            "tickets_list_html": _render_tickets_list_html(tickets_prefill),
+            "tickets_prefill_json": json.dumps(tickets_prefill, ensure_ascii=False),
+            "benchmark_last_run_text": _render_benchmark_last_run_text(benchmark_prefill),
+            "benchmark_case_set_options_html": _render_benchmark_case_set_options_html(benchmark_prefill),
+            "benchmark_history_table_html": _render_benchmark_history_table_html(benchmark_prefill),
+            "benchmark_prefill_json": json.dumps(benchmark_prefill, ensure_ascii=False),
+            "js_version": _static_version("app.js"),
+            "css_version": _static_version("app.css"),
         },
     )
 

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 import json
 import math
 import os
@@ -44,7 +45,7 @@ GENERIC_QUERY_TOKENS = {
     "请问",
     "帮我",
 }
-FILTER_FIELDS = ["year", "rating", "media_type", "nationality", "category", "channel"]
+FILTER_FIELDS = ["year", "rating", "media_type", "nationality", "category", "channel", "author"]
 FORM_SUGGESTION_FIELDS = ["author", "nationality", "category", "channel", "publisher"]
 MULTI_TAG_FIELDS = {"author", "nationality", "category", "publisher"}
 STATS_DIMENSION_FIELDS = ["category", "nationality", "channel", "author", "publisher"]
@@ -236,6 +237,173 @@ class BadItemIdError(ValueError):
     pass
 
 
+# ── Search result cache ───────────────────────────────────────────────────────
+# Pagination is cheap when the full scored list is cached across page turns.
+# Cache is keyed on (query, mode, filters); TTL prevents stale data on edits.
+_SEARCH_CACHE: dict[str, dict[str, Any]] = {}
+_SEARCH_CACHE_TTL = 60.0  # seconds
+
+
+def _search_cache_key(query: str, mode: str, filters: dict[str, list[str]] | None) -> str:
+    raw = json.dumps({"q": query or "", "mode": mode, "f": filters or {}}, sort_keys=True, ensure_ascii=False)
+    return hashlib.md5(raw.encode()).hexdigest()
+
+
+def invalidate_search_cache() -> None:
+    """Call after any write operation so the next search re-scores."""
+    _SEARCH_CACHE.clear()
+    _invalidate_metadata_cache()
+
+
+# ── Metadata caches (filter options, form suggestions, facets) ────────────────
+# These are computed from a full item scan and are expensive.
+# They are valid until the next write, so cache them indefinitely and bust on
+# every _save_payload() call.
+#
+# Facet results are keyed by filter-combo hash.  To prevent unbounded growth
+# (unique filter combos accumulate across a session) we keep at most
+# _FACETS_CACHE_MAX_ENTRIES entries using a simple insertion-order eviction.
+
+_FACETS_CACHE_MAX_ENTRIES = 32
+
+_META_STATIC: dict[str, Any] = {}   # "filter_options", "form_suggestions"
+_META_FACETS: dict[str, Any] = {}   # "facets_<hash>" — bounded LRU-style
+_META_FACETS_ORDER: list[str] = []  # insertion order for eviction
+_META_CACHE_LOCK = threading.Lock()
+
+
+def _invalidate_metadata_cache() -> None:
+    with _META_CACHE_LOCK:
+        _META_STATIC.clear()
+        _META_FACETS.clear()
+        _META_FACETS_ORDER.clear()
+
+
+def _cached_filter_options() -> dict[str, list[str]]:
+    key = "filter_options"
+    with _META_CACHE_LOCK:
+        if key in _META_STATIC:
+            return _META_STATIC[key]
+    result = _compute_filter_options()
+    with _META_CACHE_LOCK:
+        _META_STATIC[key] = result
+    return result
+
+
+def _compute_filter_options() -> dict[str, list[str]]:
+    items = _iter_all_items()
+    options: dict[str, set[str]] = {k: set() for k in FILTER_FIELDS}
+    for item in items:
+        for field in FILTER_FIELDS:
+            if field in MULTI_TAG_FIELDS:
+                for token in _split_multi_tags(item.get(field)):
+                    options[field].add(token)
+                continue
+            value = _filter_scalar_value(item, field)
+            if value:
+                options[field].add(value)
+    return {k: _sort_filter_values(k, v) for k, v in options.items()}
+
+
+def _cached_form_suggestions() -> dict[str, list[str]]:
+    key = "form_suggestions"
+    with _META_CACHE_LOCK:
+        if key in _META_STATIC:
+            return _META_STATIC[key]
+    result = _compute_form_suggestions()
+    with _META_CACHE_LOCK:
+        _META_STATIC[key] = result
+    return result
+
+
+def _compute_form_suggestions() -> dict[str, list[str]]:
+    items = _iter_all_items()
+    options: dict[str, set[str]] = {field: set() for field in FORM_SUGGESTION_FIELDS}
+    for item in items:
+        for field in FORM_SUGGESTION_FIELDS:
+            if field in MULTI_TAG_FIELDS:
+                for token in _split_multi_tags(item.get(field)):
+                    options[field].add(token)
+                continue
+            value = str(item.get(field) or "").strip()
+            if value:
+                options[field].add(value)
+    return {field: _sort_text_values(values) for field, values in options.items()}
+
+
+def _cached_facet_counts(filters: dict[str, list[str]] | None = None) -> dict[str, dict[str, int]]:
+    filter_key = hashlib.md5(
+        json.dumps(filters or {}, sort_keys=True, ensure_ascii=False).encode()
+    ).hexdigest()
+    key = f"facets_{filter_key}"
+    with _META_CACHE_LOCK:
+        if key in _META_FACETS:
+            return _META_FACETS[key]
+    result = _compute_facet_counts(filters)
+    with _META_CACHE_LOCK:
+        if key not in _META_FACETS:
+            # Evict oldest entry when capacity is reached
+            while len(_META_FACETS_ORDER) >= _FACETS_CACHE_MAX_ENTRIES:
+                oldest = _META_FACETS_ORDER.pop(0)
+                _META_FACETS.pop(oldest, None)
+            _META_FACETS[key] = result
+            _META_FACETS_ORDER.append(key)
+    return result
+
+
+def _compute_facet_counts(filters: dict[str, list[str]] | None = None) -> dict[str, dict[str, int]]:
+    items = _iter_all_items()
+    normalized_filters = filters or {}
+    counts: dict[str, dict[str, int]] = {field: {} for field in FILTER_FIELDS}
+
+    for target_field in FILTER_FIELDS:
+        other_filters: dict[str, list[str]] = {
+            field: list(normalized_filters.get(field, []))
+            for field in FILTER_FIELDS
+            if field != target_field
+        }
+        field_counts: dict[str, int] = {}
+        for item in items:
+            if not _matches_filters(item, other_filters):
+                continue
+            if target_field in MULTI_TAG_FIELDS:
+                for token in _split_multi_tags(item.get(target_field)):
+                    field_counts[token] = field_counts.get(token, 0) + 1
+                continue
+            value = _filter_scalar_value(item, target_field)
+            if not value:
+                continue
+            field_counts[value] = field_counts.get(value, 0) + 1
+        counts[target_field] = field_counts
+
+    return counts
+
+
+def get_bootstrap_data(initial_query: str = "", initial_limit: int = 50) -> dict[str, Any]:
+    """Return all data needed for the library_tracker first paint in a single call.
+
+    Combines filter options, form suggestions, unfiltered facet counts, and
+    the first page of the default keyword search so the frontend only needs
+    one network round-trip on cold start.
+    """
+    filter_options = _cached_filter_options()
+    suggestions = _cached_form_suggestions()
+    facets = _cached_facet_counts(None)
+    initial_results = search_items(
+        query=initial_query,
+        mode="keyword",
+        filters=None,
+        limit=initial_limit,
+        offset=0,
+    )
+    return {
+        "filter_options": filter_options,
+        "suggestions": suggestions,
+        "facets": facets,
+        "initial_search": initial_results,
+    }
+
+
 def _json_path(media_type: str) -> Path:
     filename = MEDIA_FILES.get(media_type)
     if not filename:
@@ -291,6 +459,7 @@ def _load_payload(media_type: str) -> dict[str, Any]:
 
 
 def _save_payload(media_type: str, payload: dict[str, Any]) -> None:
+    invalidate_search_cache()
     path = _json_path(media_type)
     path.parent.mkdir(parents=True, exist_ok=True)
     payload["record_count"] = len(payload.get("records", []))
@@ -495,6 +664,19 @@ def _keyword_idf(token: str) -> float:
 def _matches_filters(item: dict[str, Any], filters: dict[str, list[str]] | None) -> bool:
     if not filters:
         return True
+    # ── year_range: ["start_year", "end_year"] — range semantics, inclusive ──
+    # Preferred over enumerating every year in filters["year"] for multi-year
+    # windows.  start/end are 4-digit year strings; both must be present.
+    year_range_vals = [str(v).strip() for v in filters.get("year_range", []) if str(v).strip()]
+    if len(year_range_vals) >= 2:
+        _item_yr = _item_year(item)
+        try:
+            _yr_start = int(year_range_vals[0])
+            _yr_end = int(year_range_vals[-1])
+            if _item_yr is None or not (_yr_start <= _item_yr <= _yr_end):
+                return False
+        except (ValueError, TypeError):
+            pass
     for field in FILTER_FIELDS:
         selected = [str(v).strip() for v in filters.get(field, []) if str(v).strip()] if field in filters else []
         if not selected:
@@ -860,36 +1042,11 @@ def _build_sql_preview(filters: dict[str, list[str]] | None, query: str, mode: s
 
 
 def get_filter_options() -> dict[str, list[str]]:
-    items = _iter_all_items()
-    options: dict[str, set[str]] = {k: set() for k in FILTER_FIELDS}
-    for item in items:
-        for field in FILTER_FIELDS:
-            if field in MULTI_TAG_FIELDS:
-                for token in _split_multi_tags(item.get(field)):
-                    options[field].add(token)
-                continue
-            value = _filter_scalar_value(item, field)
-            if value:
-                options[field].add(value)
-    return {k: _sort_filter_values(k, v) for k, v in options.items()}
+    return _cached_filter_options()
 
 
 def get_form_suggestions() -> dict[str, list[str]]:
-    items = _iter_all_items()
-    options: dict[str, set[str]] = {field: set() for field in FORM_SUGGESTION_FIELDS}
-
-    for item in items:
-        for field in FORM_SUGGESTION_FIELDS:
-            if field in MULTI_TAG_FIELDS:
-                for token in _split_multi_tags(item.get(field)):
-                    options[field].add(token)
-                continue
-
-            value = str(item.get(field) or "").strip()
-            if value:
-                options[field].add(value)
-
-    return {field: _sort_text_values(values) for field, values in options.items()}
+    return _cached_form_suggestions()
 
 
 def get_facet_counts(filters: dict[str, list[str]] | None = None) -> dict[str, dict[str, int]]:
@@ -898,31 +1055,7 @@ def get_facet_counts(filters: dict[str, list[str]] | None = None) -> dict[str, d
     For each target field, count values while applying filters from other fields only.
     This enables linked filtering behavior in the frontend.
     """
-    items = _iter_all_items()
-    normalized_filters = filters or {}
-    counts: dict[str, dict[str, int]] = {field: {} for field in FILTER_FIELDS}
-
-    for target_field in FILTER_FIELDS:
-        other_filters: dict[str, list[str]] = {
-            field: list(normalized_filters.get(field, []))
-            for field in FILTER_FIELDS
-            if field != target_field
-        }
-        field_counts: dict[str, int] = {}
-        for item in items:
-            if not _matches_filters(item, other_filters):
-                continue
-            if target_field in MULTI_TAG_FIELDS:
-                for token in _split_multi_tags(item.get(target_field)):
-                    field_counts[token] = field_counts.get(token, 0) + 1
-                continue
-            value = _filter_scalar_value(item, target_field)
-            if not value:
-                continue
-            field_counts[value] = field_counts.get(value, 0) + 1
-        counts[target_field] = field_counts
-
-    return counts
+    return _cached_facet_counts(filters)
 
 
 def _item_year(item: dict[str, Any]) -> int | None:
@@ -1019,8 +1152,49 @@ def search_items(
     if mode not in {"keyword", "vector"}:
         mode = "keyword"
 
-    items = [item for item in _iter_all_items() if _matches_filters(item, filters)]
     q = query or ""
+    cache_key = _search_cache_key(q, mode, filters)
+    now = time.monotonic()
+    cached = _SEARCH_CACHE.get(cache_key)
+
+    if cached and now - cached["ts"] < _SEARCH_CACHE_TTL:
+        scored: list[SearchResult] = cached["scored"]
+        graph_expand: dict[str, Any] = cached["graph_expand"]
+    else:
+        scored, graph_expand = _compute_scored(q, mode, filters)
+        _SEARCH_CACHE[cache_key] = {"ts": now, "scored": scored, "graph_expand": graph_expand}
+
+    page_size = max(1, int(limit))
+    page_offset = max(0, int(offset))
+    total_count = len(scored)
+    trimmed = scored[page_offset : page_offset + page_size]
+    return {
+        "query": q,
+        "mode": mode,
+        "sql_preview": _build_sql_preview(filters, q, mode),
+        "count": len(trimmed),
+        "total_count": total_count,
+        "offset": page_offset,
+        "limit": page_size,
+        "graph_expansion": graph_expand if mode == "vector" else {},
+        "results": [
+            {
+                **_to_result(r.item, r.score),
+                "keyword_hits": _keyword_hits(r.item, q) if mode == "keyword" and q.strip() else [],
+            }
+            for r in trimmed
+        ],
+    }
+
+
+def _compute_scored(
+    q: str,
+    mode: str,
+    filters: dict[str, list[str]] | None,
+) -> tuple[list[SearchResult], dict[str, Any]]:
+    """Build and sort the full scored result list (no pagination)."""
+    items = [item for item in _iter_all_items() if _matches_filters(item, filters)]
+    graph_expand: dict[str, Any] = {}
 
     if mode == "vector":
         graph_expand = library_graph.expand_library_query(graph_dir=VECTOR_DB_DIR, query=q)
@@ -1055,27 +1229,7 @@ def search_items(
             scored = [r for r in scored if r.score > 0]
             scored.sort(key=lambda x: (x.score, _date_sort_key(x.item)), reverse=True)
 
-    page_size = max(1, int(limit))
-    page_offset = max(0, int(offset))
-    total_count = len(scored)
-    trimmed = scored[page_offset : page_offset + page_size]
-    return {
-        "query": q,
-        "mode": mode,
-        "sql_preview": _build_sql_preview(filters, q, mode),
-        "count": len(trimmed),
-        "total_count": total_count,
-        "offset": page_offset,
-        "limit": page_size,
-        "graph_expansion": graph_expand if mode == "vector" else {},
-        "results": [
-            {
-                **_to_result(r.item, r.score),
-                "keyword_hits": _keyword_hits(r.item, q) if mode == "keyword" and q.strip() else [],
-            }
-            for r in trimmed
-        ],
-    }
+    return scored, graph_expand
 
 
 def get_item(item_id: str) -> dict[str, Any]:

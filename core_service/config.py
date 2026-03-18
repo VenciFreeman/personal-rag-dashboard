@@ -31,6 +31,7 @@ class CoreSettings:
     tmdb_read_access_token: str
     tmdb_timeout: int
     tmdb_language: str
+    bangumi_access_token: str
 
 
 def _workspace_root() -> Path:
@@ -78,6 +79,7 @@ def get_settings() -> CoreSettings:
     external_cfg = file_cfg.get("external_apis", {}) if isinstance(file_cfg.get("external_apis"), dict) else {}
     mediawiki_cfg = external_cfg.get("mediawiki", {}) if isinstance(external_cfg.get("mediawiki"), dict) else {}
     tmdb_cfg = external_cfg.get("tmdb", {}) if isinstance(external_cfg.get("tmdb"), dict) else {}
+    bangumi_cfg = external_cfg.get("bangumi", {}) if isinstance(external_cfg.get("bangumi"), dict) else {}
 
     api_base_url = _first_non_empty(
         os.getenv("DEEPSEEK_BASE_URL", ""),
@@ -221,6 +223,13 @@ def get_settings() -> CoreSettings:
         "zh-CN",
     )
 
+    bangumi_access_token = _first_non_empty(
+        os.getenv("BANGUMI_ACCESS_TOKEN", ""),
+        os.getenv("NAV_DASHBOARD_BANGUMI_ACCESS_TOKEN", ""),
+        str(bangumi_cfg.get("access_token", "")),
+        "",
+    )
+
     if local_llm_url and not local_llm_url.rstrip("/").endswith("/v1"):
         local_llm_url = local_llm_url.rstrip("/") + "/v1"
 
@@ -247,4 +256,5 @@ def get_settings() -> CoreSettings:
         tmdb_read_access_token=tmdb_read_access_token,
         tmdb_timeout=tmdb_timeout,
         tmdb_language=tmdb_language,
+        bangumi_access_token=bangumi_access_token,
     )

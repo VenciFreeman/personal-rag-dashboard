@@ -85,6 +85,17 @@ def get_facets(req: FacetRequest) -> dict[str, Any]:
     return {"facets": library_service.get_facet_counts(req.filters)}
 
 
+@router.get("/bootstrap")
+def get_bootstrap(limit: int = 50) -> dict[str, Any]:
+    """Single-request cold-start data: filter options + suggestions + facets + first page.
+
+    Replaces the sequential /meta + /suggestions + /facets + /search calls that
+    the frontend issued on every page load.  All four data sets are computed in
+    one pass (with caching) and returned together.
+    """
+    return library_service.get_bootstrap_data(initial_query="", initial_limit=max(1, min(limit, 200)))
+
+
 @router.get("/stats/overview")
 def get_stats_overview() -> dict[str, Any]:
     return library_service.get_stats_overview()

@@ -5,6 +5,7 @@ import json
 import os
 import re
 import threading
+from functools import lru_cache
 from pathlib import Path
 from typing import Any
 
@@ -15,9 +16,11 @@ _GRAPH_WRITE_LOCK = threading.Lock()
 GRAPH_FILE_NAME = "library_knowledge_graph.json"
 GRAPH_SCHEMA_VERSION = 3
 MAX_ITEM_CONCEPTS = 8
+MAX_LLM_CONCEPT_TOPUP = 2
 MAX_RELATED_PER_ITEM = 16
 MAX_CONCEPT_LEN = 24
 MAX_NOTE_LABEL_LEN = 72
+MAX_NOTE_EXCERPT_LEN = 48
 
 STRUCTURED_RELATIONS = (
     {"field": "author", "rel": "author", "node_type": "entity", "multi": True},
@@ -47,6 +50,24 @@ NOTE_MARKER_TERMS = (
     "看下来",
     "玩下来",
 )
+
+
+@lru_cache(maxsize=1)
+def _load_concept_ontology() -> dict[str, Any]:
+    path = Path(__file__).resolve().parent / "library_concept_ontology.json"
+    payload = _safe_read_json(path, default={})
+    if not isinstance(payload, dict):
+        return {}
+    media_type_concepts = payload.get("media_type_concepts")
+    if not isinstance(media_type_concepts, dict):
+        media_type_concepts = {}
+    concept_keyword_aliases = payload.get("concept_keyword_aliases")
+    if not isinstance(concept_keyword_aliases, dict):
+        concept_keyword_aliases = {}
+    return {
+        "media_type_concepts": media_type_concepts,
+        "concept_keyword_aliases": concept_keyword_aliases,
+    }
 
 
 def _safe_read_json(path: Path, default: Any) -> Any:
@@ -118,6 +139,59 @@ def _truncate_note_label(text: str, limit: int = MAX_NOTE_LABEL_LEN) -> str:
     return normalized[: max(8, limit - 1)].rstrip() + "…"
 
 
+def _build_note_label(*, item_title: str, field: str) -> str:
+    field_name = str(field or "note").strip().lower() or "note"
+    title = re.sub(r"\s+", " ", str(item_title or "")).strip()
+    if title:
+        return f"{field_name}: {title}"
+    return field_name
+
+
+def _normalize_note_nodes(nodes: dict[str, dict[str, Any]]) -> bool:
+    item_title_by_item_id: dict[str, str] = {}
+    for node in nodes.values():
+        if not isinstance(node, dict):
+            continue
+        if str(node.get("type") or "") != "item":
+            continue
+        attrs = node.get("attrs") if isinstance(node.get("attrs"), dict) else {}
+        item_id = str(attrs.get("item_id") or "").strip()
+        if not item_id:
+            continue
+        title = re.sub(r"\s+", " ", str(node.get("label") or "")).strip()
+        if title:
+            item_title_by_item_id[item_id] = title
+
+    changed = False
+    for node in nodes.values():
+        if not isinstance(node, dict):
+            continue
+        if str(node.get("type") or "") != "note":
+            continue
+
+        attrs = node.get("attrs") if isinstance(node.get("attrs"), dict) else {}
+        field = str(attrs.get("field") or "note").strip() or "note"
+        item_id = str(attrs.get("item_id") or "").strip()
+        item_title = item_title_by_item_id.get(item_id, "")
+        desired_label = _build_note_label(item_title=item_title, field=field)
+
+        current_label = str(node.get("label") or "").strip()
+        if current_label != desired_label:
+            node["label"] = desired_label
+            changed = True
+
+        text = str(attrs.get("text") or "").strip()
+        if text:
+            desired_excerpt = _truncate_note_label(text, limit=MAX_NOTE_EXCERPT_LEN)
+            if str(attrs.get("excerpt") or "") != desired_excerpt:
+                attrs["excerpt"] = desired_excerpt
+                changed = True
+
+        node["attrs"] = attrs
+
+    return changed
+
+
 def _looks_like_note_text(text: str) -> bool:
     normalized = re.sub(r"\s+", " ", str(text or "")).strip()
     if not normalized:
@@ -172,8 +246,30 @@ def _normalize_concepts(values: list[str]) -> list[str]:
 
 def _heuristic_concepts(item: dict[str, Any]) -> list[str]:
     source: list[str] = []
+
+    ontology = _load_concept_ontology()
+    media_type = str(item.get("media_type") or "").strip().lower()
+    media_type_concepts = ontology.get("media_type_concepts") if isinstance(ontology, dict) else {}
+    if isinstance(media_type_concepts, dict):
+        source.extend(_split_tags(media_type_concepts.get(media_type)))
+
     source.extend(_split_tags(item.get("category")))
     source.extend(_split_tags(item.get("nationality")))
+
+    text_fields = [str(item.get("title") or ""), str(item.get("category") or "")]
+    merged_text = " ".join(text_fields).casefold()
+    aliases = ontology.get("concept_keyword_aliases") if isinstance(ontology, dict) else {}
+    if isinstance(aliases, dict) and merged_text:
+        for concept, keys in aliases.items():
+            concept_text = str(concept or "").strip()
+            if not concept_text:
+                continue
+            key_tokens = _split_tags(keys)
+            if not key_tokens:
+                continue
+            if any(str(token).casefold() in merged_text for token in key_tokens):
+                source.append(concept_text)
+
     return _normalize_concepts(source)[:MAX_ITEM_CONCEPTS]
 
 
@@ -319,6 +415,7 @@ def sync_library_graph(
     nodes = graph.get("nodes", {}) if isinstance(graph.get("nodes"), dict) else {}
     edges = graph.get("edges", []) if isinstance(graph.get("edges"), list) else []
     processed = set(str(x) for x in graph.get("processed_items", []) if str(x).strip())
+    _normalize_note_nodes(nodes)
 
     edge_set: set[str] = set()
     edge_map: dict[str, dict[str, Any]] = {}
@@ -507,22 +604,34 @@ def sync_library_graph(
         review = str(item.get("review") or "").strip()
         if review:
             note_id = _note_node_key(item_id, "review")
+            note_excerpt = _truncate_note_label(review, limit=MAX_NOTE_EXCERPT_LEN)
             upsert_node(
                 note_id,
                 "note",
-                _truncate_note_label(review),
-                {"field": "review", "item_id": item_id, "text": review},
+                _build_note_label(item_title=title, field="review"),
+                {"field": "review", "item_id": item_id, "excerpt": note_excerpt, "text": review},
             )
             add_edge(item_node, "review", note_id, {"field": "review"}, support_item_id=item_id)
 
         llm_concepts, llm_related = _llm_extract_concepts(item)
-        concepts = _normalize_concepts((llm_concepts or []) + _heuristic_concepts(item))[:MAX_ITEM_CONCEPTS]
+        heuristic = _heuristic_concepts(item)
+        llm_pool = _normalize_concepts(llm_concepts or [])
+        llm_topup: list[str] = []
+        heuristic_set = {str(x).casefold() for x in heuristic}
+        for concept in llm_pool:
+            if str(concept).casefold() in heuristic_set:
+                continue
+            llm_topup.append(concept)
+            if len(llm_topup) >= MAX_LLM_CONCEPT_TOPUP:
+                break
+        concepts = _normalize_concepts(heuristic + llm_topup)[:MAX_ITEM_CONCEPTS]
         for concept in concepts:
             cid = concept_label_to_id.get(concept.casefold()) or _node_key("concept", concept)
             concept_ids.append(cid)
             concept_label_to_id.setdefault(concept.casefold(), cid)
             upsert_node(cid, "concept", concept, {"field": "theme", "role": "theme"})
-            add_edge(item_node, "theme", cid, {"source": "llm_or_heuristic"}, support_item_id=item_id)
+            source = "heuristic" if concept.casefold() in heuristic_set else "llm_topup"
+            add_edge(item_node, "theme", cid, {"source": source}, support_item_id=item_id)
 
         deduped_concept_ids: list[str] = []
         seen_concepts: set[str] = set()
@@ -583,12 +692,14 @@ def expand_library_query(*, graph_dir: Path, query: str, max_expand: int = 6) ->
     for node_id, node in nodes.items():
         if not isinstance(node, dict):
             continue
+        node_type = str(node.get("type") or "")
+        if node_type not in {"entity", "concept"}:
+            continue
         label = str(node.get("label") or "")
         low = label.lower()
         if not any(term in low for term in terms):
             continue
 
-        node_type = str(node.get("type") or "")
         attrs = node.get("attrs") or {}
         field = str(attrs.get("field") or "").strip()
         if node_type in {"entity", "concept"} and field in CONSTRAINT_FIELDS:

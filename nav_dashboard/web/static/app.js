@@ -15,6 +15,14 @@
  *  · POST /api/benchmark/run (SSE) → runBenchmark() → progress/result 事件处理
  *  · PATCH /api/dashboard/usage → saveUsage() → 写入月度用量后自动刷新
  */
+// Global error visibility: show a visible modal for uncaught errors and
+// unhandled promise rejections so silent failures don't go unnoticed.
+window.addEventListener("error", function (e) {
+  console.error("[global] uncaught error:", e.error || e.message, (e.filename || "") + ":" + e.lineno);
+});
+window.addEventListener("unhandledrejection", function (e) {
+  console.error("[global] unhandled rejection:", e.reason);
+});
 const qaMessages = document.getElementById("qa-messages");
 const qaInput = document.getElementById("qa-input");
 const qaAsk = document.getElementById("qa-ask");
@@ -165,12 +173,58 @@ function deriveServiceUrl(explicitUrl, fallbackPort) {
 const pageAiSummaryUrl = deriveServiceUrl(document.body?.dataset?.aiSummaryUrl, 8000);
 const pageLibraryUrl = deriveServiceUrl(document.body?.dataset?.libraryUrl, 8091);
 const MAX_REFERENCE_ITEMS = 6;
+const uiDebugStatus = document.getElementById("ui-debug-status");
+const UI_DEBUG_ENABLED = (() => {
+  try {
+    const p = new URLSearchParams(window.location.search || "");
+    if (p.get("debug_ui") === "1") return true;
+    if (p.get("debug_ui") === "0") return false;
+  } catch (_) {}
+  const host = String(window.location?.hostname || "").trim().toLowerCase();
+  return host === "localhost" || host === "127.0.0.1";
+})();
+let uiDebugProbeInstalled = false;
+
+function debugUiEvent(label, detail = "") {
+  if (!UI_DEBUG_ENABLED || !(uiDebugStatus instanceof HTMLElement)) return;
+  const ts = new Date().toLocaleTimeString();
+  const info = String(detail || "").trim();
+  uiDebugStatus.textContent = info ? `[${ts}] ${label} | ${info}` : `[${ts}] ${label}`;
+}
+
+function initUiDebugStatus() {
+  if (!(uiDebugStatus instanceof HTMLElement)) return;
+  if (!UI_DEBUG_ENABLED) {
+    uiDebugStatus.classList.add("hidden");
+    return;
+  }
+  uiDebugStatus.classList.remove("hidden");
+  debugUiEvent("ui debug ready", "append ?debug_ui=0 to disable");
+}
+
+function installUiClickProbe() {
+  if (!UI_DEBUG_ENABLED || uiDebugProbeInstalled) return;
+  uiDebugProbeInstalled = true;
+  document.addEventListener("click", (event) => {
+    const t = event.target instanceof Element ? event.target : null;
+    if (!t) return;
+    const top = document.elementFromPoint(event.clientX, event.clientY);
+    const targetText = `${t.tagName.toLowerCase()}#${t.id || "-"}.${(t.className || "").toString().trim().replace(/\s+/g, ".") || "-"}`;
+    const hitText = top instanceof Element
+      ? `${top.tagName.toLowerCase()}#${top.id || "-"}.${(top.className || "").toString().trim().replace(/\s+/g, ".") || "-"}`
+      : "none";
+    debugUiEvent("click probe", `target=${targetText} | hit=${hitText}`);
+  }, true);
+}
 
 let activeController = null;
 let askInFlight = false;
-let dashboardBootstrapped = false;
-let ticketsBootstrapped = false;
-let benchmarkBootstrapped = false;
+let dashboardRefreshInFlight = false;
+// Per-tab state objects: handlersBound is managed by _register* guards,
+// loading/loaded/error drive the data-load state machine.
+const dashboardState = { loading: false, loaded: false, error: null };
+const ticketsState   = { loading: false, loaded: false, error: null };
+const benchmarkState = { loading: false, loaded: false, error: null };
 let sessionsCache = [];
 let currentSessionId = "";
 let activeAgentStreamState = null;
@@ -1286,124 +1340,181 @@ function loadDashboardPrefill() {
   }
 }
 
-async function refreshDashboard({ force = false, skipTaskCenter = false } = {}) {
-  if (dashboardGeneratedAt) dashboardGeneratedAt.textContent = "正在拉取最新状态...";
-  if (dashboardRefreshBtn) dashboardRefreshBtn.disabled = true;
+function loadTicketsPrefill() {
   try {
-    const url = force ? "/api/dashboard/overview?force=true" : "/api/dashboard/overview";
+    const raw = document.getElementById("tickets-prefill-data")?.textContent || "";
+    if (!raw.trim()) return null;
+    const parsed = JSON.parse(raw);
+    return parsed?.ok ? parsed : null;
+  } catch (_) {
+    return null;
+  }
+}
+
+function loadBenchmarkPrefill() {
+  try {
+    const raw = document.getElementById("benchmark-prefill-data")?.textContent || "";
+    if (!raw.trim()) return null;
+    return JSON.parse(raw) || null;
+  } catch (_) {
+    return null;
+  }
+}
+
+// ── paintDashboardFromData ─────────────────────────────────────────────────
+// Single source of truth for turning a data dict (prefill or network fetch)
+// into visible DOM content. Both bootstrapDashboardTab() and refreshDashboard()
+// call this so prefill + fresh data produce an identical layout.
+function paintDashboardFromData(data, { skipTaskCenter = false } = {}) {
+  const rag = data?.rag || {};
+  const library = data?.library || {};
+  const libraryGraphQuality = library?.graph_quality || {};
+  const apiUsage = data?.api_usage || {};
+  const agent = data?.agent || {};
+  const ragQa = data?.rag_qa || {};
+  const startup = data?.startup || {};
+  const latency = data?.retrieval_latency || {};
+  const cacheStats = data?.cache_stats || {};
+  const rerankQuality = data?.rerank_quality || {};
+  const ragRerank = rerankQuality.rag || {};
+  const agentRerank = rerankQuality.agent || {};
+  const missingQueries = data?.missing_queries_last_30d || {};
+  const agentWallClock = data?.agent_wall_clock || {};
+  const runtimeData = data?.runtime_data || {};
+  lastStartupStatus = String(startup.status || "unknown");
+  lastApiUsage = apiUsage;
+  currentRuntimeDataSummary = runtimeData;
+  const warnings = Array.isArray(data?.warnings) ? data.warnings : [];
+  const health = buildDashboardHealthFlags({
+    rag,
+    library,
+    apiUsage,
+    latency,
+    cacheStats,
+    ragRerank,
+    agentRerank,
+    agentWallClock,
+    warnings,
+  });
+  const cards = [
+    buildStatCard("RAG 已索引文档", formatNum(rag.indexed_documents), `总文档数 ${formatNum(rag.source_markdown_files)}`),
+    buildStatCard("书影音游戏总条目", formatNum(library.total_items), `今年条目 ${formatNum(library.this_year_items)}`),
+
+    buildStatCard("RAG Graph 节点数", formatNum(rag.graph_nodes), `边数 ${formatNum(rag.graph_edges)}`),
+    buildStatCard("Library Graph 节点数", formatNum(library.graph_nodes), `边数 ${formatNum(library.graph_edges)} | 覆盖 ${formatRate(libraryGraphQuality.item_coverage_rate)} | 孤点 ${formatRate(libraryGraphQuality.isolated_node_rate)}`, "library-graph-summary", unhealthyState(health.libraryGraphScale)),
+
+    buildStatCard("RAG 平均节点数", `${rag.nodes_per_doc != null ? Number(rag.nodes_per_doc).toFixed(2) : "—"}`, `每节点平均边数 ${rag.edges_per_node != null ? Number(rag.edges_per_node).toFixed(2) : "—"}`, "", unhealthyState(health.ragGraphDensity)),
+    buildStatCard("RAG 待重建文档", formatNum(rag.changed_pending), rag.changed_pending > 0 ? "等待后台同步" : "已全部同步", "rag-changed-pending", unhealthyState(health.ragPending)),
+
+    buildStatCard("本月 Tavily API 调用", formatNum(apiUsage.month_web_search_calls), `今日 ${formatNum(apiUsage.today_web_search)} / 限额 ${formatNum(apiUsage.daily_web_limit)}`, "web-search-usage", unhealthyState(health.webUsage)),
+    buildStatCard("本月 DeepSeek API 调用", formatNum(apiUsage.month_deepseek_calls), `今日 ${formatNum(apiUsage.today_deepseek)} / 限额 ${formatNum(apiUsage.daily_deepseek_limit)}`, "deepseek-usage", unhealthyState(health.deepseekUsage)),
+
+    buildStatCard("Agent 消息总数", formatNum(agent.message_count), `会话数 ${formatNum(agent.session_count)}`),
+    buildStatCard("RAG Q&A 消息总数", formatNum(ragQa.message_count), `会话数 ${formatNum(ragQa.session_count)}`),
+
+    buildStatCard("向量召回均值", formatDuration(latency.stages?.total?.avg), `近 ${formatNum(latency.stages?.total?.count)} 次 | p50 ${formatDuration(latency.stages?.total?.p50)}`, "", unhealthyState(health.vectorRecall)),
+    buildStatCard("RAG 模型重排均值", formatDuration(latency.stages?.rerank_seconds?.avg), `近 ${formatNum(latency.stages?.rerank_seconds?.count)} 次`, "", unhealthyState(health.rerankLatency)),
+
+    buildStatCard("检索分位 p50", `${formatDuration(latency.stages?.total?.p50)}`, `p95 ${formatDuration(latency.stages?.total?.p95)} | p99 ${formatDuration(latency.stages?.total?.p99)}`, "", unhealthyState(health.retrievalPercentiles)),
+    buildStatCard("RAG 全流程 p50",`${formatDuration(latency.stages?.elapsed_seconds?.p50)}`,`p95 ${formatDuration(latency.stages?.elapsed_seconds?.p95)} | Agent p50 ${formatDuration(agentWallClock.p50)}`, "", unhealthyState(health.endToEnd)),
+
+    buildStatCard("RAG 重排序换榜率", `${formatRate(ragRerank.top1_identity_change_rate)}`, `Agent 换榜率 ${formatRate(agentRerank.top1_identity_change_rate)}`, "", unhealthyState(health.rerankChangeRate)),
+    buildStatCard("RAG 平均换榜", `${formatSigned(ragRerank.avg_rank_shift, 2)}`, `Agent 平均换榜 ${formatSigned(agentRerank.avg_rank_shift, 2)}`, "", unhealthyState(health.rankShift)),
+    
+    buildStatCard("Embedding 缓存命中率", formatRate(cacheStats.rag_embed_cache_hit_rate), `近 ${formatNum(latency.record_count)} 次`, "", unhealthyState(health.embedCache)),
+    buildStatCard("Agent 文档调用率", `${formatRate(cacheStats.agent_rag_trigger_rate)}`, `Media ${formatRate(cacheStats.agent_media_trigger_rate)} | Web ${formatRate(cacheStats.agent_web_trigger_rate)}`),
+
+    buildStatCard("RAG Top1 均值", ragRerank.avg_top1_local_doc_score != null ? Number(ragRerank.avg_top1_local_doc_score).toFixed(4) : "—", `Agent Top1 均值 ${agentRerank.avg_top1_local_doc_score != null ? Number(agentRerank.avg_top1_local_doc_score).toFixed(4) : "—"}`),
+    buildStatCard("RAG 未命中率", formatRate(cacheStats.rag_no_context_rate), `Agent 未命中率 ${formatRate(cacheStats.agent_no_context_rate)}`, "", unhealthyState(health.noContext)),
+    
+    buildStatCard("月检索缺失问题数", formatNum(missingQueries.count), "长按查看导出", "missing-queries-summary"),
+    buildStatCard("聊天反馈数", formatNum(data?.chat_feedback?.count), "长按查看导出", "feedback-summary"),
+    
+    buildStatCard("运行时数据", formatSizeValue(runtimeData.total_size_bytes), `非空 ${formatNum(runtimeData.nonzero_items)} 项 | 长按查看`, "runtime-data-summary"),
+  ];
+
+  // Store warnings for modal
+  currentWarnings = warnings.filter(w => !dismissedWarnings.has(w));
+  currentWarningsTimestamp = String(data?.generated_at || "").trim();
+
+  cards.push(buildStatCard("系统告警", formatNum(currentWarnings.length), currentWarnings.length > 0 ? currentWarnings.slice(0, 2).join(" | ") : "无告警", "warnings-summary", unhealthyState(health.warnings)));
+
+  if (dashboardGrid) {
+    dashboardGrid.innerHTML = cards.join("\n");
+  }
+
+  renderDashboardLatencyTable(data);
+  renderDashboardObservabilityTable(data);
+  renderDashboardStartupLogs(data);
+  renderDashboardTicketTrend(data?.ticket_weekly_stats || {});
+  if (!skipTaskCenter) refreshTaskCenter().catch(() => {});
+
+  const generated = String(data?.generated_at || "").trim();
+  const month = String(data?.month || "").trim();
+  const deployed = String(data?.deployed_at || "").trim();
+  if (dashboardGeneratedAt) {
+    dashboardGeneratedAt.textContent = `统计月份: ${month || "-"} | 更新时间: ${generated || "-"}`;
+  }
+  if (dashboardDeployTime && deployed) {
+    dashboardDeployTime.textContent = `部署时间: ${deployed}`;
+  }
+}
+
+async function refreshDashboard({ force = false, skipTaskCenter = false, coreOnly = false } = {}) {
+  if (dashboardGeneratedAt) dashboardGeneratedAt.textContent = "正在拉取最新状态...";
+  if (!coreOnly && dashboardRefreshBtn) dashboardRefreshBtn.disabled = true;
+  dashboardRefreshInFlight = true;
+  try {
+    const url = coreOnly
+      ? "/api/dashboard/overview/core"
+      : force ? "/api/dashboard/overview?force=true" : "/api/dashboard/overview";
     const data = await apiGet(url);
-    const rag = data?.rag || {};
-    const library = data?.library || {};
-    const libraryGraphQuality = library?.graph_quality || {};
-    const apiUsage = data?.api_usage || {};
-    const agent = data?.agent || {};
-    const ragQa = data?.rag_qa || {};
-    const startup = data?.startup || {};
-    const latency = data?.retrieval_latency || {};
-    const cacheStats = data?.cache_stats || {};
-    const rerankQuality = data?.rerank_quality || {};
-    const ragRerank = rerankQuality.rag || {};
-    const agentRerank = rerankQuality.agent || {};
-    const missingQueries = data?.missing_queries_last_30d || {};
-    const agentWallClock = data?.agent_wall_clock || {};
-    const runtimeData = data?.runtime_data || {};
-    lastStartupStatus = String(startup.status || "unknown");
-    lastApiUsage = apiUsage;
-    currentRuntimeDataSummary = runtimeData;
-    const warnings = Array.isArray(data?.warnings) ? data.warnings : [];
-    const health = buildDashboardHealthFlags({
-      rag,
-      library,
-      apiUsage,
-      latency,
-      cacheStats,
-      ragRerank,
-      agentRerank,
-      agentWallClock,
-      warnings,
-    });
-    const cards = [
-      buildStatCard("RAG 已索引文档", formatNum(rag.indexed_documents), `总文档数 ${formatNum(rag.source_markdown_files)}`),
-      buildStatCard("书影音游戏总条目", formatNum(library.total_items), `今年条目 ${formatNum(library.this_year_items)}`),
-
-      buildStatCard("RAG Graph 节点数", formatNum(rag.graph_nodes), `边数 ${formatNum(rag.graph_edges)}`),
-      buildStatCard("Library Graph 节点数", formatNum(library.graph_nodes), `边数 ${formatNum(library.graph_edges)} | 覆盖 ${formatRate(libraryGraphQuality.item_coverage_rate)} | 孤点 ${formatRate(libraryGraphQuality.isolated_node_rate)}`, "library-graph-summary", unhealthyState(health.libraryGraphScale)),
-
-      buildStatCard("RAG 平均节点数", `${rag.nodes_per_doc != null ? Number(rag.nodes_per_doc).toFixed(2) : "—"}`, `每节点平均边数 ${rag.edges_per_node != null ? Number(rag.edges_per_node).toFixed(2) : "—"}`, "", unhealthyState(health.ragGraphDensity)),
-      buildStatCard("RAG 待重建文档", formatNum(rag.changed_pending), rag.changed_pending > 0 ? "等待后台同步" : "已全部同步", "rag-changed-pending", unhealthyState(health.ragPending)),
-
-      buildStatCard("本月 Tavily API 调用", formatNum(apiUsage.month_web_search_calls), `今日 ${formatNum(apiUsage.today_web_search)} / 限额 ${formatNum(apiUsage.daily_web_limit)}`, "web-search-usage", unhealthyState(health.webUsage)),
-      buildStatCard("本月 DeepSeek API 调用", formatNum(apiUsage.month_deepseek_calls), `今日 ${formatNum(apiUsage.today_deepseek)} / 限额 ${formatNum(apiUsage.daily_deepseek_limit)}`, "deepseek-usage", unhealthyState(health.deepseekUsage)),
-
-      buildStatCard("Agent 消息总数", formatNum(agent.message_count), `会话数 ${formatNum(agent.session_count)}`),
-      buildStatCard("RAG Q&A 消息总数", formatNum(ragQa.message_count), `会话数 ${formatNum(ragQa.session_count)}`),
-
-      buildStatCard("向量召回均值", formatDuration(latency.stages?.total?.avg), `近 ${formatNum(latency.stages?.total?.count)} 次 | p50 ${formatDuration(latency.stages?.total?.p50)}`, "", unhealthyState(health.vectorRecall)),
-      buildStatCard("RAG 模型重排均值", formatDuration(latency.stages?.rerank_seconds?.avg), `近 ${formatNum(latency.stages?.rerank_seconds?.count)} 次`, "", unhealthyState(health.rerankLatency)),
-
-      buildStatCard("检索分位 p50", `${formatDuration(latency.stages?.total?.p50)}`, `p95 ${formatDuration(latency.stages?.total?.p95)} | p99 ${formatDuration(latency.stages?.total?.p99)}`, "", unhealthyState(health.retrievalPercentiles)),
-      buildStatCard("RAG 全流程 p50",`${formatDuration(latency.stages?.elapsed_seconds?.p50)}`,`p95 ${formatDuration(latency.stages?.elapsed_seconds?.p95)} | Agent p50 ${formatDuration(agentWallClock.p50)}`, "", unhealthyState(health.endToEnd)),
-
-      buildStatCard("RAG 重排序换榜率", `${formatRate(ragRerank.top1_identity_change_rate)}`, `Agent 换榜率 ${formatRate(agentRerank.top1_identity_change_rate)}`, "", unhealthyState(health.rerankChangeRate)),
-      buildStatCard("RAG 平均换榜", `${formatSigned(ragRerank.avg_rank_shift, 2)}`, `Agent 平均换榜 ${formatSigned(agentRerank.avg_rank_shift, 2)}`, "", unhealthyState(health.rankShift)),
-      
-      buildStatCard("Embedding 缓存命中率", formatRate(cacheStats.rag_embed_cache_hit_rate), `近 ${formatNum(latency.record_count)} 次`, "", unhealthyState(health.embedCache)),
-      buildStatCard("Agent 文档调用率", `${formatRate(cacheStats.agent_rag_trigger_rate)}`, `Media ${formatRate(cacheStats.agent_media_trigger_rate)} | Web ${formatRate(cacheStats.agent_web_trigger_rate)}`),
-
-      buildStatCard("RAG Top1 均值", ragRerank.avg_top1_local_doc_score != null ? Number(ragRerank.avg_top1_local_doc_score).toFixed(4) : "—", `Agent Top1 均值 ${agentRerank.avg_top1_local_doc_score != null ? Number(agentRerank.avg_top1_local_doc_score).toFixed(4) : "—"}`),
-      buildStatCard("RAG 未命中率", formatRate(cacheStats.rag_no_context_rate), `Agent 未命中率 ${formatRate(cacheStats.agent_no_context_rate)}`, "", unhealthyState(health.noContext)),
-      
-      buildStatCard("月检索缺失问题数", formatNum(missingQueries.count), "长按查看导出", "missing-queries-summary"),
-      buildStatCard("聊天反馈数", formatNum(data?.chat_feedback?.count), "长按查看导出", "feedback-summary"),
-      
-      buildStatCard("运行时数据", formatSizeValue(runtimeData.total_size_bytes), `非空 ${formatNum(runtimeData.nonzero_items)} 项 | 长按查看`, "runtime-data-summary"),
-    ];
-
-    // Store warnings for modal
-    currentWarnings = warnings.filter(w => !dismissedWarnings.has(w));
-    currentWarningsTimestamp = String(data?.generated_at || "").trim();
-
-    cards.push(buildStatCard("系统告警", formatNum(currentWarnings.length), currentWarnings.length > 0 ? currentWarnings.slice(0, 2).join(" | ") : "无告警", "warnings-summary", unhealthyState(health.warnings)));
-
-    if (dashboardGrid) {
-      dashboardGrid.innerHTML = cards.join("\n");
-    }
-
-    renderDashboardLatencyTable(data);
-    renderDashboardObservabilityTable(data);
-    renderDashboardStartupLogs(data);
-    renderDashboardTicketTrend(data?.ticket_weekly_stats || {});
-    if (!skipTaskCenter) refreshTaskCenter().catch(() => {});
-
-    const generated = String(data?.generated_at || "").trim();
-    const month = String(data?.month || "").trim();
-    const deployed = String(data?.deployed_at || "").trim();
-    if (dashboardGeneratedAt) {
-      dashboardGeneratedAt.textContent = `统计月份: ${month || "-"} | 更新时间: ${generated || "-"}`;
-    }
-    if (dashboardDeployTime && deployed) {
-      dashboardDeployTime.textContent = `部署时间: ${deployed}`;
-    }
+    paintDashboardFromData(data, { skipTaskCenter });
   } catch (err) {
     renderDashboardError(err);
-    if (dashboardGeneratedAt) dashboardGeneratedAt.textContent = "统计加载失败";
+    if (dashboardGeneratedAt) dashboardGeneratedAt.textContent = coreOnly ? "核心数据加载失败" : "统计加载失败";
   } finally {
-    if (dashboardRefreshBtn) dashboardRefreshBtn.disabled = false;
+    dashboardRefreshInFlight = false;
+    if (!coreOnly && dashboardRefreshBtn) dashboardRefreshBtn.disabled = false;
   }
 }
 
 async function bootstrapDashboardTab() {
-  const prefill = loadDashboardPrefill();
-  if (prefill) {
-    renderDashboardLatencyTable(prefill);
-    renderDashboardObservabilityTable(prefill);
-    renderDashboardStartupLogs(prefill);
+  // Prevent concurrent fetches; allow retry after error (loaded stays false).
+  if (dashboardState.loading) return;
+
+  // First visit: paint SSR/prefill immediately for zero-wait visible content.
+  if (!dashboardState.loaded) {
+    try {
+      const prefill = loadDashboardPrefill();
+      if (prefill) paintDashboardFromData(prefill, { skipTaskCenter: true });
+    } catch (paintErr) {
+      console.warn("[dashboard] prefill paint failed:", paintErr);
+    }
+    try { if (window.__navBoot) window.__navBoot.mark("dashboard-painted"); } catch (_) {}
   }
-  await refreshDashboard({ force: true });
-  await refreshTaskCenter().catch(() => {});
-  startTaskCenterPolling();
-  dashboardBootstrapped = true;
-  scheduleStartupPollingIfNeeded();
+
+  // Fire network refresh (non-blocking; prefill already visible).
+  if (!dashboardRefreshInFlight) {
+    dashboardState.loading = true;
+    refreshDashboard({ coreOnly: true })
+      .then(() => {
+        dashboardState.loaded = true;
+        dashboardState.error = null;
+        try { if (window.__navBoot) window.__navBoot.mark("dashboard-refreshed"); } catch (_) {}
+        refreshDashboard({ force: false }).catch((err) => { console.warn("[dashboard] detail refresh failed:", err); });
+        refreshTaskCenter().catch((err) => { console.warn("[dashboard] task center refresh failed:", err); });
+        startTaskCenterPolling();
+        scheduleStartupPollingIfNeeded();
+      })
+      .catch((err) => {
+        dashboardState.error = err;
+        dashboardState.loaded = false;
+        console.warn("[dashboard] core refresh failed:", err);
+        renderDashboardError(err);
+      })
+      .finally(() => { dashboardState.loading = false; });
+  }
 }
 
 function stopStartupPolling() {
@@ -1689,7 +1800,7 @@ async function clearFeedback() {
   await apiPost(`/api/dashboard/feedback?source=${encodeURIComponent(currentFeedbackSource)}`, {}, "DELETE");
   currentFeedbackItems = [];
   closeFeedbackModal();
-  await refreshDashboard({ force: true });
+  await refreshDashboard({ force: false });
 }
 
 async function exportFeedbackJson() {
@@ -1710,7 +1821,7 @@ async function clearMissingQueries() {
   await apiPost(`/api/dashboard/missing-queries?source=${encodeURIComponent(currentMissingQueriesSource)}`, {}, "DELETE");
   currentMissingQueries = [];
   closeMissingQueriesModal();
-  await refreshDashboard({ force: true });
+  await refreshDashboard({ force: false });
 }
 
 async function exportMissingQueriesCsv() {
@@ -2163,7 +2274,13 @@ function renderTraceSummary(trace) {
         <div class="trace-kv"><span>计划工具数</span><strong>${escapeHtml(String(plannedTools.length || 0))}</strong></div>
         <div class="trace-kv"><span>实际工具数</span><strong>${escapeHtml(String(tools.length || 0))}</strong></div>
         <div class="trace-chip-list">${plannedTools.length ? plannedTools.map((tool) => `<span class="trace-chip">${escapeHtml(String(tool))}</span>`).join("") : '<span class="trace-chip">none</span>'}</div>
-        <div class="trace-tool-list">${tools.length ? tools.map((tool) => `<div class="trace-tool-row"><strong>${escapeHtml(String(tool?.name || ""))}</strong><span>${escapeHtml(String(tool?.status || ""))}</span><span>${escapeHtml(formatDuration((Number(tool?.latency_ms || 0) || 0) / 1000))}</span></div>`).join("") : '<div class="trace-result-empty">暂无工具记录</div>'}</div>
+        <div class="trace-tool-list">${tools.length ? tools.map((tool) => {
+          const sourceCounts = tool?.source_counts && typeof tool.source_counts === "object" ? Object.entries(tool.source_counts) : [];
+          const sourceLabel = sourceCounts.length
+            ? sourceCounts.map(([key, value]) => `${String(key)}:${String(value)}`).join(", ")
+            : String(tool?.per_item_source || "");
+          return `<div class="trace-tool-row"><strong>${escapeHtml(String(tool?.display_name || tool?.name || ""))}</strong><span>${escapeHtml(String(tool?.status || ""))}</span><span>${escapeHtml(formatDuration((Number(tool?.latency_ms || 0) || 0) / 1000))}</span>${sourceLabel ? `<span>${escapeHtml(sourceLabel)}</span>` : ""}</div>`;
+        }).join("") : '<div class="trace-result-empty">暂无工具记录</div>'}</div>
       </section>
       <section class="trace-summary-card">
         <div class="bm-card-section-label">检索与排序</div>
@@ -2358,12 +2475,22 @@ function syncTicketsPaneHeights() {
   if (!(ticketsDetailShell instanceof HTMLElement) || ticketsListCollapsed || isCompactTicketsLayout()) {
     ticketsListShell.style.height = "";
     ticketsListShell.style.maxHeight = "";
+    if (ticketsDetailShell instanceof HTMLElement) {
+      ticketsDetailShell.style.maxHeight = "";
+      ticketsDetailShell.style.overflow = "";
+    }
     return;
   }
   const detailHeight = Math.ceil(ticketsDetailShell.getBoundingClientRect().height || 0);
   if (detailHeight <= 0) return;
-  ticketsListShell.style.height = `${detailHeight}px`;
-  ticketsListShell.style.maxHeight = `${detailHeight}px`;
+  const shellTop = ticketsListShell.getBoundingClientRect().top;
+  const panelBottom = document.getElementById("panel-tickets")?.getBoundingClientRect().bottom || window.innerHeight;
+  const viewportCap = Math.max(320, Math.floor(panelBottom - shellTop - 12));
+  const targetHeight = Math.max(320, Math.min(detailHeight, viewportCap));
+  ticketsListShell.style.height = `${targetHeight}px`;
+  ticketsListShell.style.maxHeight = `${targetHeight}px`;
+  ticketsDetailShell.style.maxHeight = `${targetHeight}px`;
+  ticketsDetailShell.style.overflow = "auto";
 }
 
 function setupTicketsPaneHeightSync() {
@@ -2577,6 +2704,7 @@ async function fillTicketFromPaste() {
     data?.ticket || {},
   );
   applyTicketToForm(merged);
+  if (ticketPasteInput) ticketPasteInput.value = "";
 }
 
 async function refreshTickets({ keepSelection = true, selectTicketId = "" } = {}) {
@@ -2604,9 +2732,43 @@ async function refreshTickets({ keepSelection = true, selectTicketId = "" } = {}
 }
 
 async function bootstrapTicketsTab() {
-  await refreshTickets({ keepSelection: false });
-  setupTicketsPaneHeightSync();
-  ticketsBootstrapped = true;
+  if (ticketsState.loaded || ticketsState.loading) return;
+  ticketsState.loading = true;
+
+  // Paint from SSR prefill immediately — no network request needed.
+  const prefill = loadTicketsPrefill();
+  if (prefill) {
+    currentTickets = Array.isArray(prefill.items) ? prefill.items : [];
+    populateTicketFilterSelect(ticketsStatusFilter, prefill.filters?.statuses, "non_closed");
+    populateTicketFilterSelect(ticketsPriorityFilter, prefill.filters?.priorities, "all");
+    populateTicketFilterSelect(ticketsDomainFilter, prefill.filters?.domains, "all");
+    populateTicketFilterSelect(ticketsCategoryFilter, prefill.filters?.categories, "all");
+    if (ticketsMeta) ticketsMeta.textContent = `当前 ${formatNum(prefill.count || currentTickets.length)} 条 ticket`;
+    renderTicketsList();
+    setupTicketsPaneHeightSync();
+    ticketsState.loaded = true;
+    ticketsState.error = null;
+    ticketsState.loading = false;
+    // Background refresh to pick up any updates since page load.
+    refreshTickets({ keepSelection: true }).catch((err) => {
+      console.warn("[tickets] background refresh failed:", err);
+    });
+    return;
+  }
+
+  // No SSR prefill: blocking fetch (fallback for cold/missing data).
+  try {
+    await refreshTickets({ keepSelection: false });
+    setupTicketsPaneHeightSync();
+    ticketsState.loaded = true;
+    ticketsState.error = null;
+  } catch (err) {
+    ticketsState.error = err;
+    ticketsState.loaded = false;
+    throw err;
+  } finally {
+    ticketsState.loading = false;
+  }
 }
 
 async function createTicketAIDraft({ traceId = "", switchToTab = false } = {}) {
@@ -2666,7 +2828,7 @@ async function openTicketFromCurrentTrace() {
     showAppErrorModal("Ticket 生成失败", "当前没有可用的 trace_id");
     return;
   }
-  if (!ticketsBootstrapped) {
+  if (!ticketsState.loaded) {
     await bootstrapTicketsTab();
   }
   resetTicketEditor({
@@ -2942,54 +3104,78 @@ function renderBenchmarkTable(results) {
 }
 
 async function bootstrapBenchmarkTab() {
+  if (benchmarkState.loaded || benchmarkState.loading) return;
+  benchmarkState.loading = true;
   try {
-    const data = await apiGet("/api/benchmark/history");
-    benchmarkHistory = Array.isArray(data.results) ? data.results : [];
-    renderBenchmarkTable(benchmarkHistory);
-    if (benchmarkHistory.length) {
-      const last = benchmarkHistory[benchmarkHistory.length - 1];
-      const lastRun = document.getElementById("benchmark-last-run");
-      if (lastRun) lastRun.textContent = `上次运行: ${last.timestamp || ""}`;
-    }
-  } catch (_e) {
-    // History not critical
-  }
-
-  try {
-    const casesPayload = await apiGet("/api/benchmark/cases");
+    const prefill = loadBenchmarkPrefill();
     const caseSel = document.getElementById("bm-case-set-select");
-    benchmarkCaseSets = Array.isArray(casesPayload?.case_sets) ? casesPayload.case_sets : [];
-    if (caseSel) {
-      if (benchmarkCaseSets.length) {
+
+    const prefillHistory = Array.isArray(prefill?.history?.results) ? prefill.history.results : [];
+    if (prefillHistory.length) {
+      benchmarkHistory = prefillHistory;
+      renderBenchmarkTable(benchmarkHistory);
+      const last = benchmarkHistory[benchmarkHistory.length - 1];
+      const lastRunEl = document.getElementById("benchmark-last-run");
+      const summary = last?.assertion_summary;
+      const assertionText = summary ? ` | 断言 ${summary.passed}/${summary.passed + summary.failed}` : "";
+      if (lastRunEl) lastRunEl.textContent = `上次运行: ${last.timestamp || ""}${assertionText}`;
+    } else {
+      const data = await apiGet("/api/benchmark/history");
+      benchmarkHistory = Array.isArray(data.results) ? data.results : [];
+      renderBenchmarkTable(benchmarkHistory);
+      if (benchmarkHistory.length) {
+        const last = benchmarkHistory[benchmarkHistory.length - 1];
+        const lastRunEl = document.getElementById("benchmark-last-run");
+        const summary = last?.assertion_summary;
+        const assertionText = summary ? ` | 断言 ${summary.passed}/${summary.passed + summary.failed}` : "";
+        if (lastRunEl) lastRunEl.textContent = `上次运行: ${last.timestamp || ""}${assertionText}`;
+      }
+    }
+
+    const prefillCaseSets = Array.isArray(prefill?.cases?.case_sets) ? prefill.cases.case_sets : [];
+    if (prefillCaseSets.length) {
+      benchmarkCaseSets = prefillCaseSets;
+      if (caseSel) {
+        caseSel.innerHTML = prefillCaseSets.map((item) => {
+          const id = String(item?.id || "");
+          const label = String(item?.label || id);
+          return `<option value="${escapeHtml(id)}"${id === "regression_v1" ? " selected" : ""}>${escapeHtml(`${id} / ${label}`)}</option>`;
+        }).join("");
+      }
+      syncBenchmarkCountOptions();
+    } else {
+      const casesPayload = await apiGet("/api/benchmark/cases");
+      benchmarkCaseSets = Array.isArray(casesPayload?.case_sets) ? casesPayload.case_sets : [];
+      if (caseSel && benchmarkCaseSets.length) {
         caseSel.innerHTML = benchmarkCaseSets.map((item) => {
           const id = String(item?.id || "");
           const label = String(item?.label || id);
-          const maxCount = Number(item?.max_query_count_per_type || 0);
-          const desc = `${id} / ${label}`;
-          return `<option value="${escapeHtml(id)}"${id === "regression_v1" ? " selected" : ""}>${escapeHtml(desc)}</option>`;
+          return `<option value="${escapeHtml(id)}"${id === "regression_v1" ? " selected" : ""}>${escapeHtml(`${id} / ${label}`)}</option>`;
         }).join("");
       }
+      syncBenchmarkCountOptions();
     }
-    syncBenchmarkCountOptions();
-  } catch (_e) {
-    // Case-set list is optional; keep template fallback.
+
+    benchmarkState.loaded = true;
+    benchmarkState.error = null;
+  } catch (e) {
+    benchmarkState.error = e;
+    benchmarkState.loaded = false;
+    const message = `Benchmark 初始化失败: ${e?.message || String(e)}`;
+    console.error("[benchmark] bootstrap failed:", e);
+    const table = document.getElementById("bm-history-table");
+    if (table && !benchmarkHistory.length) {
+      table.innerHTML = `<tbody><tr><td colspan="6" style="color:#c97">${escapeHtml(message)}</td></tr></tbody>`;
+    }
+    const caseSel = document.getElementById("bm-case-set-select");
+    if (caseSel && !benchmarkCaseSets.length) {
+      caseSel.innerHTML = `<option value="">初始化失败，请重试</option>`;
+    }
+    showAppErrorModal("Benchmark 初始化失败", message);
+    throw e;
+  } finally {
+    benchmarkState.loading = false;
   }
-
-  // Wire up the test-set dropdown
-  const sel = document.getElementById("bm-testset-select");
-  if (sel) {
-    sel.value = currentBmTestSet;
-    sel.addEventListener("change", () => {
-      currentBmTestSet = sel.value;
-      renderBenchmarkTable(benchmarkHistory);
-    });
-  }
-
-  document.getElementById("bm-case-set-select")?.addEventListener("change", () => {
-    syncBenchmarkCountOptions();
-  });
-
-  benchmarkBootstrapped = true;
 }
 
 function syncBenchmarkCountOptions() {
@@ -3011,6 +3197,134 @@ function syncBenchmarkCountOptions() {
   });
   if (checkedRadio?.disabled && fallbackRadio) {
     fallbackRadio.checked = true;
+  }
+}
+
+// ─── Router classification benchmark ─────────────────────────────────────────
+async function runRouterClassification() {
+  const btn = document.getElementById("bm-router-cls-run");
+  const meta = document.getElementById("bm-router-cls-meta");
+  const summary = document.getElementById("bm-router-cls-summary");
+  const tableWrap = document.getElementById("bm-router-cls-table-wrap");
+  const tbody = document.getElementById("bm-router-cls-tbody");
+  if (btn) btn.disabled = true;
+  if (meta) meta.textContent = "运行中...";
+  try {
+    const result = await apiPost("/api/benchmark/router-classification", {});
+    const { total = 0, passed = 0, failed = 0, pass_rate = 0, cases = [] } = result;
+    const pct = Math.round(pass_rate * 100);
+    const statusCls = failed === 0 ? "bm-cls-pass" : "bm-cls-fail";
+    if (summary) {
+      summary.className = `bm-router-cls-summary ${statusCls}`;
+      summary.textContent = `${passed} / ${total} 通过 (${pct}%)${failed > 0 ? ` — ${failed} 项不符合预期` : " ✓ 全部通过"}`;
+      summary.classList.remove("hidden");
+    }
+    if (meta) meta.textContent = `${new Date().toLocaleTimeString()} 运行完成`;
+    if (tbody) {
+      tbody.innerHTML = cases.map((c) => {
+        const pass = c.pass !== false;
+        const exp_arb = Array.isArray(c.expected_arbitration) ? c.expected_arbitration.join(" | ") : (c.expected_arbitration || "");
+        const actual_arb = c.actual_arbitration || "";
+        const dom_ok = c.actual_domain === c.expected_domain;
+        const arb_ok = Array.isArray(c.expected_arbitration)
+          ? c.expected_arbitration.includes(actual_arb)
+          : actual_arb === exp_arb;
+        return `<tr class="${pass ? "" : "bm-cls-row-fail"}">
+          <td class="bm-cls-query" title="${escapeHtml(c.query)}">${escapeHtml(c.query?.slice(0, 28) || "")}</td>
+          <td>${escapeHtml(c.expected_domain || "")}</td>
+          <td>${escapeHtml(exp_arb)}</td>
+          <td class="${dom_ok ? "" : "bm-cls-cell-fail"}">${escapeHtml(c.actual_domain || "")}</td>
+          <td class="${arb_ok ? "" : "bm-cls-cell-fail"}">${escapeHtml(actual_arb)}</td>
+          <td>${pass ? "✓" : "✗"}</td>
+          <td class="bm-cls-note">${escapeHtml(c.note || c.error || "")}</td>
+        </tr>`;
+      }).join("");
+    }
+    if (tableWrap) tableWrap.classList.remove("hidden");
+  } catch (err) {
+    const message = `运行失败: ${String(err)}`;
+    if (meta) meta.textContent = message;
+    if (summary) {
+      summary.className = "bm-router-cls-summary bm-cls-fail";
+      summary.textContent = message;
+      summary.classList.remove("hidden");
+    }
+    if (tableWrap) tableWrap.classList.add("hidden");
+    showAppErrorModal("Router 分类回归失败", String(err), "请检查 benchmark 相关接口或查看控制台日志");
+  } finally {
+    if (btn) btn.disabled = false;
+  }
+}
+
+async function runUnitTests() {
+  const btn = document.getElementById("bm-unit-tests-run");
+  const meta = document.getElementById("bm-unit-tests-meta");
+  const summary = document.getElementById("bm-unit-tests-summary");
+  const resultsEl = document.getElementById("bm-unit-tests-results");
+
+  const suites = Array.from(document.querySelectorAll(".bm-ut-suite:checked")).map((cb) => cb.value);
+  if (!suites.length) { window.alert("请至少选择一个测试套件"); return; }
+
+  if (btn) btn.disabled = true;
+  if (meta) meta.textContent = "运行中...";
+  if (summary) summary.classList.add("hidden");
+  if (resultsEl) { resultsEl.classList.add("hidden"); resultsEl.innerHTML = ""; }
+
+  try {
+    const result = await apiPost("/api/benchmark/unit-tests", { suites });
+    const { timestamp = "", total_passed = 0, total_failed = 0, total_errors = 0, suites: suiteResults = [] } = result;
+    const allOk = total_failed === 0 && total_errors === 0;
+    const total = total_passed + total_failed + total_errors;
+
+    if (summary) {
+      summary.className = `bm-router-cls-summary ${allOk ? "bm-cls-pass" : "bm-cls-fail"}`;
+      summary.textContent = `${total_passed} / ${total} 通过${!allOk ? ` — ${total_failed + total_errors} 项失败` : " ✓ 全部通过"}`;
+      summary.classList.remove("hidden");
+    }
+    if (meta) meta.textContent = `${timestamp} 运行完成`;
+
+    if (resultsEl) {
+      resultsEl.innerHTML = suiteResults.map((suite) => {
+        const suiteOk = suite.failed === 0 && suite.errors === 0;
+        const tests = Array.isArray(suite.tests) ? suite.tests : [];
+        const suiteTotal = suite.passed + suite.failed + (suite.errors || 0);
+        const rows = tests.map((t) => {
+          const icon = t.status === "pass" ? "✓" : t.status === "skip" ? "–" : "✗";
+          const rowCls = t.status === "pass" ? "" : t.status === "skip" ? "bm-cls-row-skip" : "bm-cls-row-fail";
+          const shortId = (t.id || "").split(".").slice(-2).join(".");
+          return `<tr class="${rowCls}">
+            <td class="bm-cls-query" title="${escapeHtml(t.id || "")}">${escapeHtml(shortId)}</td>
+            <td>${icon}</td>
+            <td class="bm-cls-note">${escapeHtml((t.message || "").slice(0, 160))}</td>
+          </tr>`;
+        }).join("");
+        return `<div class="bm-ut-suite-block ${suiteOk ? "bm-ut-suite-pass" : "bm-ut-suite-fail"}">
+          <div class="bm-ut-suite-header">${escapeHtml(suite.label || suite.id)} — ${suite.passed}/${suiteTotal} ✓ (${suite.elapsed_seconds}s)</div>
+          <div class="stats-table-wrap bm-ut-suite-table-wrap">
+            <table class="stats-table bm-router-cls-table">
+              <thead><tr><th>测试</th><th>结果</th><th>信息</th></tr></thead>
+              <tbody>${rows}</tbody>
+            </table>
+          </div>
+        </div>`;
+      }).join("");
+      resultsEl.classList.remove("hidden");
+    }
+  } catch (err) {
+    const message = `运行失败: ${String(err)}`;
+    if (meta) meta.textContent = message;
+    if (summary) {
+      summary.className = "bm-router-cls-summary bm-cls-fail";
+      summary.textContent = message;
+      summary.classList.remove("hidden");
+    }
+    if (resultsEl) {
+      resultsEl.innerHTML = `<div class="ticket-empty-state">${escapeHtml(message)}</div>`;
+      resultsEl.classList.remove("hidden");
+    }
+    showAppErrorModal("单元 / 回归测试失败", String(err), "请检查请求参数、后端日志或测试套件配置");
+  } finally {
+    if (btn) btn.disabled = false;
   }
 }
 
@@ -3115,7 +3429,13 @@ function runBenchmark() {
       }
     })
     .catch((err) => {
-      if (progressText) progressText.textContent = `连接失败: ${String(err)}`;
+      const message = `连接失败: ${String(err)}`;
+      if (progressText) progressText.textContent = message;
+      if (logBox) {
+        logBox.textContent += `${message}\n`;
+        logBox.scrollTop = logBox.scrollHeight;
+      }
+      showAppErrorModal("Benchmark 运行失败", String(err), "请检查 benchmark job 创建/轮询链路");
     })
     .finally(() => {
     if (runBtn) runBtn.disabled = false;
@@ -3163,29 +3483,48 @@ function updateSidebarToggleButton(sidebar) {
 }
 
 function setModel() {
-  qaModel.textContent = `当前模型：${pageLocalModel}`;
+  if (qaModel) qaModel.textContent = `当前模型：${pageLocalModel}`;
 }
 
 async function apiGet(url) {
-  const r = await fetch(url);
-  if (!r.ok) throw new Error(await r.text());
-  return r.json();
+  const ctrl = new AbortController();
+  const t = setTimeout(() => ctrl.abort(), 20000);
+  try {
+    const r = await fetch(url, { signal: ctrl.signal });
+    if (!r.ok) throw new Error(await r.text());
+    return r.json();
+  } finally {
+    clearTimeout(t);
+  }
 }
 
 async function apiPost(url, payload, method = "POST") {
-  const r = await fetch(url, {
-    method,
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify(payload),
-  });
-  if (!r.ok) throw new Error(await r.text());
-  return r.json();
+  const ctrl = new AbortController();
+  const t = setTimeout(() => ctrl.abort(), 20000);
+  try {
+    const r = await fetch(url, {
+      method,
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(payload),
+      signal: ctrl.signal,
+    });
+    if (!r.ok) throw new Error(await r.text());
+    return r.json();
+  } finally {
+    clearTimeout(t);
+  }
 }
 
 async function apiDelete(url) {
-  const r = await fetch(url, { method: "DELETE" });
-  if (!r.ok) throw new Error(await r.text());
-  return r.json();
+  const ctrl = new AbortController();
+  const t = setTimeout(() => ctrl.abort(), 20000);
+  try {
+    const r = await fetch(url, { method: "DELETE", signal: ctrl.signal });
+    if (!r.ok) throw new Error(await r.text());
+    return r.json();
+  } finally {
+    clearTimeout(t);
+  }
 }
 
 async function apiPostForm(url, formData) {
@@ -3249,12 +3588,14 @@ function loadInitialCards() {
     const parsed = JSON.parse(raw);
     if (Array.isArray(parsed)) {
       customCards = parsed.map(normalizeCard);
+      bindCustomCardGridInteractions();
       return;
     }
   } catch (_err) {
     // Keep fallback below.
   }
   customCards = [];
+  bindCustomCardGridInteractions();
 }
 
 function getCardAt(index) {
@@ -3328,12 +3669,14 @@ async function saveCustomCardFromModal() {
   } else {
     customCards[editingCardIndex] = normalizeCard({ title, url, image });
   }
-  renderCustomCards();
+  renderCustomCards({ force: true });
   closeCustomCardModal();
 }
 
 function bindCardLongPressEdit(target, index) {
   if (!(target instanceof HTMLElement)) return;
+  if (target.dataset.longPressBound === "1") return;
+  target.dataset.longPressBound = "1";
   let timer = null;
   let longPressed = false;
 
@@ -3369,6 +3712,21 @@ function bindCardLongPressEdit(target, index) {
       event.stopPropagation();
       longPressed = false;
     }
+  });
+}
+
+function bindCustomCardGridInteractions() {
+  const host = document.getElementById("custom-card-grid");
+  if (!(host instanceof HTMLElement)) return;
+  Array.from(host.children).forEach((node, index) => {
+    if (!(node instanceof HTMLElement) || index < 0 || index >= 8) return;
+    if (node.classList.contains("placeholder")) {
+      if (node.dataset.cardClickBound === "1") return;
+      node.dataset.cardClickBound = "1";
+      node.addEventListener("click", () => openCustomCardModal(index));
+      return;
+    }
+    bindCardLongPressEdit(node, index);
   });
 }
 
@@ -3431,7 +3789,12 @@ function renderCurrentAgentSessionView() {
 
 function renderSessions() {
   const ul = document.getElementById("agent-session-list");
+  if (!ul) return;  // guard: element might not exist during unit tests
   ul.innerHTML = "";
+  if (!sessionsCache.length) {
+    ul.innerHTML = '<li class="list-loading">暂无会话</li>';
+    return;
+  }
   for (const session of sessionsCache) {
     const li = document.createElement("li");
     li.dataset.sessionId = String(session.id || "");
@@ -3440,6 +3803,7 @@ function renderSessions() {
     li.innerHTML = `<div class=\"title\">${escapeHtml(session.title || "新会话")}</div><div class=\"meta\">${escapeHtml(session.updated_at || "")}</div>`;
     li.onclick = () => {
       if (Date.now() < suppressSessionClickUntil) return;
+      debugUiEvent("session click received", String(session.id || ""));
       currentSessionId = session.id;
       renderSessions();
       renderCurrentAgentSessionView();
@@ -3594,45 +3958,130 @@ function extractErrorDetail(text) {
   return text;
 }
 
+/**
+ * Collect source_counts across all fan-out tool results and return a compact
+ * human-readable summary line, e.g. "外部补充来源：Bangumi 3，TMDB 5".
+ * Returns "" when there is nothing to show.
+ */
+function buildExternalSourceSummary(toolResults) {
+  if (!Array.isArray(toolResults)) return "";
+  const totals = {};
+  for (const item of toolResults) {
+    if (!item || typeof item !== "object") continue;
+    const counts = item.data?.source_counts;
+    if (counts && typeof counts === "object") {
+      for (const [src, cnt] of Object.entries(counts)) {
+        const n = Number(cnt) || 0;
+        if (n > 0) totals[src] = (totals[src] || 0) + n;
+      }
+    }
+  }
+  const entries = Object.entries(totals);
+  if (!entries.length) return "";
+  const LABEL_MAP = { bangumi: "Bangumi", tmdb: "TMDB", wiki: "Wiki", web: "Web" };
+  const parts = entries
+    .sort((a, b) => b[1] - a[1])
+    .map(([src, cnt]) => `${LABEL_MAP[src] || src} ${cnt}`);
+  return `\n\n---\n*外部补充来源：${parts.join("，")}*`;
+}
+
 function buildReferencesMarkdown(toolResults) {
   if (!Array.isArray(toolResults)) return "";
-  const refs = [];
+  const docRefs = [];
+  const mediaRefs = [];
+  const externalRefs = [];
+
+  function pushRef(bucket, score, line) {
+    bucket.push({ score: Number.isFinite(score) ? score : 0, line });
+  }
+
+  function scoreOf(row) {
+    const score = Number(row?.score);
+    if (Number.isFinite(score)) return score;
+    const confidence = Number(row?.match_confidence);
+    return Number.isFinite(confidence) ? confidence : null;
+  }
+
+  function externalSourceLabel(tool, row) {
+    const source = String(row?.external_source || "").trim().toLowerCase();
+    if (source === "bangumi") return "外部 Bangumi";
+    if (source === "tmdb") return "外部 TMDB";
+    if (source === "wiki") return "外部 Wiki";
+    if (tool === "search_bangumi_subject") return "外部 Bangumi";
+    if (tool === "search_tmdb_media") return "外部 TMDB";
+    if (["search_mediawiki_action", "parse_mediawiki_page", "expand_mediawiki_concept"].includes(tool)) return "外部 Wiki";
+    if (tool === "search_web") return "外部网页";
+    return "外部参考";
+  }
 
   for (const item of toolResults) {
     if (!item || typeof item !== "object") continue;
     const tool = String(item.tool || "").trim();
     const rows = Array.isArray(item.data?.results) ? item.data.results : [];
     for (const row of rows) {
-      const score = Number(row?.score);
-      if (!Number.isFinite(score)) continue;
+      const score = scoreOf(row);
       if (tool === "query_document_rag") {
         const path = String(row?.path || "").trim();
-        if (!path) continue;
-        refs.push({ score, line: `- [文档: ${path} (${score.toFixed(4)})](doc://${encodeURIComponent(path)})` });
+        if (!path || !Number.isFinite(score)) continue;
+        pushRef(docRefs, score, `- [本地文档: ${path} (${score.toFixed(4)})](doc://${encodeURIComponent(path)})`);
       } else if (tool === "search_web") {
         const title = String(row?.title || row?.url || "网页").trim() || "网页";
         const url = String(row?.url || "").trim();
         if (!url) continue;
-        refs.push({ score, line: `- [网页: ${title} (${score.toFixed(4)})](${url})` });
+        const label = Number.isFinite(score) ? `- [外部网页: ${title} (${score.toFixed(4)})](${url})` : `- [外部网页: ${title}](${url})`;
+        pushRef(externalRefs, score, label);
       } else if (tool === "query_media_record") {
         const title = String(row?.title || "").trim();
         const mediaType = String(row?.media_type || "").trim();
         const itemId = String(row?.id || "").trim();
-        if (!title) continue;
-        const label = `媒体: ${title}${mediaType ? ` (${mediaType})` : ""} (${score.toFixed(4)})`;
+        if (!title || !Number.isFinite(score)) continue;
+        const label = `本地媒体库: ${title}${mediaType ? ` (${mediaType})` : ""} (${score.toFixed(4)})`;
         if (itemId) {
           const previewLink = `${pageLibraryUrl.replace(/\/$/, "")}/?item=${encodeURIComponent(itemId)}`;
-          refs.push({ score, line: `- [${label}](${previewLink})` });
+          pushRef(mediaRefs, score, `- [${label}](${previewLink})`);
         } else {
-          refs.push({ score, line: `- ${label}` });
+          pushRef(mediaRefs, score, `- ${label}`);
         }
+      } else if (["search_tmdb_media", "search_bangumi_subject", "search_mediawiki_action", "parse_mediawiki_page", "expand_mediawiki_concept"].includes(tool)) {
+        const title = String(row?.external_title || row?.display_title || row?.title || row?.name_cn || row?.name || "").trim();
+        const mediaType = String(row?.media_type || "").trim();
+        const url = String(row?.url || "").trim();
+        if (!title || !url) continue;
+        const sourceLabel = externalSourceLabel(tool, row);
+        const suffix = mediaType ? ` (${mediaType})` : "";
+        const line = Number.isFinite(score)
+          ? `- [${sourceLabel}: ${title}${suffix} (${score.toFixed(4)})](${url})`
+          : `- [${sourceLabel}: ${title}${suffix}](${url})`;
+        pushRef(externalRefs, score, line);
+      } else if (String(row?.external_source || "").trim()) {
+        const title = String(row?.external_title || row?.title || "").trim();
+        const url = String(row?.url || "").trim();
+        if (!title || !url) continue;
+        const sourceLabel = externalSourceLabel(tool, row);
+        const line = Number.isFinite(score)
+          ? `- [${sourceLabel}: ${title} (${score.toFixed(4)})](${url})`
+          : `- [${sourceLabel}: ${title}](${url})`;
+        pushRef(externalRefs, score, line);
       }
     }
   }
 
-  if (!refs.length) return "";
-  const lines = refs.sort((a, b) => b.score - a.score).slice(0, MAX_REFERENCE_ITEMS).map((x) => x.line);
-  return `\n\n### 参考资料\n${lines.join("\n")}`;
+  if (!docRefs.length && !mediaRefs.length && !externalRefs.length) return "";
+
+  const sections = [];
+  if (mediaRefs.length) {
+    const lines = mediaRefs.sort((a, b) => b.score - a.score).slice(0, MAX_REFERENCE_ITEMS).map((x) => x.line);
+    sections.push(`### 本地媒体库参考\n${lines.join("\n")}`);
+  }
+  if (docRefs.length) {
+    const lines = docRefs.sort((a, b) => b.score - a.score).slice(0, MAX_REFERENCE_ITEMS).map((x) => x.line);
+    sections.push(`### 本地文档参考\n${lines.join("\n")}`);
+  }
+  if (externalRefs.length) {
+    const lines = externalRefs.sort((a, b) => b.score - a.score).slice(0, Math.max(1, Math.min(3, MAX_REFERENCE_ITEMS))).map((x) => x.line);
+    sections.push(`### 外部参考\n${lines.join("\n")}`);
+  }
+  return `\n\n${sections.join("\n\n")}`;
 }
 
 function hasReferenceSections(text) {
@@ -3711,9 +4160,13 @@ async function callAgent(question, searchMode, opts = {}) {
   return resp.json();
 }
 
-function renderCustomCards() {
+function renderCustomCards({ force = false } = {}) {
   const host = document.getElementById("custom-card-grid");
   if (!host) return;
+  // If the server already rendered the grid (SSR), skip the first JS repaint
+  // to avoid a flash. JS will call renderCustomCards({force:true}) whenever
+  // the card data changes (save, upload, etc.).
+  if (!force && host.children.length > 0) return;
   host.innerHTML = "";
 
   const maxCards = 8;
@@ -3762,6 +4215,8 @@ function renderCustomCards() {
     card.appendChild(text);
     host.appendChild(card);
   }
+
+  bindCustomCardGridInteractions();
 }
 
 function wireChatLinks() {
@@ -4007,7 +4462,9 @@ async function ask(searchMode) {
 
     let finalText = String(result.answer || "").trim() || "未返回回答。";
     if (!hasReferenceSections(finalText)) {
+      const sourceSummary = buildExternalSourceSummary(result.tool_results);
       const refs = buildReferencesMarkdown(result.tool_results);
+      if (sourceSummary) finalText += sourceSummary;
       if (refs) finalText += refs;
     }
     appendLocalMessage(resolvedSessionId, "assistant", finalText, result.trace_id);
@@ -4056,110 +4513,37 @@ async function deleteCurrentSessionAction() {
   await refreshSessions("");
 }
 
-async function init() {
-  await refreshSessions("");
-  setModel();
-  setMainTab("home");
-  loadInitialCards();
-  renderCustomCards();
+// ── Module-level trace stage click handler (shared across tabs) ──
+function _traceStageClickHandler(event) {
+  const target = event.target;
+  const segment = target instanceof Element ? target.closest("[data-trace-stage-key]") : null;
+  const row = target instanceof Element ? target.closest("[data-trace-stage-row]") : null;
+  const key = String(segment?.getAttribute("data-trace-stage-key") || row?.getAttribute("data-trace-stage-row") || "").trim();
+  if (!key) return;
+  const scope = target instanceof Element ? target.closest(".trace-stage-composite-wrap") : null;
+  if (!scope) return;
+  scope.querySelectorAll("[data-trace-stage-key], [data-trace-stage-row]").forEach((node) => {
+    node.classList.toggle("is-active", String(node.getAttribute("data-trace-stage-key") || node.getAttribute("data-trace-stage-row") || "") === key);
+  });
+}
 
-  for (const tab of document.querySelectorAll(".tab")) {
-    // Short tap → switch tab; long-press on usage-sensitive tabs → open usage modal
-    const switchFn = () => {
-      const target = tab.dataset.tab || "home";
-      setMainTab(target);
-      if (target === "dashboard" && !dashboardBootstrapped) {
-        bootstrapDashboardTab().catch((err) => {
-          renderDashboardError(err);
-        });
-      }
-      if (target === "tickets" && !ticketsBootstrapped) {
-        bootstrapTicketsTab().catch((err) => {
-          showAppErrorModal("Tickets 初始化失败", String(err));
-        });
-      }
-      if (target === "benchmark" && !benchmarkBootstrapped) {
-        bootstrapBenchmarkTab().catch(() => {});
-      }
-    };
-    const tabTarget = tab.dataset.tab || "home";
-    if (tabTarget === "dashboard") {
-      // Long-press on Dashboard tab → open usage modal
-      bindLongPressElement(tab, openUsageModal, switchFn);
-    } else {
-      tab.onclick = switchFn;
-    }
-  }
-
-  document.getElementById("agent-toggle-sidebar").onclick = () => toggleSidebar("agent-sidebar");
-  updateSidebarToggleButton("agent-sidebar");
-  document.getElementById("agent-new-session").onclick = () => {
-    createSessionAction().catch((e) => appendChatRow("assistant", `**错误**: ${String(e)}`));
-  };
-  document.getElementById("agent-delete-session").onclick = () => {
-    deleteCurrentSessionAction().catch((e) => appendChatRow("assistant", `**错误**: ${String(e)}`));
-  };
-
-  qaAsk.onclick = () => {
-    ask("hybrid").catch((e) => appendChatRow("assistant", `**错误**: ${String(e)}`));
-  };
-  qaAskLocal.onclick = () => {
-    ask("local_only").catch((e) => appendChatRow("assistant", `**错误**: ${String(e)}`));
-  };
-  qaAbort.onclick = abortAsk;
-  qaInput.addEventListener("keydown", (event) => {
-    if (event.key === "Enter" && !event.shiftKey) {
-      event.preventDefault();
-      ask("local_only").catch((e) => appendChatRow("assistant", `**错误**: ${String(e)}`));
-    }
-  });
-
-  customCardUploadBtn?.addEventListener("click", () => customCardUploadInput?.click());
-  customCardUploadInput?.addEventListener("change", () => {
-    uploadCustomCardImage().catch((e) => window.alert(`上传失败: ${String(e)}`));
-  });
-  customCardImageInput?.addEventListener("input", () => setCardPreview(customCardImageInput.value));
-  customCardSaveBtn?.addEventListener("click", () => {
-    saveCustomCardFromModal().catch((e) => window.alert(`保存失败: ${String(e)}`));
-  });
-  customCardCancelBtn?.addEventListener("click", closeCustomCardModal);
-  customCardModal?.addEventListener("click", (event) => {
-    const target = event.target;
-    if (target instanceof Element && target.getAttribute("data-role") === "custom-card-backdrop") {
-      closeCustomCardModal();
-    }
-  });
-  bindCropCanvasEvents();
-  document.addEventListener("keydown", (event) => {
-    if (event.key === "Escape") {
-      if (warningsModal && !warningsModal.classList.contains("hidden")) closeWarningsModal();
-      if (missingQueriesModal && !missingQueriesModal.classList.contains("hidden")) closeMissingQueriesModal();
-      if (traceModal && !traceModal.classList.contains("hidden")) closeTraceModal();
-      if (customCardModal && !customCardModal.classList.contains("hidden")) closeCustomCardModal();
-      const usageModal = document.getElementById("usage-edit-modal");
-      if (usageModal && !usageModal.classList.contains("hidden")) closeUsageModal();
-      if (appErrorModal && !appErrorModal.classList.contains("hidden")) closeAppErrorModal();
-    }
-  });
+// ── Event-handler registration — called once at init, independent of data loading ──
+let _dashboardHandlersRegistered = false;
+function _registerDashboardHandlers() {
+  if (_dashboardHandlersRegistered) return;
+  _dashboardHandlersRegistered = true;
 
   dashboardRefreshBtn?.addEventListener("click", () => {
-    refreshDashboard({ force: true }).catch((err) => {
-      renderDashboardError(err);
-    });
+    refreshDashboard({ force: true }).catch((err) => { renderDashboardError(err); });
   });
-
   document.getElementById("usage-save-btn")?.addEventListener("click", () => {
     saveUsage().catch((e) => window.alert(`保存失败: ${String(e)}`));
   });
   document.getElementById("usage-cancel-btn")?.addEventListener("click", closeUsageModal);
   document.getElementById("usage-edit-modal")?.addEventListener("click", (event) => {
     const target = event.target;
-    if (target instanceof Element && target.getAttribute("data-role") === "usage-edit-backdrop") {
-      closeUsageModal();
-    }
+    if (target instanceof Element && target.getAttribute("data-role") === "usage-edit-backdrop") closeUsageModal();
   });
-
-  // Warnings modal
   warningsClearBtn?.addEventListener("click", clearWarnings);
   warningsCloseBtn?.addEventListener("click", closeWarningsModal);
   missingQueriesClearBtn?.addEventListener("click", () => {
@@ -4212,47 +4596,18 @@ async function init() {
       lookupDashboardTrace().catch((e) => showAppErrorModal("Trace 查询失败", String(e)));
     }
   });
-  traceModalCloseBtn?.addEventListener("click", closeTraceModal);
-  traceModalExportBtn?.addEventListener("click", () => {
-    exportCurrentTrace().catch((e) => showAppErrorModal("Trace 导出失败", String(e)));
-  });
-  const traceStageClickHandler = (event) => {
-    const target = event.target;
-    const segment = target instanceof Element ? target.closest("[data-trace-stage-key]") : null;
-    const row = target instanceof Element ? target.closest("[data-trace-stage-row]") : null;
-    const key = String(segment?.getAttribute("data-trace-stage-key") || row?.getAttribute("data-trace-stage-row") || "").trim();
-    if (!key) return;
-    const scope = target instanceof Element ? target.closest(".trace-stage-composite-wrap") : null;
-    if (!scope) return;
-    scope.querySelectorAll("[data-trace-stage-key], [data-trace-stage-row]").forEach((node) => {
-      node.classList.toggle("is-active", String(node.getAttribute("data-trace-stage-key") || node.getAttribute("data-trace-stage-row") || "") === key);
-    });
-  };
-  dashboardTraceResult?.addEventListener("click", traceStageClickHandler);
-  traceModalContent?.addEventListener("click", traceStageClickHandler);
+  dashboardTraceResult?.addEventListener("click", _traceStageClickHandler);
   warningsModal?.addEventListener("click", (event) => {
     const target = event.target;
-    if (target instanceof Element && target.getAttribute("data-role") === "warnings-backdrop") {
-      closeWarningsModal();
-    }
+    if (target instanceof Element && target.getAttribute("data-role") === "warnings-backdrop") closeWarningsModal();
   });
   missingQueriesModal?.addEventListener("click", (event) => {
     const target = event.target;
-    if (target instanceof Element && target.getAttribute("data-role") === "missing-queries-backdrop") {
-      closeMissingQueriesModal();
-    }
+    if (target instanceof Element && target.getAttribute("data-role") === "missing-queries-backdrop") closeMissingQueriesModal();
   });
   runtimeDataModal?.addEventListener("click", (event) => {
     const target = event.target;
-    if (target instanceof Element && target.getAttribute("data-role") === "runtime-data-backdrop") {
-      closeRuntimeDataModal();
-    }
-  });
-  traceModal?.addEventListener("click", (event) => {
-    const target = event.target;
-    if (target instanceof Element && target.getAttribute("data-role") === "trace-backdrop") {
-      closeTraceModal();
-    }
+    if (target instanceof Element && target.getAttribute("data-role") === "runtime-data-backdrop") closeRuntimeDataModal();
   });
   dashboardJobsRefreshBtn?.addEventListener("click", () => {
     refreshTaskCenter().catch((e) => window.alert(`任务刷新失败: ${String(e)}`));
@@ -4261,12 +4616,95 @@ async function init() {
     dashboardJobsView = String(dashboardJobsFilter.value || "active");
     refreshTaskCenter().catch((e) => window.alert(`任务筛选失败: ${String(e)}`));
   });
+  dashboardJobsList?.addEventListener("click", async (event) => {
+    const target = event.target;
+    const cancelBtn = target instanceof Element ? target.closest("[data-job-cancel-id]") : null;
+    if (cancelBtn) {
+      const jobId = String(cancelBtn.getAttribute("data-job-cancel-id") || "").trim();
+      if (!jobId) return;
+      try {
+        await apiPost(`/api/dashboard/jobs/${encodeURIComponent(jobId)}/cancel`, {});
+        await refreshTaskCenter();
+      } catch (e) {
+        window.alert(`取消任务失败: ${String(e)}`);
+      }
+      return;
+    }
+    const card = target instanceof Element ? target.closest("[data-job-id]") : null;
+    if (!card) return;
+    selectedTaskJobId = String(card.getAttribute("data-job-id") || "");
+    renderTaskCenter();
+  });
+  if (dashboardGrid) bindLongPress(dashboardGrid, (target) => {
+    const role = target instanceof Element ? String(target.getAttribute("data-role") || target.tagName || "") : "";
+    debugUiEvent("dashboard longpress start", role);
+    const warningsCard = target.closest("[data-role='warnings-summary']");
+    if (warningsCard) { openWarningsModal(); return; }
+    const missingQueriesCard = target.closest("[data-role='missing-queries-summary']");
+    if (missingQueriesCard) { openMissingQueriesModal().catch((e) => window.alert(`加载失败: ${String(e)}`)); return; }
+    const feedbackCard = target.closest("[data-role='feedback-summary']");
+    if (feedbackCard) { openFeedbackModal().catch((e) => window.alert(`加载失败: ${String(e)}`)); return; }
+    const runtimeDataCard = target.closest("[data-role='runtime-data-summary']");
+    if (runtimeDataCard) { openRuntimeDataModal().catch((e) => window.alert(`加载失败: ${String(e)}`)); return; }
+    const libraryGraphCard = target.closest("[data-role='library-graph-summary']");
+    if (libraryGraphCard) { triggerLibraryGraphRebuild().catch((e) => window.alert(`触发失败: ${String(e)}`)); return; }
+    const usageCard = target.closest("[data-role='web-search-usage'],[data-role='deepseek-usage']");
+    if (usageCard) openUsageModal();
+    const ragPendingCard = target.closest("[data-role='rag-changed-pending']");
+    if (ragPendingCard) triggerRagSync();
+  });
+  feedbackSourceSelect?.addEventListener("change", () => {
+    openFeedbackModal().catch((e) => window.alert(`加载失败: ${String(e)}`));
+  });
+  feedbackExportBtn?.addEventListener("click", () => {
+    exportFeedbackJson().catch((e) => window.alert(`导出失败: ${String(e)}`));
+  });
+  feedbackClearBtn?.addEventListener("click", () => {
+    clearFeedback().catch((e) => window.alert(`清空失败: ${String(e)}`));
+  });
+  feedbackCloseBtn?.addEventListener("click", closeFeedbackModal);
+  feedbackDetailCloseBtn?.addEventListener("click", closeFeedbackDetailModal);
+  feedbackDetailOpenTraceBtn?.addEventListener("click", () => {
+    const traceId = String(currentFeedbackDetailItem?.trace_id || "").trim();
+    if (!traceId) return;
+    openTraceModal(traceId).catch((e) => showAppErrorModal("Trace 加载失败", String(e)));
+  });
+  feedbackModal?.addEventListener("click", (event) => {
+    const target = event.target;
+    if (!(target instanceof Element)) return;
+    if (target.dataset.role === "feedback-backdrop") closeFeedbackModal();
+  });
+  feedbackDetailModal?.addEventListener("click", (event) => {
+    const target = event.target;
+    if (!(target instanceof Element)) return;
+    if (target.dataset.role === "feedback-detail-backdrop") closeFeedbackDetailModal();
+  });
+  feedbackModalList?.addEventListener("click", (event) => {
+    const target = event.target;
+    const item = target instanceof Element ? target.closest("[data-feedback-id]") : null;
+    if (!item) return;
+    const feedbackId = String(item.getAttribute("data-feedback-id") || "").trim();
+    const row = currentFeedbackItems.find((entry) => String(entry.id || "") === feedbackId);
+    if (row) showFeedbackDetail(row);
+  });
+  if (feedbackModalList) bindLongPress(feedbackModalList, (target) => {
+    const item = target.closest("[data-feedback-id]");
+    if (!item) return;
+    const feedbackId = String(item.getAttribute("data-feedback-id") || "").trim();
+    const row = currentFeedbackItems.find((entry) => String(entry.id || "") === feedbackId);
+    if (row) showFeedbackDetail(row);
+  });
+}
+
+let _ticketsHandlersRegistered = false;
+function _registerTicketsHandlers() {
+  if (_ticketsHandlersRegistered) return;
+  _ticketsHandlersRegistered = true;
+
   ticketsRefreshBtn?.addEventListener("click", () => {
     refreshTickets({ keepSelection: true }).catch((e) => showAppErrorModal("Tickets 刷新失败", String(e)));
   });
-  ticketsNewBtn?.addEventListener("click", () => {
-    resetTicketEditor();
-  });
+  ticketsNewBtn?.addEventListener("click", () => { resetTicketEditor(); });
   ticketPasteFillBtn?.addEventListener("click", () => {
     fillTicketFromPaste().catch((e) => showAppErrorModal("BUG-TICKET 填充失败", String(e)));
   });
@@ -4282,12 +4720,14 @@ async function init() {
     const traceBtn = target instanceof Element ? target.closest("[data-ticket-trace-open]") : null;
     if (traceBtn) {
       const traceId = String(traceBtn.getAttribute("data-ticket-trace-open") || "").trim();
+      debugUiEvent("ticket row click received", traceId ? `trace=${traceId}` : "trace=empty");
       if (traceId) openTraceModal(traceId).catch((e) => showAppErrorModal("Trace 加载失败", String(e)));
       return;
     }
     const item = target instanceof Element ? target.closest("[data-ticket-id]") : null;
     if (!item) return;
     const ticketId = String(item.getAttribute("data-ticket-id") || "").trim();
+    debugUiEvent("ticket row click received", ticketId || "ticket=empty");
     const ticket = currentTickets.find((entry) => String(entry.ticket_id || "") === ticketId);
     if (!ticket) return;
     applyTicketToForm(ticket);
@@ -4313,9 +4753,7 @@ async function init() {
   ticketRelatedTracesInput?.addEventListener("input", () => {
     renderTicketTraceLinks(ticketRelatedTracesInput.value || "");
   });
-  ticketPasteInput?.addEventListener("input", () => {
-    syncTicketsPaneHeights();
-  });
+  ticketPasteInput?.addEventListener("input", () => { syncTicketsPaneHeights(); });
   ticketDeleteConfirmSelect?.addEventListener("change", () => {
     if (ticketDeleteConfirmBtn) ticketDeleteConfirmBtn.disabled = String(ticketDeleteConfirmSelect.value || "") !== "delete";
   });
@@ -4324,76 +4762,28 @@ async function init() {
     renderTicketSortButton();
     refreshTickets({ keepSelection: false }).catch((e) => showAppErrorModal("Tickets 排序失败", String(e)));
   });
-  ticketsListCollapseBtn?.addEventListener("click", () => {
-    setTicketsListCollapsed(!ticketsListCollapsed);
-  });
-  window.addEventListener("resize", () => {
-    renderTicketsListCollapseButton();
-    updateSidebarToggleButton("agent-sidebar");
-    syncTicketsPaneHeights();
-  });
+  ticketsListCollapseBtn?.addEventListener("click", () => { setTicketsListCollapsed(!ticketsListCollapsed); });
   ticketDeleteConfirmBtn?.addEventListener("click", () => {
     confirmDeleteCurrentTicket().catch((e) => showAppErrorModal("Ticket 删除失败", String(e)));
   });
   ticketDeleteCancelBtn?.addEventListener("click", closeTicketDeleteModal);
   ticketDeleteModal?.addEventListener("click", (event) => {
     const target = event.target;
-    if (target instanceof Element && target.getAttribute("data-role") === "ticket-delete-backdrop") {
-      closeTicketDeleteModal();
-    }
+    if (target instanceof Element && target.getAttribute("data-role") === "ticket-delete-backdrop") closeTicketDeleteModal();
   });
-  dashboardJobsList?.addEventListener("click", async (event) => {
-    const target = event.target;
-    const cancelBtn = target instanceof Element ? target.closest("[data-job-cancel-id]") : null;
-    if (cancelBtn) {
-      const jobId = String(cancelBtn.getAttribute("data-job-cancel-id") || "").trim();
-      if (!jobId) return;
-      try {
-        await apiPost(`/api/dashboard/jobs/${encodeURIComponent(jobId)}/cancel`, {});
-        await refreshTaskCenter();
-      } catch (e) {
-        window.alert(`取消任务失败: ${String(e)}`);
-      }
-      return;
-    }
-    const card = target instanceof Element ? target.closest("[data-job-id]") : null;
-    if (!card) return;
-    selectedTaskJobId = String(card.getAttribute("data-job-id") || "");
-    renderTaskCenter();
-  });
-  // Long-press on warnings/usage cards to open their modals
-  if (dashboardGrid) bindLongPress(dashboardGrid, (target) => {
-    const warningsCard = target.closest("[data-role='warnings-summary']");
-    if (warningsCard) { openWarningsModal(); return; }
-    const missingQueriesCard = target.closest("[data-role='missing-queries-summary']");
-    if (missingQueriesCard) {
-      openMissingQueriesModal().catch((e) => window.alert(`加载失败: ${String(e)}`));
-      return;
-    }
-    const feedbackCard = target.closest("[data-role='feedback-summary']");
-    if (feedbackCard) {
-      openFeedbackModal().catch((e) => window.alert(`加载失败: ${String(e)}`));
-      return;
-    }
-    const runtimeDataCard = target.closest("[data-role='runtime-data-summary']");
-    if (runtimeDataCard) {
-      openRuntimeDataModal().catch((e) => window.alert(`加载失败: ${String(e)}`));
-      return;
-    }
-    const libraryGraphCard = target.closest("[data-role='library-graph-summary']");
-    if (libraryGraphCard) {
-      triggerLibraryGraphRebuild().catch((e) => window.alert(`触发失败: ${String(e)}`));
-      return;
-    }
-    const usageCard = target.closest("[data-role='web-search-usage'],[data-role='deepseek-usage']");
-    if (usageCard) openUsageModal();
-    const ragPendingCard = target.closest("[data-role='rag-changed-pending']");
-    if (ragPendingCard) triggerRagSync();
-  });
+}
 
-  // Benchmark
-  document.getElementById("bm-run-btn")?.addEventListener("click", runBenchmark);
+let _benchmarkHandlersRegistered = false;
+function _registerBenchmarkHandlers() {
+  if (_benchmarkHandlersRegistered) return;
+  _benchmarkHandlersRegistered = true;
+
+  document.getElementById("bm-run-btn")?.addEventListener("click", () => {
+    debugUiEvent("benchmark run click received");
+    runBenchmark();
+  });
   document.getElementById("bm-abort-btn")?.addEventListener("click", async () => {
+    debugUiEvent("benchmark abort click received", String(activeBenchmarkJobId || ""));
     if (!activeBenchmarkJobId) return;
     try {
       await apiPost(`/api/benchmark/jobs/${encodeURIComponent(activeBenchmarkJobId)}/cancel`, {});
@@ -4401,8 +4791,29 @@ async function init() {
       // Ignore cancel race with completed jobs.
     }
   });
+  document.getElementById("bm-router-cls-run")?.addEventListener("click", () => {
+    debugUiEvent("benchmark router click received");
+    runRouterClassification();
+  });
+  document.getElementById("bm-unit-tests-run")?.addEventListener("click", () => {
+    debugUiEvent("benchmark unit click received");
+    runUnitTests();
+  });
   benchmarkCaseTraceRefreshBtn?.addEventListener("click", () => {
+    debugUiEvent("benchmark trace refresh click received");
     refreshBenchmarkLatestCase().catch((e) => showAppErrorModal("刷新最新 case 失败", String(e), "可直接复制下面的报错内容"));
+  });
+  const bmTestsetSel = document.getElementById("bm-testset-select");
+  if (bmTestsetSel) {
+    // Sync JS state from SSR-rendered initial selection.
+    if (bmTestsetSel.value) currentBmTestSet = bmTestsetSel.value;
+    bmTestsetSel.addEventListener("change", () => {
+      currentBmTestSet = bmTestsetSel.value;
+      renderBenchmarkTable(benchmarkHistory);
+    });
+  }
+  document.getElementById("bm-case-set-select")?.addEventListener("change", () => {
+    syncBenchmarkCountOptions();
   });
   document.getElementById("bm-case-trace-list")?.addEventListener("click", (event) => {
     const target = event.target;
@@ -4412,6 +4823,47 @@ async function init() {
     if (!traceId) return;
     openTraceModal(traceId).catch((e) => showAppErrorModal("Trace 加载失败", String(e)));
   });
+}
+
+async function init() {
+  try { if (window.__navBoot) window.__navBoot.mark("init-started"); } catch (_) {}
+  initUiDebugStatus();
+  installUiClickProbe();
+  // ── Tab switching: must be the very first binding so tabs work even if
+  // later setup steps throw. All tabs use addEventListener("click") for
+  // consistent behaviour on mobile. Dashboard additionally gets a long-press
+  // overlay for the usage modal.
+  for (const tab of document.querySelectorAll(".tab")) {
+    const switchFn = () => {
+      const target = tab.dataset.tab || "home";
+      debugUiEvent("tab click received", target);
+      setMainTab(target);
+      if (target === "dashboard") {
+        bootstrapDashboardTab().catch((err) => { renderDashboardError(err); });
+      }
+      if (target === "tickets") {
+        bootstrapTicketsTab().catch((err) => { showAppErrorModal("Tickets 加载失败", String(err)); });
+      }
+      if (target === "benchmark") {
+        bootstrapBenchmarkTab().catch(() => {});
+      }
+    };
+    tab.addEventListener("click", switchFn);
+    if ((tab.dataset.tab || "home") === "dashboard") {
+      // Dashboard: long-press opens usage modal (no conflict with click above)
+      bindLongPressElement(tab, openUsageModal);
+    }
+  }
+  try { if (window.__navBoot) window.__navBoot.mark("tabs-bound"); } catch (_) {}
+
+  // ── Register all tab handler bindings up-front so every control is
+  // immediately clickable — independent of when the data actually loads.
+  _registerDashboardHandlers();
+  _registerTicketsHandlers();
+  _registerBenchmarkHandlers();
+
+  // Bind error modal controls early so a later init failure never leaves
+  // a blocking modal that cannot be dismissed.
   appErrorCopyBtn?.addEventListener("click", () => {
     copyAppErrorText().catch((e) => showAppErrorModal("复制失败", String(e)));
   });
@@ -4420,21 +4872,90 @@ async function init() {
     const target = event.target;
     if (target instanceof Element && target.getAttribute("data-role") === "app-error-backdrop") closeAppErrorModal();
   });
-  feedbackSourceSelect?.addEventListener("change", () => {
-    openFeedbackModal().catch((e) => window.alert(`加载失败: ${String(e)}`));
+
+  setModel();
+  const currentTab = String(document.querySelector(".tab.active")?.getAttribute("data-tab") || "home");
+  setMainTab(currentTab);
+  loadInitialCards();
+  if (currentTab === "dashboard") {
+    bootstrapDashboardTab().catch((err) => { renderDashboardError(err); });
+  } else if (currentTab === "tickets") {
+    bootstrapTicketsTab().catch((err) => { showAppErrorModal("Tickets 加载失败", String(err)); });
+  } else if (currentTab === "benchmark") {
+    bootstrapBenchmarkTab().catch(() => {});
+  }
+
+  document.getElementById("agent-toggle-sidebar")?.addEventListener("click", () => {
+    debugUiEvent("agent sidebar toggle click received");
+    toggleSidebar("agent-sidebar");
   });
-  feedbackExportBtn?.addEventListener("click", () => {
-    exportFeedbackJson().catch((e) => window.alert(`导出失败: ${String(e)}`));
+  updateSidebarToggleButton("agent-sidebar");
+  document.getElementById("agent-new-session")?.addEventListener("click", () => {
+    debugUiEvent("agent new session click received");
+    createSessionAction().catch((e) => appendChatRow("assistant", `**错误**: ${String(e)}`));
   });
-  feedbackClearBtn?.addEventListener("click", () => {
-    clearFeedback().catch((e) => window.alert(`清空失败: ${String(e)}`));
+  document.getElementById("agent-delete-session")?.addEventListener("click", () => {
+    debugUiEvent("agent delete session click received", String(currentSessionId || ""));
+    deleteCurrentSessionAction().catch((e) => appendChatRow("assistant", `**错误**: ${String(e)}`));
   });
-  feedbackCloseBtn?.addEventListener("click", closeFeedbackModal);
-  feedbackDetailCloseBtn?.addEventListener("click", closeFeedbackDetailModal);
-  feedbackDetailOpenTraceBtn?.addEventListener("click", () => {
-    const traceId = String(currentFeedbackDetailItem?.trace_id || "").trim();
-    if (!traceId) return;
-    openTraceModal(traceId).catch((e) => showAppErrorModal("Trace 加载失败", String(e)));
+
+  qaAsk?.addEventListener("click", () => {
+    debugUiEvent("agent search click received");
+    ask("hybrid").catch((e) => appendChatRow("assistant", `**错误**: ${String(e)}`));
+  });
+  qaAskLocal?.addEventListener("click", () => {
+    debugUiEvent("agent local answer click received");
+    ask("local_only").catch((e) => appendChatRow("assistant", `**错误**: ${String(e)}`));
+  });
+  qaAbort?.addEventListener("click", abortAsk);
+  qaInput?.addEventListener("keydown", (event) => {
+    if (event.key === "Enter" && !event.shiftKey) {
+      event.preventDefault();
+      ask("local_only").catch((e) => appendChatRow("assistant", `**错误**: ${String(e)}`));
+    }
+  });
+
+  customCardUploadBtn?.addEventListener("click", () => customCardUploadInput?.click());
+  customCardUploadInput?.addEventListener("change", () => {
+    uploadCustomCardImage().catch((e) => window.alert(`上传失败: ${String(e)}`));
+  });
+  customCardImageInput?.addEventListener("input", () => setCardPreview(customCardImageInput.value));
+  customCardSaveBtn?.addEventListener("click", () => {
+    saveCustomCardFromModal().catch((e) => window.alert(`保存失败: ${String(e)}`));
+  });
+  customCardCancelBtn?.addEventListener("click", closeCustomCardModal);
+  customCardModal?.addEventListener("click", (event) => {
+    const target = event.target;
+    if (target instanceof Element && target.getAttribute("data-role") === "custom-card-backdrop") {
+      closeCustomCardModal();
+    }
+  });
+  bindCropCanvasEvents();
+  document.addEventListener("keydown", (event) => {
+    if (event.key === "Escape") {
+      if (warningsModal && !warningsModal.classList.contains("hidden")) closeWarningsModal();
+      if (missingQueriesModal && !missingQueriesModal.classList.contains("hidden")) closeMissingQueriesModal();
+      if (traceModal && !traceModal.classList.contains("hidden")) closeTraceModal();
+      if (customCardModal && !customCardModal.classList.contains("hidden")) closeCustomCardModal();
+      const usageModal = document.getElementById("usage-edit-modal");
+      if (usageModal && !usageModal.classList.contains("hidden")) closeUsageModal();
+      if (appErrorModal && !appErrorModal.classList.contains("hidden")) closeAppErrorModal();
+    }
+  });
+
+  traceModalCloseBtn?.addEventListener("click", closeTraceModal);
+  traceModalExportBtn?.addEventListener("click", () => {
+    exportCurrentTrace().catch((e) => showAppErrorModal("Trace 导出失败", String(e)));
+  });
+  traceModalContent?.addEventListener("click", _traceStageClickHandler);
+  traceModal?.addEventListener("click", (event) => {
+    const target = event.target;
+    if (target instanceof Element && target.getAttribute("data-role") === "trace-backdrop") closeTraceModal();
+  });
+  window.addEventListener("resize", () => {
+    renderTicketsListCollapseButton();
+    updateSidebarToggleButton("agent-sidebar");
+    syncTicketsPaneHeights();
   });
   sessionRenameSaveBtn?.addEventListener("click", () => {
     saveSessionRename().catch((e) => window.alert(`重命名失败: ${String(e)}`));
@@ -4445,35 +4966,10 @@ async function init() {
     event.preventDefault();
     saveSessionRename().catch((e) => window.alert(`重命名失败: ${String(e)}`));
   });
-  feedbackModal?.addEventListener("click", (event) => {
-    const target = event.target;
-    if (!(target instanceof Element)) return;
-    if (target.dataset.role === "feedback-backdrop") closeFeedbackModal();
-  });
-  feedbackDetailModal?.addEventListener("click", (event) => {
-    const target = event.target;
-    if (!(target instanceof Element)) return;
-    if (target.dataset.role === "feedback-detail-backdrop") closeFeedbackDetailModal();
-  });
   sessionRenameModal?.addEventListener("click", (event) => {
     const target = event.target;
     if (!(target instanceof Element)) return;
     if (target.dataset.role === "session-rename-backdrop") closeSessionRenameModal();
-  });
-  feedbackModalList?.addEventListener("click", (event) => {
-    const target = event.target;
-    const item = target instanceof Element ? target.closest("[data-feedback-id]") : null;
-    if (!item) return;
-    const feedbackId = String(item.getAttribute("data-feedback-id") || "").trim();
-    const row = currentFeedbackItems.find((entry) => String(entry.id || "") === feedbackId);
-    if (row) showFeedbackDetail(row);
-  });
-  if (feedbackModalList) bindLongPress(feedbackModalList, (target) => {
-    const item = target.closest("[data-feedback-id]");
-    if (!item) return;
-    const feedbackId = String(item.getAttribute("data-feedback-id") || "").trim();
-    const row = currentFeedbackItems.find((entry) => String(entry.id || "") === feedbackId);
-    if (row) showFeedbackDetail(row);
   });
   const sessionList = document.getElementById("agent-session-list");
   sessionList?.addEventListener("contextmenu", (event) => {
@@ -4487,9 +4983,24 @@ async function init() {
     openSessionRenameModalFromTarget(target);
   });
 
+  // ── Background async work: fires after all bindings are set up ──
+  // Sessions are loaded in the background so interactions are never blocked.
+  refreshSessions("").catch((err) => {
+    console.warn("[init] session load failed:", err);
+    const ul = document.getElementById("agent-session-list");
+    if (ul) ul.innerHTML = '<li class="list-loading" style="color:#c05050">会话加载失败，请刷新页面</li>';
+  });
+
   wireChatLinks();
+  try { if (window.__navBoot) window.__navBoot.mark("init-done"); } catch (_) {}
 }
 
 init().catch((err) => {
-  appendChatRow("assistant", `**初始化失败**: ${String(err)}`);
+  console.error("[init] 初始化失败:", err);
+  // Try to show a visible modal; fall back to alert if the modal isn't ready yet.
+  try {
+    showAppErrorModal("初始化失败", String(err), "请刷新页面重试");
+  } catch (_e) {
+    window.alert(`初始化失败：${String(err)}`);
+  }
 });

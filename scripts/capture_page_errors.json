@@ -1,0 +1,11 @@
+{
+  "page_errors": [
+    {
+      "type": "Error",
+      "message": "Illegal return statement",
+      "stack": "",
+      "name": "SyntaxError"
+    }
+  ],
+  "console": []
+}

@@ -67,10 +67,24 @@ core_service (共享模块)
 ### 2.2 `ai_conversations_summary` 的 RAG 链路
 
 1. 可选 Query Rewrite（默认最多 2 条检索 query，且原 query 保留更高优先级）。
-2. 多 query 并行向量召回（FAISS）。
-3. 结果合并后进行 rerank（默认 `BAAI/bge-reranker-base`，可通过环境变量回切）。
-4. 可选融合联网搜索结果。
-5. 组装上下文并调用本地/云端 LLM 生成回答。
+2. 对每条 rewrite query 先做文档图谱扩展（query expansion），再进入 FAISS 向量召回。
+3. 多 query 结果合并后进行 cross-encoder rerank，并带有 top1 guard / dynamic fusion alpha。
+4. keyword 检索已升级为轻量 BM25 变体，作为稀疏信号参与 hybrid 融合。
+5. 上下文组装默认使用 `passage_first`：
+   - top 命中文档优先抽取真实相关段落
+   - 其余文档退回 `title / summary / topic / keywords` 元数据
+6. passage 抽取已支持两段式选择：
+   - 先按 query token overlap 预筛段落
+   - 再复用已热加载的 reranker 做 passage-level semantic selection
+7. 回答阶段区分三类证据来源：
+   - 本地资料事实
+   - 通用知识补充
+   - 推断/外推
+8. 最终回答会经过 citation reconciliation：
+   - 清理不存在的 `[资料N]`
+   - 自动给高重合未标注段落补 citation
+   - 产出 `citation_map` 供后续 trace / reference section 使用
+9. `no_context` 不再只看单一阈值，还会结合 `retrieval_confidence`（如 `confidence_none`）统一同步到 prompt、trace 与 metrics。
 
 ### 2.3 共享层 `core_service`
 
@@ -163,6 +177,7 @@ python -m venv .venv
     - `AI_SUMMARY_RERANKER_MODEL`：默认 `BAAI/bge-reranker-base`
     - `AI_SUMMARY_QUERY_REWRITE_COUNT`：默认 `2`
     - `AI_SUMMARY_PRIMARY_QUERY_SCORE_BONUS`：原 query 的合并加权
+    - `AI_SUMMARY_PASSAGE_FIRST_K`：默认用真实段落装入上下文的 top 文档数
 - Agent 文档检索默认配置：
     - `NAV_DASHBOARD_QUERY_REWRITE_COUNT`：默认 `2`
     - `NAV_DASHBOARD_PRIMARY_QUERY_SCORE_BONUS`：原 query 的合并加权
@@ -189,6 +204,10 @@ python -m venv .venv
 
 - 当前系统已经具备“可学习”的数据基础，但默认不会自动在线改写路由策略。
 - 持续优化的主要抓手是：`trace_records`、`agent_metrics`、`chat_feedback`、`tickets`、`evals`、回归样例与 benchmark 结果。
+- 文档 RAG 这条链路当前已经比较完整，继续优化时优先级应放在：
+    1. passage/claim 级 citation contract
+    2. retrieval confidence 校准
+    3. 回归评测与 trace 对齐
 - 如果要把它演进成反馈驱动的决策系统，建议路线是：
     1. 先把误路由/误判样本沉淀成结构化评测集。
     2. 用这些样本离线调整 arbitration policy、planner 规则、schema projection 与 guardrail 触发条件。

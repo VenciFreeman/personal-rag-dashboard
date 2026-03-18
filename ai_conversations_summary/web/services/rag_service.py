@@ -643,6 +643,24 @@ def _coerce_stage_seconds(timings: dict[str, Any], *keys: str) -> float:
     return 0.0
 
 
+def _resolve_no_context(timings_dict: dict[str, Any]) -> tuple[int, str]:
+    """Return (no_context: int, no_context_reason: str) from a timings dict.
+
+    Single source of truth used by both sync and stream paths to ensure
+    consistent no_context semantics:
+      - below_threshold  : local_after_threshold == 0
+      - confidence_none  : retrieval_confidence == 'none' (top1 < 0.30)
+      - "" (0)           : otherwise
+    """
+    _lat = timings_dict.get("local_after_threshold")
+    _conf = str(timings_dict.get("retrieval_confidence") or "").strip().lower()
+    if _lat is not None and float(_lat) == 0.0:
+        return 1, "below_threshold"
+    if _conf == "none":
+        return 1, "confidence_none"
+    return 0, ""
+
+
 def record_retrieval_metrics(
     *,
     source: str,
@@ -1479,14 +1497,41 @@ def suggest_local_session_title_from_qa(question: str, answer: str, max_len: int
     return suggest_local_session_title(q, max_len=max_len)
 
 
-def format_local_answer_with_refs(answer: str, used_docs: list[dict[str, Any]] | None) -> str:
+def format_local_answer_with_refs(
+    answer: str,
+    used_docs: list[dict[str, Any]] | None,
+    *,
+    citation_map: dict[str, Any] | None = None,
+) -> str:
+    """Append a '### 参考资料' section to *answer*.
+
+    When *citation_map* is supplied (produced by ``_reconcile_citations`` in
+    ask_rag.py) the reference section is restricted to docs that were actually
+    cited or auto-annotated in the answer, trimming noise from the context
+    window that the model never referenced.  Falls back to the full *used_docs*
+    list when *citation_map* is absent (e.g. local-only mode, fallback paths).
+    """
     text = (answer or "").strip()
     if not text:
         return text
 
     text = re.sub(r"\[资料\s*(\d+)\]", r"[\1]", text)
 
-    docs = used_docs or []
+    # Restrict reference entries to cited docs when citation_map is available.
+    all_docs = used_docs or []
+    if citation_map is not None:
+        cited_indices: set[int] = (
+            set(citation_map.get("cited_by_model") or [])
+            | set(citation_map.get("auto_annotated") or [])
+        )
+        if cited_indices:
+            # used_docs is 0-indexed; citation indices are 1-based
+            docs = [all_docs[i - 1] for i in sorted(cited_indices) if 1 <= i <= len(all_docs)]
+        else:
+            docs = all_docs  # nothing specifically cited — keep all
+    else:
+        docs = all_docs
+
     ref_entries: list[dict[str, Any]] = []
     seen_keys: set[str] = set()
     for item in docs:
@@ -1531,10 +1576,16 @@ def format_local_answer_with_refs(answer: str, used_docs: list[dict[str, Any]] |
     return f"{text}\n\n" + "\n".join(lines)
 
 
-def format_answer_with_refs(answer: str, used_docs: list[dict[str, Any]] | None, *, mode: str) -> str:
+def format_answer_with_refs(
+    answer: str,
+    used_docs: list[dict[str, Any]] | None,
+    *,
+    mode: str,
+    citation_map: dict[str, Any] | None = None,
+) -> str:
     normalized_mode = (mode or "").strip().lower() or "local"
     if normalized_mode == "local":
-        return format_local_answer_with_refs(answer, used_docs)
+        return format_local_answer_with_refs(answer, used_docs, citation_map=citation_map)
 
     text = (answer or "").strip()
     if not text:
@@ -2648,8 +2699,7 @@ def ask_rag(
     payload["similarity_threshold"] = float(effective_similarity_threshold)
     payload["vector_top_n"] = int(payload.get("vector_top_n") or effective_vector_top_n)
     _timings_dict = payload.get("timings", {}) if isinstance(payload.get("timings"), dict) else {}
-    _lat = _timings_dict.get("local_after_threshold")
-    _no_context = 1 if (_lat is not None and float(_lat) == 0.0) else 0
+    _no_context, _no_context_reason = _resolve_no_context(_timings_dict)
     if not benchmark_mode:
         record_retrieval_metrics(
             source="rag_qa",
@@ -2661,7 +2711,7 @@ def ask_rag(
             embed_cache_hit=1 if float(_timings_dict.get("embed_cache_hit") or 0) > 0 else 0,
             web_cache_hit=1 if str(_timings_dict.get("web_search_status", "")) == "cache_hit" else 0,
             no_context=_no_context,
-            no_context_reason="below_threshold" if _no_context else "",
+            no_context_reason=_no_context_reason,
             trace_id=resolved_trace_id,
             similarity_threshold=float(effective_similarity_threshold),
             top1_score_before_rerank=float(_timings_dict["local_top1_score"]) if _timings_dict.get("local_top1_score") is not None else None,
@@ -2682,7 +2732,7 @@ def ask_rag(
             payload=payload,
             timings=_timings_dict,
             no_context=_no_context,
-            no_context_reason="below_threshold" if _no_context else "",
+            no_context_reason=_no_context_reason,
         )
     )
     if _no_context and not benchmark_mode:
@@ -2694,7 +2744,7 @@ def ask_rag(
                 top1_score=float(_timings_dict.get("local_top1_score") or 0),
                 threshold=float(effective_similarity_threshold),
                 trace_id=resolved_trace_id,
-                reason="below_threshold",
+                reason=_no_context_reason,
             )
         except Exception:
             pass
@@ -2822,7 +2872,7 @@ def ask_rag_stream(
             answer = str(payload.get("answer", "")).strip()
             used_docs = payload.get("used_context_docs", [])
             docs = used_docs if isinstance(used_docs, list) else []
-            answer = format_answer_with_refs(answer, docs, mode=normalized_mode)
+            answer = format_answer_with_refs(answer, docs, mode=normalized_mode, citation_map=payload.get("citation_map") if isinstance(payload.get("citation_map"), dict) else None)
             payload["answer"] = answer
             payload["mode"] = normalized_mode
             payload["embedding_model"] = emb
@@ -3037,7 +3087,7 @@ def ask_rag_stream(
                 answer = str(payload.get("answer", "")).strip() or "".join(collected_chunks).strip()
                 used_docs = payload.get("used_context_docs", [])
                 docs = used_docs if isinstance(used_docs, list) else []
-                answer = format_answer_with_refs(answer, docs, mode=normalized_mode)
+                answer = format_answer_with_refs(answer, docs, mode=normalized_mode, citation_map=payload.get("citation_map") if isinstance(payload.get("citation_map"), dict) else None)
 
                 if answer and not collected_chunks:
                     synthetic_chunks = [answer[i : i + 240] for i in range(0, len(answer), 240)]
@@ -3052,8 +3102,7 @@ def ask_rag_stream(
                 payload["vector_top_n"] = int(payload.get("vector_top_n") or effective_vector_top_n)
                 payload["session_id"] = session_id
                 _timings_dict = payload.get("timings", {}) if isinstance(payload.get("timings"), dict) else {}
-                _lat = _timings_dict.get("local_after_threshold")
-                _no_context = 1 if (_lat is not None and float(_lat) == 0.0) else 0
+                _no_context, _no_context_reason = _resolve_no_context(_timings_dict)
                 if not benchmark_mode:
                     record_retrieval_metrics(
                         source="rag_qa_stream",
@@ -3065,7 +3114,7 @@ def ask_rag_stream(
                         embed_cache_hit=1 if float(_timings_dict.get("embed_cache_hit") or 0) > 0 else 0,
                         web_cache_hit=1 if str(_timings_dict.get("web_search_status", "")) == "cache_hit" else 0,
                         no_context=_no_context,
-                        no_context_reason="below_threshold" if _no_context else "",
+                        no_context_reason=_no_context_reason,
                         trace_id=resolved_trace_id,
                         similarity_threshold=float(effective_similarity_threshold),
                         top1_score_before_rerank=float(_timings_dict["local_top1_score"]) if _timings_dict.get("local_top1_score") is not None else None,
@@ -3086,10 +3135,10 @@ def ask_rag_stream(
                         payload=payload,
                         timings=_timings_dict,
                         no_context=_no_context,
-                        no_context_reason="below_threshold" if _no_context else "",
+                        no_context_reason=_no_context_reason,
                     )
                 )
-                if float(_timings_dict.get("local_after_threshold", -1) or -1) == 0 and not benchmark_mode:
+                if _no_context and not benchmark_mode:
                     try:
                         from cache_db import log_no_context_query
                         log_no_context_query(
@@ -3098,7 +3147,7 @@ def ask_rag_stream(
                             top1_score=float(_timings_dict.get("local_top1_score") or 0),
                             threshold=float(effective_similarity_threshold),
                             trace_id=resolved_trace_id,
-                            reason="below_threshold",
+                            reason=_no_context_reason,
                         )
                     except Exception:
                         pass

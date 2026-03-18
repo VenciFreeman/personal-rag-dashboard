@@ -169,10 +169,21 @@ def render_trace_export(record: dict[str, Any]) -> str:
             if not isinstance(tool, dict):
                 continue
             name = str(tool.get("name", "") or "")
+            display_name = str(tool.get("display_name", "") or name)
             status = str(tool.get("status", "") or "")
             latency_ms = _format_ms(tool.get("latency_ms"))
             result_count = tool.get("result_count")
-            lines.append(f"- {name} | {status} | latency={latency_ms} | results={result_count if result_count is not None else ''}")
+            source_counts = tool.get("source_counts") if isinstance(tool.get("source_counts"), dict) else {}
+            source_suffix = ""
+            if source_counts:
+                ordered = ", ".join(
+                    f"{str(key)}:{int(value or 0)}"
+                    for key, value in sorted(source_counts.items(), key=lambda item: (-int(item[1] or 0), str(item[0])))
+                )
+                source_suffix = f" | sources={ordered}"
+            elif str(tool.get("per_item_source", "") or "").strip():
+                source_suffix = f" | source={str(tool.get('per_item_source') or '').strip()}"
+            lines.append(f"- {display_name} | {status} | latency={latency_ms} | results={result_count if result_count is not None else ''}{source_suffix}")
     else:
         lines.append("- none")
 

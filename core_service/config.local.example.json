@@ -31,6 +31,9 @@
       "read_access_token": "",
       "timeout": 20,
       "language": "zh-CN"
+    },
+    "bangumi": {
+      "access_token": ""
     }
   }
 }
