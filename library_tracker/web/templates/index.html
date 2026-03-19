@@ -9,7 +9,7 @@
   <link rel="icon" type="image/png" sizes="16x16" href="/static/favicon_logosc/favicon-16x16.png" />
   <link rel="shortcut icon" href="/static/favicon_logosc/favicon.ico" />
   <link rel="manifest" href="/static/favicon_logosc/site.webmanifest" />
-  <link rel="stylesheet" href="/static/app.css?v=20260316c" />
+  <link rel="stylesheet" href="/static/app.css?v=20260319c" />
 </head>
 <body>
   <header class="top">
@@ -136,9 +136,10 @@
     <form method="dialog" id="item-form">
       <div class="dialog-head">
         <h3 id="dialog-title">新增条目</h3>
-        <div class="row end">
-          <button id="btn-save" type="submit" value="save">保存</button>
-          <button id="btn-cancel" class="ghost" type="button" value="cancel">取消</button>
+        <div class="row end dialog-actions">
+          <button id="btn-delete" class="dialog-action-btn btn-danger ghost hidden" type="button" value="delete">删除</button>
+          <button id="btn-save" class="dialog-action-btn" type="submit" value="save">保存</button>
+          <button id="btn-cancel" class="dialog-action-btn ghost" type="button" value="cancel">取消</button>
         </div>
       </div>
       <div class="form-grid">
@@ -182,6 +183,19 @@
     </form>
   </dialog>
 
-  <script src="/static/app.js?v=20260316d"></script>
+  <dialog id="delete-confirm-dialog" aria-labelledby="delete-confirm-title">
+    <div class="dialog-head">
+      <h3 id="delete-confirm-title">确认删除</h3>
+    </div>
+    <div class="dialog-body">
+      <p id="delete-confirm-msg">删除后无法恢复，同时会清除关联的向量和图谱节点。请确认是否继续。</p>
+    </div>
+    <div class="dialog-foot">
+      <button type="button" id="delete-confirm-ok" class="dialog-action-btn btn-danger">删除</button>
+      <button type="button" id="delete-confirm-cancel" class="dialog-action-btn ghost">取消</button>
+    </div>
+  </dialog>
+
+  <script src="/static/app.js?v=20260319d"></script>
 </body>
 </html>

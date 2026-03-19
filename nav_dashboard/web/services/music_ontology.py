@@ -1,13 +1,11 @@
 from __future__ import annotations
 
+import logging
 from difflib import SequenceMatcher
-import json
-from functools import lru_cache
-from pathlib import Path
 import re
 from typing import Any
 
-_ONTOLOGY_PATH = Path(__file__).with_name("music_ontology.json")
+from nav_dashboard.web.services.ontologies.ontology_loader import load_ontology as _load_ontology
 
 
 def _normalize_token(text: str) -> str:
@@ -100,22 +98,26 @@ def _alias_hit(raw_text: str, normalized_text: str, alias: str) -> bool:
         return True
     return False
 
+_logger = logging.getLogger(__name__)
 
-@lru_cache(maxsize=1)
+
 def load_music_ontology() -> dict[str, Any]:
+    """Return the approved music ontology, reloading automatically if the file changed."""
     try:
-        payload = json.loads(_ONTOLOGY_PATH.read_text(encoding="utf-8"))
-        if isinstance(payload, dict):
-            return payload
-    except Exception:
-        pass
-    return {
-        "instruments": {},
-        "forms": {},
-        "work_families": {},
-        "composer_aliases": {},
-        "composer_work_signature_overrides": {},
-    }
+        return _load_ontology("music")
+    except Exception as exc:
+        _logger.warning(
+            "ontology/music: failed to load (%s) — hint/filter functions will return empty results",
+            exc,
+        )
+        return {
+            "instruments": {},
+            "forms": {},
+            "work_families": {},
+            "genres": {},
+            "composer_aliases": {},
+            "composer_work_signature_overrides": {},
+        }
 
 
 def collect_music_ontology_hints(text: str) -> dict[str, Any]:

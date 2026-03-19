@@ -58,6 +58,7 @@ if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
 from core_service.chat_feedback_store import append_feedback, clear_feedback, list_feedback
+from core_service.config import get_settings
 from core_service.ticket_store import (
     build_ticket_facets,
     build_ticket_weekly_stats,
@@ -1922,9 +1923,9 @@ def _library_graph_quality(total_items: int, vector_rows: int) -> dict[str, Any]
         "processed_item_count": len(processed),
         "isolated_nodes": isolated_nodes,
         "isolated_node_rate": _safe_div(isolated_nodes, node_count),
-        "item_coverage_rate": _safe_div(item_node_count, total_items),
-        "processed_coverage_rate": _safe_div(len(processed), total_items),
-        "vector_coverage_rate": _safe_div(item_node_count, vector_rows),
+        "item_coverage_rate": _safe_div_capped(item_node_count, total_items),
+        "processed_coverage_rate": _safe_div_capped(len(processed), total_items),
+        "vector_coverage_rate": _safe_div_capped(item_node_count, vector_rows),
         "edges_per_node": _safe_div(len(edges), node_count),
     }
 
@@ -2109,6 +2110,16 @@ def _safe_div(numerator: float | int, denominator: float | int) -> float | None:
         if den <= 0:
             return None
         return round(float(numerator) / den, 4)
+    except Exception:
+        return None
+
+
+def _safe_div_capped(numerator: float | int, denominator: float | int, *, max_value: float = 1.0) -> float | None:
+    value = _safe_div(numerator, denominator)
+    if value is None:
+        return None
+    try:
+        return round(min(max_value, max(0.0, float(value))), 4)
     except Exception:
         return None
 
@@ -3047,14 +3058,34 @@ def _library_tracker_internal_base_url() -> str:
         parsed = urlparse.urlparse(LIBRARY_TRACKER_URL_OVERRIDE)
         if parsed.scheme and parsed.hostname:
             port = parsed.port or 8091
-            return f"{parsed.scheme}://{parsed.hostname}:{port}"
-    return "http://127.0.0.1:8091"
-
+            return f"{parsed.scheme}://127.0.0.1:{port}"
+    return f"http://127.0.0.1:{LIBRARY_TRACKER_DEFAULT_PORT}"
 
 @app.get("/api/startup/status")
 def get_startup_status_lean() -> dict[str, Any]:
     s = _load_startup_status_cached()
     return {"ok": True, "status": s.get("status", "unknown"), "last_checked_at": s.get("last_checked_at", "")}
+
+
+@app.get("/api/dashboard/ontology-status")
+def get_ontology_status() -> dict[str, Any]:
+    """Return ontology load statuses and propose state for all domains.
+
+    Useful for diagnosing silent ontology fallbacks without needing a live trace.
+    """
+    from web.services.ontologies.ontology_loader import get_load_statuses as _get_ontology_load_statuses  # noqa: PLC0415
+    propose_state: dict[str, Any] = {}
+    propose_state_file = APP_DIR / "services" / "ontologies" / "proposed" / "_propose_state.json"
+    if propose_state_file.exists():
+        try:
+            propose_state = json.loads(propose_state_file.read_text(encoding="utf-8"))
+        except Exception:
+            propose_state = {"error": "could not parse propose state"}
+    return {
+        "ok": True,
+        "load_statuses": _get_ontology_load_statuses(),
+        "propose_state": propose_state,
+    }
 
 
 @app.patch("/api/dashboard/usage")
@@ -3374,7 +3405,7 @@ async def index(request: Request):
     library_tracker_url = _rewrite_loopback_url_for_request(LIBRARY_TRACKER_URL_OVERRIDE, request, 8091)
     browser_cards = _browser_custom_cards(request)
 
-    local_model = os.getenv("AI_SUMMARY_LOCAL_LLM_MODEL", "qwen2.5-7b-instruct").strip() or "qwen2.5-7b-instruct"
+    local_model = get_settings().local_llm_model
     deepseek_model = os.getenv("DEEPSEEK_MODEL", "deepseek-chat").strip() or "deepseek-chat"
     # Use the richest available overview for SSR prefill: full cached data
     # when warm (the common case), otherwise augmented core on cold boot.

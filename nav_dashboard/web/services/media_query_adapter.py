@@ -8,6 +8,32 @@ FollowupMode = Literal["none", "inherit_filters", "inherit_entity", "inherit_tim
 FollowupQueryKind = Literal["standalone", "elliptical_followup"]
 FollowupMergeStrategy = Literal["none", "carry", "replace", "augment"]
 
+FILTER_CONTRACT_FIELDS = {
+    "media_type",
+    "category",
+    "nationality",
+    "series",
+    "platform",
+    "author",
+    "tag",
+    "year",
+    "year_range",
+}
+
+_FILTER_FIELD_ALIASES = {
+    "类别": "category",
+    "分类": "category",
+    "类目": "category",
+    "genre": "category",
+    "genres": "category",
+    "类型": "media_type",
+    "媒介": "media_type",
+    "媒介类型": "media_type",
+    "作者": "author",
+    "标签": "tag",
+    "标签们": "tag",
+}
+
 _SCOPE_OVERRIDE_FIELDS = {
     "media_type",
     "category",
@@ -48,22 +74,74 @@ _VIDEO_CATEGORY_ALIASES = {
     "动画": "动画",
 }
 
+_CATEGORY_VALUE_ALIASES = {
+    "社科类": "社科",
+    "社会科学": "社科",
+    "社会科学类": "社科",
+    "人文社科": "社科",
+    "人文社科类": "社科",
+}
 
-def normalize_filter_map(value: Any) -> dict[str, list[str]]:
+
+def _canonicalize_filter_field_name(field_name: str) -> str:
+    normalized = str(field_name or "").strip()
+    if not normalized:
+        return ""
+    return _FILTER_FIELD_ALIASES.get(normalized, normalized)
+
+
+def _canonicalize_filter_value(field_name: str, value: str) -> str:
+    text = str(value or "").strip()
+    if not text:
+        return ""
+    if field_name == "category":
+        canonical = _CATEGORY_VALUE_ALIASES.get(text, text)
+        if canonical.endswith("类") and len(canonical) >= 3:
+            stripped = canonical[:-1].strip()
+            if stripped:
+                canonical = stripped
+        return _VIDEO_CATEGORY_ALIASES.get(canonical, canonical)
+    return text
+
+
+def _normalize_filter_map_internal(value: Any) -> tuple[dict[str, list[str]], list[str]]:
     if not isinstance(value, dict):
-        return {}
+        return {}, []
     normalized: dict[str, list[str]] = {}
+    repairs: list[str] = []
     for key, raw_values in value.items():
         field_name = str(key or "").strip()
-        if not field_name:
+        canonical_field = _canonicalize_filter_field_name(field_name)
+        if not canonical_field:
             continue
+        if canonical_field != field_name:
+            repairs.append(f"field:{field_name}->{canonical_field}")
         if isinstance(raw_values, list):
-            values = [str(item).strip() for item in raw_values if str(item).strip()]
+            source_values = [str(item).strip() for item in raw_values if str(item).strip()]
         else:
-            values = [str(raw_values).strip()] if str(raw_values).strip() else []
-        if values:
-            normalized[field_name] = values
+            source_values = [str(raw_values).strip()] if str(raw_values).strip() else []
+        canonical_values: list[str] = []
+        for raw_value in source_values:
+            canonical_value = _canonicalize_filter_value(canonical_field, raw_value)
+            if not canonical_value:
+                continue
+            if canonical_value != raw_value:
+                repairs.append(f"{canonical_field}:{raw_value}->{canonical_value}")
+            canonical_values.append(canonical_value)
+        if canonical_values:
+            _merge_unique(normalized, canonical_field, canonical_values)
+    return normalized, repairs
+
+
+def normalize_filter_map(value: Any) -> dict[str, list[str]]:
+    normalized, _ = _normalize_filter_map_internal(value)
     return normalized
+
+
+def get_filter_contract_warnings(filters: dict[str, list[str]] | None) -> list[str]:
+    normalized = normalize_filter_map(filters)
+    unknown_fields = sorted({field for field in normalized if field not in FILTER_CONTRACT_FIELDS})
+    return [f"unknown_filter_field:{field}" for field in unknown_fields]
 
 
 def _merge_unique(base: dict[str, list[str]], field: str, values: list[str]) -> None:
@@ -97,6 +175,7 @@ class RetrievalFilterProjection:
     semantic_subtype: str = ""
     resolved_media_type: str = ""
     applied_repairs: list[str] = field(default_factory=list)
+    contract_warnings: list[str] = field(default_factory=list)
 
 
 def resolve_followup_strategy(
@@ -181,11 +260,12 @@ def project_media_filters_to_library_schema(
     *,
     resolved_question: str = "",
 ) -> RetrievalFilterProjection:
-    normalized = normalize_filter_map(filters)
+    normalized, normalization_repairs = _normalize_filter_map_internal(filters)
     projected: dict[str, list[str]] = {}
-    repairs: list[str] = []
+    repairs: list[str] = list(normalization_repairs)
     semantic_family = ""
     semantic_subtype = ""
+    contract_warnings: list[str] = []
 
     for value in normalized.get("media_type", []):
         lowered = str(value).strip().lower()
@@ -211,12 +291,13 @@ def project_media_filters_to_library_schema(
     for field, values in normalized.items():
         if field == "media_type":
             continue
+        if field not in FILTER_CONTRACT_FIELDS:
+            contract_warnings.append(f"unknown_filter_field:{field}")
+            continue
         if field == "category":
             normalized_categories = []
             for value in values:
-                category = _VIDEO_CATEGORY_ALIASES.get(str(value).strip(), str(value).strip())
-                if category != str(value).strip():
-                    repairs.append(f"category:{value}->{category}")
+                category = _canonicalize_filter_value("category", str(value).strip())
                 normalized_categories.append(category)
                 if category == "电影" and not semantic_subtype:
                     semantic_family = semantic_family or "video"
@@ -253,6 +334,7 @@ def project_media_filters_to_library_schema(
         semantic_subtype=semantic_subtype,
         resolved_media_type=resolved_media_type,
         applied_repairs=sorted(set(repairs)),
+        contract_warnings=sorted(set(contract_warnings)),
     )
 
 
@@ -351,9 +433,9 @@ def project_creator_role_fields(
     Returns:
         (projected_filters, repairs)  where repairs lists each remapping made.
     """
-    normalized = normalize_filter_map(filters)
+    normalized, normalization_repairs = _normalize_filter_map_internal(filters)
     result: dict[str, list[str]] = {}
-    repairs: list[str] = []
+    repairs: list[str] = list(normalization_repairs)
     for field_name, values in normalized.items():
         target = _CREATOR_ROLE_TO_AUTHOR.get(field_name.lower())
         if target:

@@ -1,5 +1,6 @@
-* { box-sizing: border-box; }
+﻿* { box-sizing: border-box; }
 html, body { height: 100%; }
+.hidden { display: none !important; }
 body {
   margin: 0;
   font-family: "Segoe UI", "Microsoft YaHei UI", sans-serif;
@@ -265,6 +266,34 @@ button {
   padding: 8px 12px;
   cursor: pointer;
   font-weight: 600;
+}
+
+.dialog-actions {
+  gap: 8px;
+}
+
+.dialog-action-btn {
+  min-height: 44px;
+  min-width: 92px;
+  padding: 10px 16px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: 8px;
+  font-size: 14px;
+  font-weight: 600;
+  line-height: 1;
+  flex: 1 1 0;
+}
+
+.dialog-actions .btn-danger.ghost {
+  background: transparent;
+  border: 1px solid #b85f5f;
+  color: #f0d3d3;
+}
+
+.dialog-actions .btn-danger.ghost:hover {
+  background: rgba(184, 95, 95, 0.16);
 }
 button.ghost {
   background: #3e3f36;
@@ -949,4 +978,89 @@ body.dialog-open {
   font-size: 11px;
   color: #8f9384;
   text-align: left;
+}
+/*  Delete button & confirm dialog  */
+.btn-danger-sm {
+  background: transparent;
+  color: #e05c5c;
+  border: 1px solid #7a2c2c;
+  border-radius: 6px;
+  padding: 4px 10px;
+  font-size: 12px;
+  cursor: pointer;
+  touch-action: manipulation;
+}
+.btn-danger-sm:hover { background: #5a1a1a; border-color: #e05c5c; }
+
+.btn-danger {
+  background: #8b2020;
+  color: #f2f2ea;
+  border: 1px solid #c94040;
+  border-radius: 6px;
+  padding: 8px 18px;
+  font-size: 14px;
+  cursor: pointer;
+  touch-action: manipulation;
+}
+.btn-danger:hover { background: #a82828; }
+
+#delete-confirm-dialog {
+  min-width: min(420px, 88vw);
+  max-width: min(420px, 88vw);
+}
+#delete-confirm-dialog[open] {
+  position: fixed;
+  top: 50%;
+  left: 50%;
+  transform: translate(-50%, -50%);
+  margin: 0;
+  width: min(420px, calc(100vw - 24px));
+  max-width: calc(100vw - 24px);
+}
+#delete-confirm-dialog .dialog-head,
+#delete-confirm-dialog .dialog-body,
+#delete-confirm-dialog .dialog-foot {
+  padding-left: 16px;
+  padding-right: 16px;
+}
+
+#delete-confirm-dialog .dialog-head {
+  padding-top: 16px;
+  padding-bottom: 8px;
+}
+
+#delete-confirm-dialog .dialog-body {
+  padding-top: 8px;
+  padding-bottom: 16px;
+  line-height: 1.6;
+}
+
+#delete-confirm-dialog .dialog-body p {
+  margin: 0;
+}
+
+.dialog-foot {
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+  padding-top: 12px;
+  padding-bottom: 16px;
+  border-top: 1px solid #3a3c30;
+  margin-top: 8px;
+}
+
+@media (max-width: 900px) {
+  .dialog-actions {
+    width: 100%;
+  }
+
+  .dialog-action-btn {
+    min-width: 0;
+  }
+
+  #delete-confirm-dialog[open] {
+    width: calc(100vw - 24px);
+    max-width: calc(100vw - 24px);
+    max-height: calc(100dvh - 24px);
+  }
 }

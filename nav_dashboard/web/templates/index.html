@@ -771,6 +771,35 @@
     </div>
   </div>
 
+  <script>
+    (() => {
+      const setTab = (name) => {
+        const target = String(name || "home");
+        document.querySelectorAll(".tab").forEach((tab) => {
+          const active = tab.dataset.tab === target;
+          tab.classList.toggle("active", active);
+          tab.setAttribute("aria-selected", String(active));
+        });
+        document.querySelectorAll(".tab-panel").forEach((panel) => {
+          panel.classList.toggle("active", panel.id === `panel-${target}`);
+        });
+      };
+
+      const bindEarlyTabSwitching = () => {
+        const tabsHost = document.querySelector(".tabs");
+        if (!tabsHost || tabsHost.dataset.earlyTabsBound === "1") return;
+        tabsHost.dataset.earlyTabsBound = "1";
+        tabsHost.addEventListener("click", (event) => {
+          const tab = event.target instanceof Element ? event.target.closest(".tab[data-tab]") : null;
+          if (!tab) return;
+          setTab(tab.dataset.tab || "home");
+        });
+      };
+
+      bindEarlyTabSwitching();
+    })();
+  </script>
+
   <script src="/static/app.js?v={{ js_version }}" defer></script>
 </body>
 </html>

@@ -1,0 +1,259 @@
+{
+  "version": "1.0",
+  "domain": "music",
+  "instruments": {
+    "violin": {
+      "aliases": ["violin", "小提琴"]
+    },
+    "piano": {
+      "aliases": ["piano", "钢琴"]
+    },
+    "cello": {
+      "aliases": ["cello", "大提琴"]
+    },
+    "viola": {
+      "aliases": ["viola", "中提琴"]
+    },
+    "flute": {
+      "aliases": ["flute", "长笛"]
+    },
+    "oboe": {
+      "aliases": ["oboe", "双簧管"]
+    },
+    "clarinet": {
+      "aliases": ["clarinet", "单簧管", "黑管"]
+    },
+    "bassoon": {
+      "aliases": ["bassoon", "大管", "低音管"]
+    },
+    "horn": {
+      "aliases": ["horn", "french horn", "圆号", "法国号"]
+    },
+    "trumpet": {
+      "aliases": ["trumpet", "小号"]
+    },
+    "trombone": {
+      "aliases": ["trombone", "长号"]
+    },
+    "harp": {
+      "aliases": ["harp", "竖琴"]
+    },
+    "guitar": {
+      "aliases": ["guitar", "吉他"]
+    },
+    "orchestra": {
+      "aliases": ["symphony", "orchestra", "orch.", "管弦乐团", "乐团", "交响乐团"]
+    }
+  },
+  "forms": {
+    "concerto": {
+      "aliases": ["concerto", "concertos", "协奏曲"]
+    },
+    "symphony": {
+      "aliases": ["symphony", "symphonies", "交响曲"]
+    },
+    "sonata": {
+      "aliases": ["sonata", "sonatas", "奏鸣曲"]
+    },
+    "suite": {
+      "aliases": ["suite", "suites", "组曲"]
+    },
+    "quartet": {
+      "aliases": ["quartet", "string quartet", "quartets", "四重奏", "弦乐四重奏"]
+    },
+    "trio": {
+      "aliases": ["trio", "trios", "三重奏"]
+    },
+    "overture": {
+      "aliases": ["overture", "overtures", "序曲"]
+    },
+    "nocturne": {
+      "aliases": ["nocturne", "nocturnes", "夜曲"]
+    },
+    "etude": {
+      "aliases": ["etude", "étude", "etudes", "练习曲"]
+    },
+    "prelude": {
+      "aliases": ["prelude", "preludes", "前奏曲"]
+    },
+    "variations": {
+      "aliases": ["variations", "variation", "变奏曲", "变奏"]
+    },
+    "ballade": {
+      "aliases": ["ballade", "ballades", "叙事曲"]
+    },
+    "fantasia": {
+      "aliases": ["fantasia", "fantasy", "fantasie", "fantaisie", "幻想曲"]
+    },
+    "serenade": {
+      "aliases": ["serenade", "serenata", "小夜曲"]
+    },
+    "mass": {
+      "aliases": ["mass", "missa", "弥撒曲", "弥撒"]
+    },
+    "requiem": {
+      "aliases": ["requiem", "安魂曲"]
+    },
+    "opera": {
+      "aliases": ["opera", "歌剧"]
+    },
+    "ballet": {
+      "aliases": ["ballet", "芭蕾舞曲", "芭蕾"]
+    }
+  },
+  "work_families": {
+    "violin_concerto": {
+      "aliases": ["violin concerto", "violin concertos", "小提琴协奏曲"],
+      "instrument": "violin",
+      "form": "concerto"
+    },
+    "piano_concerto": {
+      "aliases": ["piano concerto", "piano concertos", "钢琴协奏曲"],
+      "instrument": "piano",
+      "form": "concerto"
+    },
+    "cello_concerto": {
+      "aliases": ["cello concerto", "cello concertos", "大提琴协奏曲"],
+      "instrument": "cello",
+      "form": "concerto"
+    },
+    "viola_concerto": {
+      "aliases": ["viola concerto", "viola concertos", "中提琴协奏曲"],
+      "instrument": "viola",
+      "form": "concerto"
+    },
+    "flute_concerto": {
+      "aliases": ["flute concerto", "flute concertos", "长笛协奏曲"],
+      "instrument": "flute",
+      "form": "concerto"
+    },
+    "piano_trio": {
+      "aliases": ["piano trio", "piano trios", "钢琴三重奏"],
+      "instrument": "piano",
+      "form": "trio"
+    },
+    "string_quartet": {
+      "aliases": ["string quartet", "string quartets", "弦乐四重奏"],
+      "instrument": "violin",
+      "form": "quartet"
+    },
+    "violin_sonata": {
+      "aliases": ["violin sonata", "violin sonatas", "小提琴奏鸣曲"],
+      "instrument": "violin",
+      "form": "sonata"
+    },
+    "piano_sonata": {
+      "aliases": ["piano sonata", "piano sonatas", "钢琴奏鸣曲"],
+      "instrument": "piano",
+      "form": "sonata"
+    },
+    "cello_sonata": {
+      "aliases": ["cello sonata", "cello sonatas", "大提琴奏鸣曲"],
+      "instrument": "cello",
+      "form": "sonata"
+    }
+  },
+  "genres": {
+    "classical": {
+      "aliases": ["classical", "古典", "classical music", "古典音乐"]
+    },
+    "romantic": {
+      "aliases": ["romantic", "romanticism", "浪漫主义", "浪漫派"]
+    },
+    "baroque": {
+      "aliases": ["baroque", "巴洛克"]
+    },
+    "contemporary": {
+      "aliases": ["contemporary", "modern classical", "现代古典", "当代音乐"]
+    },
+    "jazz": {
+      "aliases": ["jazz", "爵士", "爵士乐"]
+    },
+    "rock": {
+      "aliases": ["rock", "摇滚", "摇滚乐"]
+    },
+    "pop": {
+      "aliases": ["pop", "popular", "流行", "流行音乐"]
+    },
+    "folk": {
+      "aliases": ["folk", "民谣", "民间音乐"]
+    },
+    "electronic": {
+      "aliases": ["electronic", "电子", "电子音乐", "edm"]
+    }
+  },
+  "composer_aliases": {
+    "tchaikovsky": ["tchaikovsky", "pyotr ilyich tchaikovsky", "chaikovsky", "柴可夫斯基", "柴科夫斯基"],
+    "rachmaninoff": ["rachmaninoff", "rachmaninov", "sergei rachmaninoff", "sergei rachmaninov", "拉赫玛尼诺夫", "拉赫马尼诺夫"],
+    "beethoven": ["beethoven", "ludwig van beethoven", "贝多芬"],
+    "brahms": ["brahms", "johannes brahms", "勃拉姆斯"],
+    "sibelius": ["sibelius", "jean sibelius", "西贝柳斯", "西贝流士"],
+    "mendelssohn": ["mendelssohn", "felix mendelssohn", "门德尔松"],
+    "prokofiev": ["prokofiev", "sergei prokofiev", "普罗科菲耶夫"],
+    "shostakovich": ["shostakovich", "dmitri shostakovich", "肖斯塔科维奇"],
+    "mozart": ["mozart", "wolfgang amadeus mozart", "莫扎特"],
+    "bach": ["bach", "j.s. bach", "johann sebastian bach", "巴赫"],
+    "chopin": ["chopin", "frederic chopin", "frédéric chopin", "肖邦"],
+    "liszt": ["liszt", "franz liszt", "李斯特"],
+    "bruch": ["bruch", "max bruch", "布鲁赫"],
+    "wieniawski": ["wieniawski", "henryk wieniawski", "维尼亚夫斯基"],
+    "sarasate": ["sarasate", "pablo de sarasate", "萨拉萨蒂"],
+    "dvorak": ["dvorak", "dvořák", "antonin dvorak", "德沃夏克"],
+    "elgar": ["elgar", "edward elgar", "埃尔加"],
+    "schubert": ["schubert", "franz schubert", "舒伯特"],
+    "schumann": ["schumann", "robert schumann", "舒曼"],
+    "debussy": ["debussy", "claude debussy", "德彪西"],
+    "ravel": ["ravel", "maurice ravel", "拉威尔"],
+    "handel": ["handel", "george frideric handel", "亨德尔"],
+    "haydn": ["haydn", "joseph haydn", "海顿"],
+    "vivaldi": ["vivaldi", "antonio vivaldi", "维瓦尔第"],
+    "mahler": ["mahler", "gustav mahler", "马勒"],
+    "bartok": ["bartok", "béla bartók", "bela bartok", "巴托克"],
+    "stravinsky": ["stravinsky", "igor stravinsky", "斯特拉文斯基"],
+    "saint_saens": ["saint-saëns", "saint-saens", "camille saint-saëns", "圣-桑", "圣桑"],
+    "lalo": ["lalo", "édouard lalo", "edouard lalo", "拉罗"],
+    "korngold": ["korngold", "erich korngold", "科恩戈尔德"],
+    "glazunov": ["glazunov", "alexander glazunov", "格拉祖诺夫"],
+    "paganini": ["paganini", "niccolò paganini", "niccolo paganini", "帕格尼尼"]
+  },
+  "composer_work_signature_overrides": {
+    "tchaikovsky": {
+      "violin_concerto": ["op.35", "op 35", "d major", "in d major", "serenade melancolique", "serenade melancholique"],
+      "piano_concerto": ["no.1", "no 1", "第1", "第一", "op.23", "op 23", "b-flat minor", "b flat minor", "in b-flat minor", "in b flat minor"]
+    },
+    "rachmaninoff": {
+      "piano_concerto": ["no.1", "no.2", "no.3", "no.4", "no 1", "no 2", "no 3", "no 4", "第1", "第2", "第3", "第4", "op.1", "op.18", "op.30", "op.40"]
+    },
+    "beethoven": {
+      "piano_concerto": ["no.1", "no.2", "no.3", "no.4", "no.5", "no 1", "no 2", "no 3", "no 4", "no 5", "第1", "第2", "第3", "第4", "第5", "emperor", "皇帝"],
+      "violin_concerto": ["op.61", "op 61", "d major", "in d major"]
+    },
+    "brahms": {
+      "violin_concerto": ["op.77", "op 77", "d major", "in d major"],
+      "piano_concerto": ["no.1", "no.2", "no 1", "no 2", "第1", "第2", "op.15", "op.83"]
+    },
+    "bruch": {
+      "violin_concerto": ["no.1", "no 1", "第1", "op.26", "op 26", "g minor", "in g minor"]
+    },
+    "sibelius": {
+      "violin_concerto": ["op.47", "op 47", "d minor", "in d minor"]
+    },
+    "mendelssohn": {
+      "violin_concerto": ["op.64", "op 64", "e minor", "in e minor"]
+    },
+    "dvorak": {
+      "cello_concerto": ["op.104", "op 104", "b minor", "in b minor"]
+    },
+    "elgar": {
+      "cello_concerto": ["op.85", "op 85", "e minor", "in e minor"]
+    },
+    "prokofiev": {
+      "violin_concerto": ["no.1", "no.2", "no 1", "no 2", "第1", "第2", "op.19", "op.63"],
+      "piano_concerto": ["no.1", "no.2", "no.3", "no 1", "no 2", "no 3", "第1", "第2", "第3"]
+    },
+    "shostakovich": {
+      "violin_concerto": ["no.1", "no.2", "no 1", "no 2", "第1", "第2", "op.77", "op.129"],
+      "piano_concerto": ["no.1", "no.2", "no 1", "no 2", "第1", "第2", "op.35", "op.102"]
+    }
+  }
+}

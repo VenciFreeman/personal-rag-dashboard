@@ -62,7 +62,7 @@ if _local_llm_url_raw and not re.search(r"/v1/?$", _local_llm_url_raw):
 else:
     LOCAL_LLM_API_URL = _local_llm_url_raw
 
-LOCAL_LLM_MODEL = os.getenv("AI_SUMMARY_LOCAL_LLM_MODEL", "qwen2.5-7b-instruct").strip()
+LOCAL_LLM_MODEL = os.getenv("AI_SUMMARY_LOCAL_LLM_MODEL", "").strip() or _CORE_SETTINGS.local_llm_model
 LOCAL_LLM_API_KEY = os.getenv("AI_SUMMARY_LOCAL_LLM_API_KEY", "local").strip() or "local"
 LOCAL_LLM_MAX_CONTEXT_CHARS = int(os.getenv("AI_SUMMARY_LOCAL_LLM_MAX_CONTEXT_CHARS", "2600"))
 LOCAL_LLM_MAX_CHARS_PER_DOC = int(os.getenv("AI_SUMMARY_LOCAL_LLM_MAX_CHARS_PER_DOC", "700"))
@@ -71,6 +71,7 @@ HYBRID_LOCAL_TOP_K = 3
 HYBRID_WEB_TOP_K = 3
 LOCAL_ONLY_TOP_K = 5
 VECTOR_TOP_N = int(os.getenv("AI_SUMMARY_VECTOR_TOP_N", "12"))
+MAX_VECTOR_CANDIDATES = int(os.getenv("AI_SUMMARY_MAX_VECTOR_CANDIDATES", "12") or "12")
 RERANK_TOP_K = int(os.getenv("AI_SUMMARY_RERANK_TOP_K", "5"))
 ENABLE_RERANK = os.getenv("AI_SUMMARY_ENABLE_RERANK", "1").strip().lower() not in {"0", "false", "no", "off"}
 RERANKER_MODEL = os.getenv("AI_SUMMARY_RERANKER_MODEL", "BAAI/bge-reranker-v2-m3").strip() or "BAAI/bge-reranker-v2-m3"
@@ -433,6 +434,7 @@ def _build_ask_rag_runtime_args(
         search_mode=normalized_search_mode,
         top_k=effective_top_k,
         vector_top_n=effective_vector_top_n,
+        max_vector_candidates=max(1, int(MAX_VECTOR_CANDIDATES)),
         enable_rerank="true" if ENABLE_RERANK else "false",
         rerank_top_k=rerank_top_k,
         reranker_model=RERANKER_MODEL,
@@ -585,6 +587,8 @@ def _resolve_query_profile(question: str, *, base_threshold: float, base_vector_
         threshold = min(0.98, threshold + LONG_QUERY_THRESHOLD_DELTA)
         vector_top_n = max(4, vector_top_n + LONG_QUERY_VECTOR_TOP_N_DELTA)
         top_k = max(1, top_k + LONG_QUERY_TOP_K_DELTA)
+
+    vector_top_n = min(max(1, int(MAX_VECTOR_CANDIDATES)), int(vector_top_n))
 
     return {
         "profile": profile,
@@ -2491,7 +2495,7 @@ def ask_rag(
         base_top_k=final_top_k,
     )
     effective_similarity_threshold = float(query_profile["similarity_threshold"])
-    effective_vector_top_n = int(query_profile["vector_top_n"])
+    effective_vector_top_n = min(max(1, int(MAX_VECTOR_CANDIDATES)), int(query_profile["vector_top_n"]))
     effective_top_k = int(query_profile["top_k"])
     rerank_top_k = max(1, min(int(RERANK_TOP_K), effective_top_k))
     enable_rerank_arg = "true" if ENABLE_RERANK else "false"
@@ -2836,7 +2840,7 @@ def ask_rag_stream(
         base_top_k=final_top_k,
     )
     effective_similarity_threshold = float(query_profile["similarity_threshold"])
-    effective_vector_top_n = int(query_profile["vector_top_n"])
+    effective_vector_top_n = min(max(1, int(MAX_VECTOR_CANDIDATES)), int(query_profile["vector_top_n"]))
     effective_top_k = int(query_profile["top_k"])
     rerank_top_k = max(1, min(int(RERANK_TOP_K), effective_top_k))
     enable_rerank_arg = "true" if ENABLE_RERANK else "false"

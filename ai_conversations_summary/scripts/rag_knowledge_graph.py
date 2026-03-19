@@ -4,13 +4,21 @@ import argparse
 import json
 import os
 import re
+import sys
 from pathlib import Path
 from typing import Any
+
+WORKSPACE_ROOT = Path(__file__).resolve().parent.parent.parent
+if str(WORKSPACE_ROOT) not in sys.path:
+    sys.path.insert(0, str(WORKSPACE_ROOT))
+
+from core_service.config import get_settings
 
 GRAPH_FILE_NAME = "knowledge_graph_rag.json"
 MAX_TAGS_PER_DOC = 12
 MAX_CONCEPTS_PER_DOC = 8
 MAX_RELATED_PER_CONCEPT = 6
+_CORE_SETTINGS = get_settings()
 
 
 def _split_terms(raw: str | list[str] | None) -> list[str]:
@@ -117,7 +125,7 @@ def _llm_extract_concepts(
     keywords: list[str],
 ) -> tuple[list[str], list[tuple[str, str]]]:
     api_url = (os.getenv("AI_SUMMARY_GRAPH_LLM_URL", "http://127.0.0.1:1234/v1") or "").strip()
-    model = (os.getenv("AI_SUMMARY_GRAPH_LLM_MODEL", "qwen2.5-7b-instruct") or "").strip()
+    model = (os.getenv("AI_SUMMARY_GRAPH_LLM_MODEL", "") or _CORE_SETTINGS.local_llm_model).strip()
     api_key = (os.getenv("AI_SUMMARY_GRAPH_LLM_API_KEY", "local") or "").strip() or "local"
     timeout = int(os.getenv("AI_SUMMARY_GRAPH_LLM_TIMEOUT", "90") or "90")
 

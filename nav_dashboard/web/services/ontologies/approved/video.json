@@ -1,0 +1,139 @@
+{
+  "version": "1.0",
+  "domain": "video",
+  "genres": {
+    "action": {
+      "aliases": ["action", "动作", "动作片"]
+    },
+    "drama": {
+      "aliases": ["drama", "剧情", "剧情片"]
+    },
+    "comedy": {
+      "aliases": ["comedy", "喜剧", "喜剧片"]
+    },
+    "sci_fi": {
+      "aliases": ["sci-fi", "science fiction", "科幻", "科幻片"]
+    },
+    "horror": {
+      "aliases": ["horror", "恐怖", "恐怖片"]
+    },
+    "thriller": {
+      "aliases": ["thriller", "惊悚", "惊悚片", "悬疑"]
+    },
+    "romance": {
+      "aliases": ["romance", "爱情", "爱情片", "恋爱"]
+    },
+    "animation": {
+      "aliases": ["animation", "anime", "动画", "动漫", "cartoon"]
+    },
+    "documentary": {
+      "aliases": ["documentary", "纪录片", "纪录"]
+    },
+    "fantasy": {
+      "aliases": ["fantasy", "奇幻", "魔幻", "magic"]
+    },
+    "crime": {
+      "aliases": ["crime", "犯罪", "犯罪片"]
+    },
+    "war": {
+      "aliases": ["war", "战争", "战争片"]
+    },
+    "biography": {
+      "aliases": ["biography", "传记", "传记片", "biopic"]
+    },
+    "history": {
+      "aliases": ["historical", "history", "历史", "古装"]
+    },
+    "mystery": {
+      "aliases": ["mystery", "detective", "推理", "侦探"]
+    },
+    "adventure": {
+      "aliases": ["adventure", "冒险", "冒险片"]
+    },
+    "sport": {
+      "aliases": ["sport", "sports", "体育", "竞技"]
+    },
+    "musical": {
+      "aliases": ["musical", "音乐剧", "歌舞"]
+    },
+    "family": {
+      "aliases": ["family", "家庭", "家庭片"]
+    },
+    "coming_of_age": {
+      "aliases": ["coming-of-age", "coming of age", "成长", "青春", "校园"]
+    }
+  },
+  "creator_aliases": {
+    "miyazaki": ["miyazaki", "hayao miyazaki", "宫崎骏", "宮崎駿"],
+    "kubrick": ["kubrick", "stanley kubrick", "库布里克"],
+    "spielberg": ["spielberg", "steven spielberg", "斯皮尔伯格"],
+    "nolan": ["nolan", "christopher nolan", "诺兰"],
+    "tarantino": ["tarantino", "quentin tarantino", "昆汀", "塔伦蒂诺"],
+    "scorsese": ["scorsese", "martin scorsese", "斯科塞斯"],
+    "fincher": ["fincher", "david fincher", "芬奇"],
+    "wong_kar_wai": ["wong kar-wai", "wong kar wai", "王家卫"],
+    "zhang_yimou": ["zhang yimou", "张艺谋"],
+    "chen_kaige": ["chen kaige", "陈凯歌"],
+    "makoto_shinkai": ["shinkai", "makoto shinkai", "新海诚"],
+    "mamoru_hosoda": ["hosoda", "mamoru hosoda", "细田守"]
+  },
+  "entity_aliases": {
+    "marvel": {
+      "aliases": ["marvel", "漫威", "marvel studios", "mcu"],
+      "type": "franchise"
+    },
+    "dc": {
+      "aliases": ["dc", "dc comics", "dc extended", "dceu", "dc universe"],
+      "type": "franchise"
+    },
+    "ghibli": {
+      "aliases": ["ghibli", "studio ghibli", "吉卜力", "スタジオジブリ"],
+      "type": "studio"
+    },
+    "pixar": {
+      "aliases": ["pixar", "pixar animation", "皮克斯"],
+      "type": "studio"
+    },
+    "a24": {
+      "aliases": ["a24", "a 24"],
+      "type": "studio"
+    },
+    "harry_potter": {
+      "aliases": ["harry potter", "哈利波特", "wizarding world"],
+      "type": "franchise"
+    },
+    "star_wars": {
+      "aliases": ["star wars", "星球大战", "starwars"],
+      "type": "franchise"
+    },
+    "lord_of_the_rings": {
+      "aliases": ["lord of the rings", "lotr", "指环王", "魔戒", "hobbit", "霍比特"],
+      "type": "franchise"
+    },
+    "fast_furious": {
+      "aliases": ["fast and furious", "fast & furious", "速度与激情"],
+      "type": "franchise"
+    },
+    "mission_impossible": {
+      "aliases": ["mission impossible", "mission: impossible", "碟中谍"],
+      "type": "franchise"
+    }
+  },
+  "version_terms": {
+    "season": {
+      "aliases": ["season", "s", "第", "季", "series"]
+    },
+    "episode": {
+      "aliases": ["episode", "ep", "集", "话"]
+    },
+    "sequel": {
+      "aliases": ["sequel", "part 2", "part ii", "ii", "2", "续集", "下集", "下部"]
+    },
+    "remake": {
+      "aliases": ["remake", "reboot", "翻拍", "重制", "重启"]
+    },
+    "extended": {
+      "aliases": ["extended edition", "extended cut", "director's cut", "导演剪辑版", "加长版"]
+    }
+  }
+}

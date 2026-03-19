@@ -239,3 +239,14 @@ def edit_item(item_id: str, req: ItemPayload, background_tasks: BackgroundTasks)
     background_tasks.add_task(_trigger_embedding_refresh)
     
     return {"item": item}
+
+
+@router.delete("/item/{item_id}")
+def delete_item(item_id: str) -> dict[str, Any]:
+    try:
+        result = library_service.delete_item(item_id)
+    except library_service.BadItemIdError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    except library_service.ItemNotFoundError:
+        raise HTTPException(status_code=404, detail="Item not found") from None
+    return result

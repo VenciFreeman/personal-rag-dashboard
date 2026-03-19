@@ -19,6 +19,36 @@ import webbrowser
 from pathlib import Path
 
 
+def _prepend_workspace_root() -> None:
+    workspace_root = Path(__file__).resolve().parent.parent
+    workspace_root_str = str(workspace_root)
+    if workspace_root_str not in sys.path:
+        sys.path.insert(0, workspace_root_str)
+
+
+def _load_workspace_env_local() -> None:
+    """Load root env.local.ps1 so launcher behavior matches the other web apps."""
+    root = Path(__file__).resolve().parent.parent
+    env_file = root / "env.local.ps1"
+    if not env_file.exists():
+        return
+
+    for raw_line in env_file.read_text(encoding="utf-8").splitlines():
+        line = raw_line.strip()
+        if not line or line.startswith("#"):
+            continue
+        if not line.lower().startswith("$env:") or "=" not in line:
+            continue
+        left, right = line.split("=", 1)
+        key = left.split(":", 1)[1].strip()
+        value = right.strip()
+        if not key:
+            continue
+        if value.startswith(("\"", "'")) and value.endswith(("\"", "'")) and len(value) >= 2:
+            value = value[1:-1]
+        os.environ[key] = value
+
+
 def _maybe_reexec_into_venv() -> None:
     """Ensure double-click always runs with workspace venv Python."""
     root = Path(__file__).resolve().parent
@@ -44,6 +74,8 @@ def _maybe_reexec_into_venv() -> None:
 
 
 _maybe_reexec_into_venv()
+_prepend_workspace_root()
+_load_workspace_env_local()
 
 from web.config import HOST, PORT
 from web.main import run

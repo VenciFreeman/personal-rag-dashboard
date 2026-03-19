@@ -1,0 +1,22 @@
+{
+  "_comment": "This directory holds LLM-generated candidate entries awaiting human review. Files here are NEVER read by the live system. Run scripts/ontology_review.py to promote entries to approved/.",
+  "_schema": {
+    "version": "string — proposal file version",
+    "domain": "string — music | video | book",
+    "proposed_at": "ISO-8601 timestamp",
+    "proposed_by": "string — script identifier, e.g. ontology_propose_v1",
+    "source_type": "string — title_cluster | trace_failure | alias_mismatch | manual",
+    "source_ref": "string — trace_id, query text, or other signal reference",
+    "entries": [
+      {
+        "id": "string — unique within this file, e.g. prop_001",
+        "section": "string — must be an allowed section name for the domain",
+        "key": "string — snake_case identifier, new or existing",
+        "value": "object — section-specific value, see approved/*.json for shape",
+        "reason": "string — one-sentence explanation citing specific signal",
+        "confidence": "float 0.0–1.0",
+        "status": "string — pending | accepted | rejected | merged"
+      }
+    ]
+  }
+}

@@ -25,6 +25,12 @@ from typing import Callable
 import tkinter as tk
 from tkinter import filedialog, scrolledtext, simpledialog, ttk
 
+WORKSPACE_ROOT = Path(__file__).resolve().parents[4]
+if str(WORKSPACE_ROOT) not in sys.path:
+	sys.path.insert(0, str(WORKSPACE_ROOT))
+
+from core_service.config import get_settings
+
 try:
 	from tkcalendar import DateEntry as TkDateEntry
 except Exception:  # noqa: BLE001
@@ -59,6 +65,7 @@ from rag_vector_index import RAGIndexError, prune_stale_index_entries, search_ve
 
 DATE_PICKER_MIN_YEAR = 1970
 DATE_PICKER_MAX_YEAR = 2099
+_CORE_SETTINGS = get_settings()
 
 
 class SummaryGuiApp:
@@ -1477,14 +1484,14 @@ class SummaryGuiApp:
 			return "deepseek-chat"
 		if mode == "reasoner":
 			return "deepseek-reasoner"
-		return os.getenv("AI_SUMMARY_LOCAL_LLM_MODEL", "qwen2.5-7b-instruct").strip() or "qwen2.5-7b-instruct"
+		return os.getenv("AI_SUMMARY_LOCAL_LLM_MODEL", "").strip() or _CORE_SETTINGS.local_llm_model
 
 	def _resolve_local_llm_runtime(self) -> tuple[str, str, str]:
 		# Keep GUI local-mode behavior aligned with Web UI local-mode routing.
 		url = os.getenv("AI_SUMMARY_LOCAL_LLM_URL", "http://127.0.0.1:1234").strip()
 		if url and not re.search(r"/v1/?$", url):
 			url = url.rstrip("/") + "/v1"
-		model = os.getenv("AI_SUMMARY_LOCAL_LLM_MODEL", "qwen2.5-7b-instruct").strip() or "qwen2.5-7b-instruct"
+		model = os.getenv("AI_SUMMARY_LOCAL_LLM_MODEL", "").strip() or _CORE_SETTINGS.local_llm_model
 		api_key = os.getenv("AI_SUMMARY_LOCAL_LLM_API_KEY", "local").strip() or "local"
 		return url, model, api_key
 
@@ -2081,7 +2088,7 @@ class SummaryGuiApp:
 			return
 
 		# For local mode: show local LLM model if configured, else embedding model.
-		local_llm = os.getenv("AI_SUMMARY_LOCAL_LLM_MODEL", "qwen2.5-7b-instruct").strip()
+		local_llm = os.getenv("AI_SUMMARY_LOCAL_LLM_MODEL", "").strip() or _CORE_SETTINGS.local_llm_model
 		if local_llm:
 			self.rag_model_label_var.set(f"当前模型：{local_llm}")
 			return
@@ -2543,7 +2550,7 @@ class SummaryGuiApp:
 			},
 			"local_llm": {
 				"url": os.getenv("AI_SUMMARY_LOCAL_LLM_URL", "http://127.0.0.1:1234/v1").strip(),
-				"model": os.getenv("AI_SUMMARY_LOCAL_LLM_MODEL", "qwen2.5-7b-instruct").strip(),
+				"model": os.getenv("AI_SUMMARY_LOCAL_LLM_MODEL", "").strip() or _CORE_SETTINGS.local_llm_model,
 				"api_key": os.getenv("AI_SUMMARY_LOCAL_LLM_API_KEY", "local").strip() or "local",
 			},
 		}

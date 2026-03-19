@@ -18,6 +18,10 @@ from typing import Any
 from uuid import uuid4
 
 from web.config import DATA_DIR, DOCUMENTS_DIR, SCRIPTS_DIR, VECTOR_DB_DIR, WORKSPACE_ROOT
+if str(WORKSPACE_ROOT.parent) not in sys.path:
+    sys.path.insert(0, str(WORKSPACE_ROOT.parent))
+
+from core_service.config import get_settings
 
 RAW_DIR = DATA_DIR / "raw_dir"
 EXTRACTED_DIR = DATA_DIR / "extracted_dir"
@@ -38,6 +42,7 @@ _STARTUP_STATUS: dict[str, Any] = {
     "checks": {},
 }
 _STARTUP_LOGS: deque[str] = deque(maxlen=120)
+_CORE_SETTINGS = get_settings()
 
 
 @dataclass
@@ -724,7 +729,7 @@ def save_workflow_config(base_url: str, model: str, api_key: str) -> dict[str, A
         },
         "local_llm": {
             "url": os.getenv("AI_SUMMARY_LOCAL_LLM_URL", "http://127.0.0.1:1234/v1").strip(),
-            "model": os.getenv("AI_SUMMARY_LOCAL_LLM_MODEL", "qwen2.5-7b-instruct").strip(),
+            "model": os.getenv("AI_SUMMARY_LOCAL_LLM_MODEL", "").strip() or _CORE_SETTINGS.local_llm_model,
             "api_key": os.getenv("AI_SUMMARY_LOCAL_LLM_API_KEY", "local").strip() or "local",
         },
     }

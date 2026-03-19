@@ -153,7 +153,7 @@ const ticketDeleteMeta = document.getElementById("ticket-delete-meta");
 const ticketDeleteConfirmSelect = document.getElementById("ticket-delete-confirm-select");
 const ticketDeleteConfirmBtn = document.getElementById("ticket-delete-confirm-btn");
 const ticketDeleteCancelBtn = document.getElementById("ticket-delete-cancel-btn");
-const pageLocalModel = (document.body?.dataset?.localModel || "").trim() || "qwen2.5-7b-instruct";
+const pageLocalModel = (document.body?.dataset?.localModel || "").trim();
 
 function deriveServiceUrl(explicitUrl, fallbackPort) {
   const explicit = String(explicitUrl || "").trim();
@@ -1020,6 +1020,12 @@ function safeRatio(numerator, denominator) {
   return top / bottom;
 }
 
+function clampRate(value) {
+  const n = toFiniteNumber(value);
+  if (n == null) return null;
+  return Math.min(1, Math.max(0, n));
+}
+
 function unhealthyState(flag) {
   return flag ? "is-unhealthy" : "";
 }
@@ -1039,8 +1045,12 @@ function buildDashboardHealthFlags({
     ragRerank.avg_top1_local_doc_score_p99,
     ragRerank.avg_top1_local_doc_score,
   );
-  const libraryGraphCoverage = library?.graph_quality?.item_coverage_rate ?? safeRatio(library.graph_nodes, library.total_items);
-  const isolatedRate = library?.graph_quality?.isolated_node_rate;
+  const libraryGraphCoverage = clampRate(
+    library?.graph_quality?.item_coverage_rate ??
+    safeRatio(library?.graph_quality?.item_node_count, library.total_items) ??
+    safeRatio(library.graph_nodes, library.total_items)
+  );
+  const isolatedRate = clampRate(library?.graph_quality?.isolated_node_rate);
   const libraryEdgesPerNode = library?.graph_quality?.edges_per_node ?? safeRatio(library.graph_edges, library.graph_nodes);
   const webUsageRatio = safeRatio(apiUsage.today_web_search, apiUsage.daily_web_limit);
   const deepseekUsageRatio = safeRatio(apiUsage.today_deepseek, apiUsage.daily_deepseek_limit);
@@ -1369,6 +1379,12 @@ function paintDashboardFromData(data, { skipTaskCenter = false } = {}) {
   const rag = data?.rag || {};
   const library = data?.library || {};
   const libraryGraphQuality = library?.graph_quality || {};
+  const libraryCoverageRate = clampRate(
+    libraryGraphQuality.item_coverage_rate ??
+    safeRatio(libraryGraphQuality.item_node_count, library.total_items) ??
+    safeRatio(library.graph_nodes, library.total_items)
+  );
+  const isolatedNodeRate = clampRate(libraryGraphQuality.isolated_node_rate);
   const apiUsage = data?.api_usage || {};
   const agent = data?.agent || {};
   const ragQa = data?.rag_qa || {};
@@ -1401,7 +1417,7 @@ function paintDashboardFromData(data, { skipTaskCenter = false } = {}) {
     buildStatCard("书影音游戏总条目", formatNum(library.total_items), `今年条目 ${formatNum(library.this_year_items)}`),
 
     buildStatCard("RAG Graph 节点数", formatNum(rag.graph_nodes), `边数 ${formatNum(rag.graph_edges)}`),
-    buildStatCard("Library Graph 节点数", formatNum(library.graph_nodes), `边数 ${formatNum(library.graph_edges)} | 覆盖 ${formatRate(libraryGraphQuality.item_coverage_rate)} | 孤点 ${formatRate(libraryGraphQuality.isolated_node_rate)}`, "library-graph-summary", unhealthyState(health.libraryGraphScale)),
+    buildStatCard("Library Graph 节点数", formatNum(library.graph_nodes), `边数 ${formatNum(library.graph_edges)} | 覆盖 ${formatRate(libraryCoverageRate)} | 孤点 ${formatRate(isolatedNodeRate)}`, "library-graph-summary", unhealthyState(health.libraryGraphScale)),
 
     buildStatCard("RAG 平均节点数", `${rag.nodes_per_doc != null ? Number(rag.nodes_per_doc).toFixed(2) : "—"}`, `每节点平均边数 ${rag.edges_per_node != null ? Number(rag.edges_per_node).toFixed(2) : "—"}`, "", unhealthyState(health.ragGraphDensity)),
     buildStatCard("RAG 待重建文档", formatNum(rag.changed_pending), rag.changed_pending > 0 ? "等待后台同步" : "已全部同步", "rag-changed-pending", unhealthyState(health.ragPending)),
@@ -4313,7 +4329,9 @@ async function ask(searchMode) {
     const elapsed = formatElapsed((Date.now() - pendingStart) / 1000);
     const progress = progressLines.length ? progressLines[progressLines.length - 1] : "正在规划工具并调用...";
     const toolsText = toolDoneLines.length ? "\n" + toolDoneLines.join("\n") : "";
-    if (pendingContent) pendingContent.innerHTML = markdownToHtml(`${progress}${toolsText}\n\n耗时: ${elapsed}`);
+    const answerText = String(activeAgentStreamState?.answerText || "").trim();
+    const answerBlock = answerText ? `\n\n---\n\n${answerText}` : "";
+    if (pendingContent) pendingContent.innerHTML = markdownToHtml(`${progress}${toolsText}${answerBlock}\n\n耗时: ${elapsed}`);
   }, 500);
 
   askInFlight = true;
@@ -4382,6 +4400,13 @@ async function ask(searchMode) {
             toolDoneLines.push(`${statusIcon} **${tool}** [${status}]${summary ? `: ${summary}` : ""}`);
             if (activeAgentStreamState && activeAgentStreamState.sessionId === requestSessionId) {
               activeAgentStreamState.toolDoneLines = [...toolDoneLines];
+              activeAgentStreamState.traceId = activeTraceId;
+            }
+          } else if (event.type === "answer_delta") {
+            if (event.trace_id) activeTraceId = String(event.trace_id || "").trim();
+            const delta = String(event.delta || "");
+            if (delta) {
+              activeAgentStreamState.answerText = String(activeAgentStreamState.answerText || "") + delta;
               activeAgentStreamState.traceId = activeTraceId;
             }
           } else if (event.type === "quota_exceeded") {

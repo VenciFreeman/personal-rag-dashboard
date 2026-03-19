@@ -4,14 +4,22 @@ import ast
 import json
 import os
 import re
+import sys
 import threading
 from functools import lru_cache
 from pathlib import Path
 from typing import Any
 
+WORKSPACE_ROOT = Path(__file__).resolve().parents[3]
+if str(WORKSPACE_ROOT) not in sys.path:
+    sys.path.insert(0, str(WORKSPACE_ROOT))
+
+from core_service.config import get_settings
+
 # Serialize concurrent writes to avoid WinError 5 (Access Denied) on Windows
 # when multiple threads race to rename the .tmp file.
 _GRAPH_WRITE_LOCK = threading.Lock()
+_CORE_SETTINGS = get_settings()
 
 GRAPH_FILE_NAME = "library_knowledge_graph.json"
 GRAPH_SCHEMA_VERSION = 3
@@ -275,7 +283,7 @@ def _heuristic_concepts(item: dict[str, Any]) -> list[str]:
 
 def _llm_extract_concepts(item: dict[str, Any]) -> tuple[list[str], list[tuple[str, str]]]:
     api_url = (os.getenv("LIBRARY_TRACKER_GRAPH_LLM_URL", "http://127.0.0.1:1234/v1") or "").strip()
-    model = (os.getenv("LIBRARY_TRACKER_GRAPH_LLM_MODEL", "qwen2.5-7b-instruct") or "").strip()
+    model = (os.getenv("LIBRARY_TRACKER_GRAPH_LLM_MODEL", "") or _CORE_SETTINGS.local_llm_model).strip()
     api_key = (os.getenv("LIBRARY_TRACKER_GRAPH_LLM_API_KEY", "local") or "").strip() or "local"
     timeout = int(os.getenv("LIBRARY_TRACKER_GRAPH_LLM_TIMEOUT", "90") or "90")
 
@@ -400,6 +408,55 @@ def _save_graph(graph_dir: Path, data: dict[str, Any]) -> None:
 
 def _edge_key(src: str, rel: str, dst: str) -> str:
     return f"{src}|{rel}|{dst}"
+
+
+def remove_item_from_graph(graph_dir: Path, item_id: str) -> dict[str, Any]:
+    """Remove all traces of *item_id* from the graph and embedding DB.
+
+    Removes:
+    - The ``item`` node keyed ``item:<item_id>``
+    - All ``note`` nodes linked to *item_id* (keyed ``note:<item_id>:<field>``)
+    - All edges that reference any of the removed node keys as src or dst
+    - The item_id entry in ``processed_items``
+
+    Returns a summary dict ``{nodes_removed, edges_removed}``.
+    """
+    item_node_key = _node_key("item", item_id)
+
+    graph = _load_graph(graph_dir)
+    nodes: dict[str, Any] = graph.get("nodes", {}) if isinstance(graph.get("nodes"), dict) else {}
+    edges: list[Any] = graph.get("edges", []) if isinstance(graph.get("edges"), list) else []
+    processed: list[Any] = graph.get("processed_items", []) if isinstance(graph.get("processed_items"), list) else []
+
+    # Collect all node keys to remove: the item node + its note nodes.
+    note_prefix = f"note:{item_id}:"
+    keys_to_remove: set[str] = {
+        k for k in nodes
+        if k == item_node_key or k.startswith(note_prefix)
+    }
+
+    # Remove nodes.
+    for key in keys_to_remove:
+        nodes.pop(key, None)
+
+    # Remove edges that reference any removed node as src or dst.
+    remaining_edges = [
+        e for e in edges
+        if isinstance(e, dict)
+        and str(e.get("src", "")).strip() not in keys_to_remove
+        and str(e.get("dst", "")).strip() not in keys_to_remove
+    ]
+    edges_removed = len(edges) - len(remaining_edges)
+
+    # Remove from processed list.
+    remaining_processed = [x for x in processed if str(x).strip() != item_id]
+
+    graph["nodes"] = nodes
+    graph["edges"] = remaining_edges
+    graph["processed_items"] = remaining_processed
+    _save_graph(graph_dir, graph)
+
+    return {"nodes_removed": len(keys_to_remove), "edges_removed": edges_removed}
 
 
 def sync_library_graph(

@@ -15,6 +15,7 @@ let filterMeta = { filters: {} };
 let formSuggestionMeta = { fields: {} };
 const cardPointerState = new WeakMap();
 let currentRating = null;
+let _editDialogDraftBeforeDelete = null;
 let statsBootstrapped = false;
 let _statsBootstrapping = false;
 const statsCharts = {};
@@ -414,6 +415,12 @@ async function apiPut(url, payload) {
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify(payload),
   });
+  if (!r.ok) throw new Error(await r.text());
+  return r.json();
+}
+
+async function apiDelete(url) {
+  const r = await fetch(url, { method: "DELETE" });
   if (!r.ok) throw new Error(await r.text());
   return r.json();
 }
@@ -1428,6 +1435,10 @@ function openEditDialog(item) {
   editingItemId = item.id || "";
   editingCoverPath = item && item.cover_path ? String(item.cover_path) : null;
   document.getElementById("dialog-title").textContent = editingItemId ? "修改条目" : "新增条目";
+  const deleteBtn = document.getElementById("btn-delete");
+  if (deleteBtn) {
+    deleteBtn.classList.toggle("hidden", !editingItemId);
+  }
   const form = document.getElementById("item-form");
   const fields = ["media_type", "date", "title", "author", "nationality", "category", "channel", "publisher", "url", "review"];
   for (const key of fields) {
@@ -1471,6 +1482,91 @@ function openEditDialog(item) {
       }
     }, 0);
   }
+}
+
+let _pendingDeleteItemId = null;
+
+function _collectDialogDraft() {
+  const form = document.getElementById("item-form");
+  if (!form) return null;
+  return {
+    id: editingItemId || "",
+    media_type: form.elements.namedItem("media_type")?.value || "book",
+    date: normalizeDateInput(form.elements.namedItem("date")?.value || "") || "",
+    title: form.elements.namedItem("title")?.value || "",
+    author: form.elements.namedItem("author")?.value || "",
+    nationality: form.elements.namedItem("nationality")?.value || "",
+    category: form.elements.namedItem("category")?.value || "",
+    channel: form.elements.namedItem("channel")?.value || "",
+    publisher: form.elements.namedItem("publisher")?.value || "",
+    url: form.elements.namedItem("url")?.value || "",
+    review: form.elements.namedItem("review")?.value || "",
+    rating: currentRating,
+    cover_path: editingCoverPath || null,
+  };
+}
+
+function openDeleteConfirm(item) {
+  _pendingDeleteItemId = item.id || "";
+  if (!_pendingDeleteItemId) return;
+  const dlg = document.getElementById("delete-confirm-dialog");
+  if (dlg) dlg.showModal();
+}
+
+function openDeleteConfirmFromDialog() {
+  if (!editingItemId) return;
+  _editDialogDraftBeforeDelete = _collectDialogDraft();
+  const itemDialog = document.getElementById("item-dialog");
+  if (itemDialog && itemDialog.open) {
+    itemDialog.close();
+  }
+  openDeleteConfirm(_editDialogDraftBeforeDelete || { id: editingItemId, title: "" });
+}
+
+async function executeDelete() {
+  const itemId = _pendingDeleteItemId;
+  _pendingDeleteItemId = null;
+  const dlg = document.getElementById("delete-confirm-dialog");
+  if (dlg) dlg.close();
+  if (!itemId) return;
+  try {
+    await apiDelete(`/api/library/item/${encodeURIComponent(itemId)}`);
+    showToast("条目已删除");
+  } catch (err) {
+    showToast("删除失败：" + (err && err.message ? err.message : String(err)));
+    if (_editDialogDraftBeforeDelete && _editDialogDraftBeforeDelete.id) {
+      const draft = _editDialogDraftBeforeDelete;
+      _editDialogDraftBeforeDelete = null;
+      openEditDialog(draft);
+    }
+    return;
+  }
+  _editDialogDraftBeforeDelete = null;
+  const savedOffset = Math.max(0, currentSearchOffset);
+  await runSearch(currentMode, { offset: savedOffset });
+  const [metaPayload, suggestionPayload] = await Promise.all([
+    apiGet("/api/library/meta"),
+    apiGet("/api/library/suggestions"),
+  ]);
+  filterMeta = metaPayload;
+  formSuggestionMeta = normalizeSuggestionPayload(suggestionPayload);
+  await refreshFacetsAndFilters();
+}
+
+function _initDeleteConfirmDialog() {
+  const okBtn = document.getElementById("delete-confirm-ok");
+  const cancelBtn = document.getElementById("delete-confirm-cancel");
+  if (okBtn) okBtn.addEventListener("click", executeDelete);
+  if (cancelBtn) cancelBtn.addEventListener("click", () => {
+    _pendingDeleteItemId = null;
+    const dlg = document.getElementById("delete-confirm-dialog");
+    if (dlg) dlg.close();
+    if (_editDialogDraftBeforeDelete && _editDialogDraftBeforeDelete.id) {
+      const draft = _editDialogDraftBeforeDelete;
+      _editDialogDraftBeforeDelete = null;
+      openEditDialog(draft);
+    }
+  });
 }
 
 async function saveDialog() {
@@ -1622,6 +1718,7 @@ async function refreshPendingEmbeddings() {
 async function bootstrap() {
   initRatingControl();
   setupFormAutocomplete();
+  _initDeleteConfirmDialog();
   document.querySelectorAll(".tab").forEach((tabBtn) => {
     tabBtn.addEventListener("click", () => {
       const name = String(tabBtn.dataset.tab || "query");
@@ -1695,6 +1792,9 @@ async function bootstrap() {
 
   document.getElementById("btn-cancel").addEventListener("click", () => {
     document.getElementById("item-dialog").close();
+  });
+  document.getElementById("btn-delete")?.addEventListener("click", () => {
+    openDeleteConfirmFromDialog();
   });
 
   const previewModal = document.getElementById("preview-modal");

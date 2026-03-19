@@ -28,6 +28,34 @@ from nav_dashboard.web.services.music_ontology import (
     is_work_family_alias,
 )
 
+try:
+    from nav_dashboard.web.services.video_ontology import (
+        is_genre_alias as is_video_genre_alias,
+        is_entity_alias as is_video_entity_alias,
+        collect_video_ontology_hints as _collect_video_hints,
+    )
+except Exception:  # noqa: BLE001
+    def is_video_genre_alias(token: str) -> bool:  # type: ignore[misc]
+        return False
+    def is_video_entity_alias(token: str) -> bool:  # type: ignore[misc]
+        return False
+    def _collect_video_hints(text: str) -> dict:  # type: ignore[misc]
+        return {}
+
+try:
+    from nav_dashboard.web.services.book_ontology import (
+        is_genre_alias as is_book_genre_alias,
+        is_entity_alias as is_book_entity_alias,
+        collect_book_ontology_hints as _collect_book_hints,
+    )
+except Exception:  # noqa: BLE001
+    def is_book_genre_alias(token: str) -> bool:  # type: ignore[misc]
+        return False
+    def is_book_entity_alias(token: str) -> bool:  # type: ignore[misc]
+        return False
+    def _collect_book_hints(text: str) -> dict:  # type: ignore[misc]
+        return {}
+
 if TYPE_CHECKING:
     # Avoid circular import at runtime; only used for type hints.
     from nav_dashboard.web.services.agent_service import RouterDecision, ToolExecution
@@ -173,6 +201,49 @@ class PostRetrievalPolicy:
                     weak_results=True,
                     semantic_mismatch=True,
                 )
+
+        # ── semantic mismatch: video/book genre filter vs result categories ─
+        # When the query explicitly filters for a video or book genre (via
+        # ontology alias matching) and ALL local rows lack that genre in their
+        # category/tag fields, flag a mismatch so the answer layer can enrich.
+        media_family = str(getattr(decision, "media_family", "") or "")
+        if (
+            effective_local_rows
+            and media_family in ("audiovisual", "bookish")
+            and lookup_mode == "filter_search"
+        ):
+            _genre_mismatch = _check_domain_genre_mismatch(
+                decision, effective_local_rows, media_family,
+            )
+            if _genre_mismatch:
+                return PostRetrievalOutcome(
+                    status="weak_results",
+                    action="enrich",
+                    repair_tools=[_REPAIR_TOOL_MEDIAWIKI],
+                    degrade_reason="genre_filter_mismatch",
+                    weak_results=True,
+                    semantic_mismatch=True,
+                )
+
+        # ── semantic mismatch: video/book entity alias vs retrieved rows ──────
+        # When the query names a known entity alias (franchise, series, studio)
+        # from the ontology, at least one retrieved row must mention it in its
+        # title/category/tags.  Only fires on entity_aliases matches (NOT
+        # creator or genre), and is skipped for creator-collection queries where
+        # the result set is creator records, not media titles.
+        if effective_local_rows and not creator_ran and media_family in ("audiovisual", "bookish"):
+            _domain_hints = _get_domain_entity_hints(_raw_q, media_family)
+            _entity_hints_list = list(_domain_hints.get("entity_hints") or [])
+            if _entity_hints_list:
+                if _check_entity_alias_mismatch(effective_local_rows, _entity_hints_list):
+                    return PostRetrievalOutcome(
+                        status="weak_results",
+                        action="enrich",
+                        repair_tools=[_REPAIR_TOOL_MEDIAWIKI],
+                        degrade_reason="entity_alias_mismatch",
+                        weak_results=True,
+                        semantic_mismatch=True,
+                    )
 
         # ── 1. zero_results ──────────────────────────────────────────────────
         # For creator queries, zero means search_by_creator returned nothing.
@@ -484,3 +555,102 @@ def _first_true_flag(flags: dict[str, Any], keys: tuple[str, ...]) -> str:
         if flags.get(k):
             return k
     return ""
+
+
+def _check_domain_genre_mismatch(
+    decision: "RouterDecision",
+    rows: list[dict],
+    media_family: str,
+) -> bool:
+    """Return True when the query specifies a video/book genre via ontology
+    aliases but none of the top retrieved rows contain that genre in their
+    category/type/tag fields.
+
+    Only fires when all of the following hold:
+    - ``media_family`` is "audiovisual" or "bookish"
+    - ``decision.filters`` carries non-empty ``category`` values
+    - At least one token is a known alias (not a free-form string)
+    - None of the first 5 rows mention any of the genre tokens
+    """
+    raw_filters = getattr(decision, "filters", None) or {}
+    # Normalise: accept both dict[str, list] and dict[str, str]
+    category_values: list[str] = []
+    raw_cat = raw_filters.get("category") or raw_filters.get("genre")
+    if isinstance(raw_cat, list):
+        category_values = [str(v) for v in raw_cat if v]
+    elif isinstance(raw_cat, str) and raw_cat:
+        category_values = [raw_cat]
+
+    if not category_values:
+        return False
+
+    is_known_alias = is_video_genre_alias if media_family == "audiovisual" else is_book_genre_alias
+    # Require at least one token to be an ontology-recognised alias so we
+    # don't fire on arbitrary free-form category strings.
+    if not any(is_known_alias(t) for t in category_values):
+        return False
+
+    # Only attempt metadata consistency checks when local rows actually carry
+    # category-like fields. Title-only rows are too sparse and should not be
+    # degraded into a semantic mismatch.
+    if not any(
+        any(str(row.get(field) or "").strip() for field in ("category", "genre", "tags", "type"))
+        for row in rows[:5]
+    ):
+        return False
+
+    def _row_matches(row: dict) -> bool:
+        row_text = " ".join([
+            str(row.get("title") or ""),
+            str(row.get("category") or ""),
+            str(row.get("genre") or ""),
+            str(row.get("tags") or ""),
+            str(row.get("type") or ""),
+        ]).lower()
+        for token in category_values:
+            if token.lower() in row_text:
+                return True
+        return False
+
+    return not any(_row_matches(r) for r in rows[:5])
+
+
+def _get_domain_entity_hints(raw_q: str, media_family: str) -> dict[str, Any]:
+    """Return ontology hints dict for *raw_q* using the appropriate domain collector."""
+    try:
+        if media_family == "audiovisual":
+            return _collect_video_hints(raw_q)
+        else:
+            return _collect_book_hints(raw_q)
+    except Exception:
+        return {}
+
+
+def _check_entity_alias_mismatch(
+    rows: list[dict[str, Any]],
+    entity_hints: list[str],
+) -> bool:
+    """Return True when none of the first 5 rows mention any of the entity alias hints.
+
+    Checks title, category, director, author, publisher, tags, and notes fields.
+    Only fires when *entity_hints* is non-empty.
+    """
+    if not entity_hints or not rows:
+        return False
+
+    def _row_has_entity(row: dict) -> bool:
+        row_text = " ".join([
+            str(row.get("title") or ""),
+            str(row.get("category") or ""),
+            str(row.get("director") or ""),
+            str(row.get("author") or ""),
+            str(row.get("publisher") or ""),
+            str(row.get("tags") or ""),
+            str(row.get("notes") or ""),
+        ]).lower()
+        for hint in entity_hints:
+            if str(hint or "").lower() in row_text:
+                return True
+        return False
+
+    return not any(_row_has_entity(r) for r in rows[:5])

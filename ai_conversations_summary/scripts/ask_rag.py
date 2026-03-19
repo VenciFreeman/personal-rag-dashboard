@@ -140,6 +140,7 @@ DEFAULT_RERANK_TOP1_GAP_THRESHOLD = float(os.getenv("AI_SUMMARY_RERANK_TOP1_GAP_
 DEFAULT_RERANK_STRONG_TOP1_THRESHOLD = float(os.getenv("AI_SUMMARY_RERANK_STRONG_TOP1_THRESHOLD", "0.60") or "0.60")
 DEFAULT_SHORT_QUERY_RERANK_CANDIDATE_K = int(os.getenv("AI_SUMMARY_SHORT_QUERY_RERANK_CANDIDATE_K", "3") or "3")
 DEFAULT_SHORT_QUERY_MAX_CHARS = int(os.getenv("AI_SUMMARY_SHORT_QUERY_MAX_CHARS", "16") or "16")
+DEFAULT_MAX_VECTOR_CANDIDATES = int(os.getenv("AI_SUMMARY_MAX_VECTOR_CANDIDATES", "12") or "12")
 DEFAULT_ENABLE_QUERY_REWRITE = os.getenv("AI_SUMMARY_ENABLE_QUERY_REWRITE", "1").strip().lower() not in {
     "0",
     "false",
@@ -312,6 +313,7 @@ def _parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--trace-id", default="", help="End-to-end trace id for this query")
     parser.add_argument("--enable-query-rewrite", default="true" if DEFAULT_ENABLE_QUERY_REWRITE else "false", help="Enable local-LLM query rewrite before retrieval")
     parser.add_argument("--query-rewrite-count", type=int, default=DEFAULT_QUERY_REWRITE_COUNT, help="How many rewritten queries to keep")
+    parser.add_argument("--max-vector-candidates", type=int, default=max(1, DEFAULT_MAX_VECTOR_CANDIDATES), help="Maximum merged local vector candidates kept for rerank/context assembly")
     parser.add_argument("--stream", action="store_true", help="Enable streaming output via stdout")
     parser.add_argument(
         "--no-embed-cache",
@@ -432,7 +434,7 @@ def _rewrite_queries_with_local_llm(
     timeout: int,
 ) -> tuple[list[str], str]:
     local_url = _normalize_local_llm_url(os.getenv("AI_SUMMARY_LOCAL_LLM_URL", "http://127.0.0.1:1234"))
-    local_model = os.getenv("AI_SUMMARY_LOCAL_LLM_MODEL", "qwen2.5-7b-instruct").strip() or "qwen2.5-7b-instruct"
+    local_model = os.getenv("AI_SUMMARY_LOCAL_LLM_MODEL", "").strip() or _CORE_SETTINGS.local_llm_model
     local_key = os.getenv("AI_SUMMARY_LOCAL_LLM_API_KEY", "local").strip() or "local"
     if not local_url:
         return [question], "fallback:missing_local_llm_url"
@@ -531,6 +533,11 @@ def _merge_multi_query_vector_rows(
         reverse=True,
     )
     return merged_rows, debug_batches
+
+
+def _cap_vector_candidates(rows: list[dict[str, Any]], limit: int) -> list[dict[str, Any]]:
+    normalized_limit = max(1, int(limit))
+    return [dict(row) for row in rows[:normalized_limit] if isinstance(row, dict)]
 
 
 def _approx_tokens(text: str) -> int:
@@ -2258,7 +2265,8 @@ def run_rag_query(
     enable_rerank = _parse_bool_arg(args.enable_rerank, default=DEFAULT_ENABLE_RERANK)
     enable_query_rewrite = _parse_bool_arg(getattr(args, "enable_query_rewrite", False), default=DEFAULT_ENABLE_QUERY_REWRITE)
     rewrite_count = max(1, int(getattr(args, "query_rewrite_count", DEFAULT_QUERY_REWRITE_COUNT)))
-    vector_top_n = max(1, int(args.vector_top_n))
+    max_vector_candidates = max(1, int(getattr(args, "max_vector_candidates", DEFAULT_MAX_VECTOR_CANDIDATES) or DEFAULT_MAX_VECTOR_CANDIDATES))
+    vector_top_n = min(max_vector_candidates, max(1, int(args.vector_top_n)))
     rerank_top_k = max(1, int(args.rerank_top_k))
     allow_local_only_web_cache = DEFAULT_LOCAL_ONLY_READ_WEB_CACHE
     if search_mode == "local_only":
@@ -2359,6 +2367,7 @@ def run_rag_query(
         )
 
     results, vector_query_batches = _merge_multi_query_vector_rows(per_query_rows, primary_query=question)
+    results = _cap_vector_candidates(results, max_vector_candidates)
 
     local_threshold = float(args.similarity_threshold)
     local_rows = [dict(item) for item in results if isinstance(item, dict)]
@@ -2461,6 +2470,7 @@ def run_rag_query(
         "search_mode": search_mode,
         "similarity_threshold": local_threshold,
         "vector_top_n": vector_top_n,
+        "max_vector_candidates": max_vector_candidates,
         "rerank_top_k": final_local_top_k,
         "rerank_fusion_alpha": timings["local_rerank_fusion_alpha"],
         "enable_rerank": enable_rerank,
@@ -2474,6 +2484,7 @@ def run_rag_query(
 
     timings["rerank_status"] = rerank_status
     timings["vector_top_n"] = float(vector_top_n)
+    timings["max_vector_candidates"] = float(max_vector_candidates)
     timings["rerank_top_k"] = float(final_local_top_k)
     timings["local_before_threshold"] = float(len(local_rows))
     timings["local_after_threshold"] = float(len(threshold_rows))
@@ -2632,6 +2643,7 @@ def run_rag_query(
         "retrieved_web_count": len(web_results),
         "search_mode": search_mode,
         "vector_top_n": vector_top_n,
+        "max_vector_candidates": max_vector_candidates,
         "enable_rerank": enable_rerank,
         "rerank_top_k": final_local_top_k,
         "reranker_model": str(args.reranker_model or DEFAULT_RERANKER_MODEL).strip(),

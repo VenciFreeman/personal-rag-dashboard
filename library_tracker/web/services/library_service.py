@@ -6,6 +6,7 @@ import math
 import os
 import re
 import sqlite3
+import sys
 import threading
 import time
 from datetime import datetime
@@ -18,7 +19,12 @@ from uuid import uuid4
 
 from PIL import Image
 
+WORKSPACE_ROOT = Path(__file__).resolve().parents[3]
+if str(WORKSPACE_ROOT) not in sys.path:
+    sys.path.insert(0, str(WORKSPACE_ROOT))
+
 from web.settings import COVERS_DIR, DATA_DIR, MEDIA_FILES, VECTOR_DB_DIR
+from core_service.config import get_settings
 from . import library_graph
 
 TEXT_FIELDS = ["title", "author", "nationality", "category", "channel", "review", "publisher", "url"]
@@ -69,12 +75,13 @@ _CONTENT_TYPE_EXT = {
     "image/gif": ".gif",
 }
 
+_CORE_SETTINGS = get_settings()
 _local_llm_url_raw = os.getenv("LIBRARY_TRACKER_LOCAL_LLM_URL", "http://127.0.0.1:1234").strip()
 if _local_llm_url_raw and not re.search(r"/v1/?$", _local_llm_url_raw):
     LOCAL_LLM_API_URL = _local_llm_url_raw.rstrip("/") + "/v1"
 else:
     LOCAL_LLM_API_URL = _local_llm_url_raw
-LOCAL_LLM_MODEL = os.getenv("LIBRARY_TRACKER_LOCAL_LLM_MODEL", "qwen2.5-7b-instruct").strip()
+LOCAL_LLM_MODEL = os.getenv("LIBRARY_TRACKER_LOCAL_LLM_MODEL", "").strip() or _CORE_SETTINGS.local_llm_model
 LOCAL_LLM_API_KEY = os.getenv("LIBRARY_TRACKER_LOCAL_LLM_API_KEY", "local").strip() or "local"
 LOCAL_LLM_TIMEOUT = int(os.getenv("LIBRARY_TRACKER_LOCAL_LLM_TIMEOUT", "120"))
 EMBEDDING_DB_PATH = VECTOR_DB_DIR / "library_embeddings.sqlite3"
@@ -150,6 +157,40 @@ def _update_graph_job(job_id: str, **fields: Any) -> dict[str, Any] | None:
         return _graph_job_public(job)
 
 
+def _trigger_ontology_propose_background() -> None:
+    """Fire-and-forget: run ontology_propose.py for each domain after a full graph rebuild.
+
+    Runs as a daemon thread so it never blocks the graph job response.
+    Only triggers when a local LLM URL is configured; silently skips otherwise.
+    Passes ``--dry-run`` is skipped — a real LLM call is intentional here so
+    new library items get turned into proposals automatically.
+    """
+    propose_script = Path(__file__).resolve().parents[3] / "scripts" / "ontology_propose.py"
+    if not propose_script.exists():
+        return
+    llm_url = (os.getenv("LIBRARY_TRACKER_LOCAL_LLM_URL", "") or "").strip()
+    if not llm_url:
+        return  # no LLM configured — skip silently
+
+    domains = ["music", "video", "book"]
+
+    def _run_propose() -> None:
+        import subprocess
+        import sys as _sys
+        for domain in domains:
+            try:
+                subprocess.run(
+                    [_sys.executable, str(propose_script), "--domain", domain, "--timeout", "180"],
+                    timeout=240,
+                    check=False,
+                    capture_output=True,
+                )
+            except Exception:
+                pass  # Never raise — this is a best-effort background task
+
+    threading.Thread(target=_run_propose, name="ontology-propose-trigger", daemon=True).start()
+
+
 def start_graph_job(*, full: bool = False) -> dict[str, Any]:
     mode = "full" if full else "missing_only"
     job_id = str(uuid4())
@@ -193,6 +234,9 @@ def start_graph_job(*, full: bool = False) -> dict[str, Any]:
                 message="Library Graph 重建完成" if full else "Library Graph 补缺完成",
                 result=result,
             )
+            # Trigger ontology propose in background after a successful full rebuild.
+            if full:
+                _trigger_ontology_propose_background()
         except Exception as exc:  # noqa: BLE001
             finished_at = datetime.now().isoformat(timespec="seconds")
             _update_graph_job(
@@ -1404,6 +1448,43 @@ def save_cover_bytes(
     return f"covers/{filename}"
 
 
+def delete_item(item_id: str) -> dict[str, Any]:
+    """Hard-delete an item from the JSON store, embedding DB, and graph.
+
+    Returns a summary dict ``{ok, item_id, graph}``.
+    Raises ``ItemNotFoundError`` when the item does not exist.
+    """
+    media_type, index = _parse_item_id(item_id)
+    payload = _load_payload(media_type)
+    records = payload.get("records", [])
+    if not isinstance(records, list) or index < 0 or index >= len(records):
+        raise ItemNotFoundError(item_id)
+
+    # Replace the record with a sentinel None so existing indices stay stable.
+    # The item is effectively invisible; it will be skipped by all search paths.
+    records[index] = None  # type: ignore[assignment]
+    payload["records"] = records
+    _save_payload(media_type, payload)
+    invalidate_search_cache()
+    _invalidate_metadata_cache()
+
+    # Remove from embedding DB.
+    try:
+        with _embedding_db_conn() as conn:
+            conn.execute("DELETE FROM item_embeddings WHERE item_id = ?", (item_id,))
+    except Exception:
+        pass
+
+    # Remove from graph and vector index.
+    graph_stats: dict[str, Any] = {}
+    try:
+        graph_stats = library_graph.remove_item_from_graph(VECTOR_DB_DIR, item_id)
+    except Exception:
+        pass
+
+    return {"ok": True, "item_id": item_id, "graph": graph_stats}
+
+
 def add_item(item: dict[str, Any]) -> dict[str, Any]:
     cleaned = _sanitize_item_for_storage(item)
     media_type = str(cleaned["media_type"])
@@ -1508,6 +1589,11 @@ def refresh_pending_embeddings() -> dict[str, Any]:
         target_item_ids=None if full_graph_rebuild else (set(pending_item_ids) if pending_item_ids else None),
         only_missing=not full_graph_rebuild,
     )
+    # Trigger ontology propose in background when enough items were refreshed
+    # at once — this covers "刷新词条时自动跑" without requiring a full rebuild.
+    _PROPOSE_REFRESH_THRESHOLD = 10
+    if refreshed >= _PROPOSE_REFRESH_THRESHOLD:
+        _trigger_ontology_propose_background()
     return {
         "scanned": scanned,
         "refreshed": refreshed,

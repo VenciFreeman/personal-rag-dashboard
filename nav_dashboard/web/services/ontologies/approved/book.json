@@ -1,0 +1,151 @@
+{
+  "version": "1.0",
+  "domain": "book",
+  "genres": {
+    "social_science": {
+      "label": "社科",
+      "aliases": ["social science", "social sciences", "社科", "社科类", "社会科学", "社会科学类", "人文社科", "人文社科类"]
+    },
+    "fantasy": {
+      "aliases": ["fantasy", "奇幻", "魔幻", "magic", "魔法", "仙侠"]
+    },
+    "sci_fi": {
+      "aliases": ["sci-fi", "science fiction", "科幻", "宇宙", "太空"]
+    },
+    "mystery": {
+      "aliases": ["mystery", "detective", "推理", "侦探", "悬疑"]
+    },
+    "thriller": {
+      "aliases": ["thriller", "惊悚"]
+    },
+    "romance": {
+      "aliases": ["romance", "love story", "爱情", "言情"]
+    },
+    "historical": {
+      "aliases": ["historical", "history", "历史", "史", "古代"]
+    },
+    "biography": {
+      "aliases": ["biography", "传记", "autobiography", "自传", "memoir", "回忆录"]
+    },
+    "philosophy": {
+      "aliases": ["philosophy", "哲学", "思想"]
+    },
+    "politics": {
+      "aliases": ["politics", "political science", "政治", "治理", "政策"]
+    },
+    "economics": {
+      "aliases": ["economics", "economy", "经济", "经济学", "finance", "金融"]
+    },
+    "science_popular": {
+      "aliases": ["popular science", "science", "科学", "科普"]
+    },
+    "technology": {
+      "aliases": ["technology", "engineering", "tech", "技术", "计算机", "算法", "编程"]
+    },
+    "psychology": {
+      "aliases": ["psychology", "心理", "心理学", "psycho"]
+    },
+    "sociology": {
+      "aliases": ["sociology", "social science", "社会学", "社会"]
+    },
+    "poetry": {
+      "aliases": ["poem", "poetry", "诗", "诗词", "诗歌"]
+    },
+    "drama": {
+      "aliases": ["drama", "play", "戏剧", "剧本"]
+    },
+    "coming_of_age": {
+      "aliases": ["coming-of-age", "coming of age", "成长", "校园", "青春"]
+    },
+    "literary_fiction": {
+      "aliases": ["literary fiction", "literary", "文学", "纯文学", "现代文学"]
+    },
+    "short_story": {
+      "aliases": ["short story", "short stories", "短篇", "短篇小说", "短篇集"]
+    },
+    "essay": {
+      "aliases": ["essay", "essays", "散文", "随笔"]
+    },
+    "light_novel": {
+      "aliases": ["light novel", "轻小说", "ライトノベル"]
+    },
+    "manga": {
+      "aliases": ["manga", "comic", "漫画", "图漫"]
+    }
+  },
+  "creator_aliases": {
+    "tolkien": ["tolkien", "j.r.r. tolkien", "j r r tolkien", "john ronald reuel tolkien", "托尔金", "托尔金教授"],
+    "rowling": ["rowling", "j.k. rowling", "jk rowling", "joanne rowling", "罗琳"],
+    "george_rr_martin": ["george r.r. martin", "george rr martin", "grrm", "马丁", "George R.R. Martin"],
+    "george_orwell": ["george orwell", "orwell", "奥威尔"],
+    "kafka": ["kafka", "franz kafka", "卡夫卡"],
+    "dostoevsky": ["dostoevsky", "fyodor dostoevsky", "dostoyevsky", "陀思妥耶夫斯基"],
+    "tolstoy": ["tolstoy", "leo tolstoy", "lev tolstoy", "托尔斯泰"],
+    "camus": ["camus", "albert camus", "加缪"],
+    "hemingway": ["hemingway", "ernest hemingway", "海明威"],
+    "marquez": ["marquez", "gabriel garcia marquez", "garcía márquez", "马尔克斯"],
+    "haruki_murakami": ["murakami", "haruki murakami", "村上春树"],
+    "yu_hua": ["yu hua", "余华"],
+    "mo_yan": ["mo yan", "莫言"],
+    "jin_yong": ["jin yong", "louis cha", "金庸"],
+    "lu_xun": ["lu xun", "lu hsun", "鲁迅"],
+    "zhang_ailing": ["eileen chang", "zhang ailing", "张爱玲"],
+    "liu_cixin": ["liu cixin", "cixin liu", "刘慈欣"],
+    "dan_brown": ["dan brown", "丹·布朗"],
+    "stephen_king": ["stephen king", "斯蒂芬·金"],
+    "agatha_christie": ["agatha christie", "阿加莎·克里斯蒂", "阿加莎"],
+    "umberto_eco": ["umberto eco", "艾柯", "翁贝托·埃科"]
+  },
+  "entity_aliases": {
+    "harry_potter": {
+      "aliases": ["harry potter", "哈利波特", "hp", "hogwarts", "霍格沃茨"],
+      "type": "series"
+    },
+    "lord_of_the_rings": {
+      "aliases": ["lord of the rings", "lotr", "指环王", "魔戒", "the hobbit", "霍比特人"],
+      "type": "series"
+    },
+    "a_song_of_ice_and_fire": {
+      "aliases": ["a song of ice and fire", "asoiaf", "冰与火之歌", "权力的游戏", "game of thrones"],
+      "type": "series"
+    },
+    "dune": {
+      "aliases": ["dune", "沙丘"],
+      "type": "series"
+    },
+    "three_body_problem": {
+      "aliases": ["three-body problem", "three body problem", "三体", "the three-body problem"],
+      "type": "series"
+    },
+    "discworld": {
+      "aliases": ["discworld", "碟形世界"],
+      "type": "series"
+    },
+    "hitchhikers_guide": {
+      "aliases": ["hitchhiker's guide", "hitchhikers guide", "银河系漫游指南"],
+      "type": "series"
+    },
+    "narnia": {
+      "aliases": ["narnia", "chronicles of narnia", "纳尼亚传奇"],
+      "type": "series"
+    },
+    "foundation": {
+      "aliases": ["foundation", "基地", "isaac asimov foundation"],
+      "type": "series"
+    }
+  },
+  "version_terms": {
+    "volume": {
+      "aliases": ["vol.", "volume", "卷", "册", "上册", "下册", "中册"]
+    },
+    "edition": {
+      "aliases": ["edition", "ed.", "revised edition", "revised", "第", "版", "修订版", "增订版"]
+    },
+    "part": {
+      "aliases": ["part", "上部", "下部", "中部", "上卷", "下卷"]
+    },
+    "anthology": {
+      "aliases": ["anthology", "collection", "selected", "合集", "文集", "选集", "全集"]
+    }
+  }
+}

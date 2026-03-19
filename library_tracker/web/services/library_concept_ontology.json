@@ -1,0 +1,30 @@
+{
+  "media_type_concepts": {
+    "book": ["阅读", "文学"],
+    "video": ["影视"],
+    "music": ["音乐"],
+    "game": ["游戏"]
+  },
+  "concept_keyword_aliases": {
+    "奇幻": ["奇幻", "fantasy", "magic", "魔法"],
+    "科幻": ["科幻", "sci-fi", "science fiction", "宇宙", "太空"],
+    "历史": ["历史", "史", "history", "战争史"],
+    "哲学": ["哲学", "philosophy"],
+    "政治": ["政治", "politics", "治理"],
+    "传记": ["传记", "biography", "自传"],
+    "推理": ["推理", "侦探", "mystery", "detective"],
+    "悬疑": ["悬疑", "thriller", "惊悚"],
+    "爱情": ["爱情", "romance"],
+    "成长": ["成长", "coming-of-age"],
+    "校园": ["校园", "school", "college"],
+    "诗词": ["诗", "诗词", "poem", "poetry"],
+    "戏剧": ["戏剧", "drama", "play"],
+    "社会": ["社会", "society", "社会学"],
+    "经济": ["经济", "economy", "economics"],
+    "科学": ["科学", "science"],
+    "技术": ["技术", "engineering", "计算机", "算法"],
+    "动画": ["动画", "anime", "cartoon"],
+    "摇滚": ["摇滚", "rock"],
+    "古典音乐": ["古典", "classical", "协奏曲", "交响曲", "奏鸣曲", "歌剧"]
+  }
+}

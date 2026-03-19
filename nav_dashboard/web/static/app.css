@@ -1061,6 +1061,15 @@ body {
 .dashboard-job-card.is-selected {
   border-color: #66d9ef;
   box-shadow: 0 0 0 1px rgba(102, 217, 239, 0.15) inset;
+  background: linear-gradient(180deg, rgba(44, 61, 66, 0.96), rgba(28, 31, 27, 0.98));
+  color: #f5f7ef;
+}
+
+.dashboard-job-card.is-selected .dashboard-meta,
+.dashboard-job-card.is-selected .dashboard-job-status,
+.dashboard-job-card.is-selected .dashboard-job-summary,
+.dashboard-job-card.is-selected .dashboard-job-updated {
+  color: #e8efe2;
 }
 
 .dashboard-job-card.is-running {
