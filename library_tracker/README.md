@@ -1,92 +1,94 @@
-﻿# Library Tracker
+# Library Tracker
 
-`library_tracker` 用于管理个人媒体数据（书籍、游戏、音乐、视频等），并提供可检索的 Web 服务接口。
+`library_tracker` 用于管理个人媒体库，并向 Dashboard Agent 提供结构化搜索与条目详情能力。
 
-## 1. 模块架构
+默认地址：`http://127.0.0.1:8091/`
 
-```text
-CSV / 手工新增条目
-    -> scripts/csv_extract.py 等提取脚本
-    -> data/structured/ 结构化数据
-    -> 向量化/标签处理（按配置）
-    -> web/main.py 提供浏览与检索 API
-```
+## 角色
 
-## 2. 实现细节
+- 管理阅读、音乐、视频、游戏等个人条目
+- 提供本地媒体库的检索、详情、CRUD 和统计 API
+- 维护 embedding、别名、图谱和后台分析任务
+- 为 `nav_dashboard` 的媒体类问答提供结构化数据源
 
-### 2.1 数据处理
+## 当前能力
 
-- 支持按 profile 进行 CSV 批处理（book/game/music/video）。
-- 条目可在 Web UI 中新增/编辑，后端执行数据标准化。
-- 支持封面图压缩和基础清洗流程（按脚本能力启用）。
+- 关键词检索、向量检索、结构化过滤检索可组合使用
+- 条目可在 Web UI 中新增、编辑、删除
+- 详情浮窗支持桌面端方向键切换，移动端支持低敏左右滑切换前后条目
+- 媒体字段较完整，包含作者、分类、出版方、渠道、评分、短评、日期等
+- 启动后会延迟检查未完成的 embedding/图谱刷新任务
+- Web 进程负责查询与 CRUD；季度/年度分析、embedding / alias / 图谱刷新通过后台任务或独立 worker 承接
+- 别名与 embedding 刷新队列可由外部任务中心或 API 驱动
 
-### 2.2 检索能力
+## 关键目录
 
-- 关键词检索与向量检索可组合使用。
-- 查询链路支持阈值过滤与结果限制。
-- 可与 `nav_dashboard` Agent 工具链联动。
-- 搜索结果会保留更多业务字段，如 `author`、`publisher`、`channel`、`category`、`rating`、`review`，供 Agent 做结构化回答。
+- `web/main.py`：FastAPI 应用入口
+- `web/api/library.py`：搜索、CRUD、embedding、图谱、分析接口
+- `web/services/`：查询、变更、embedding、别名生命周期、分析服务等模块
+- `scripts/`：导入、抽取、批处理脚本
+- `../data/library_tracker/structured/`：结构化媒体主数据（canonical）
+- `../data/library_tracker/analysis/`：分析相关运行态数据（canonical）
 
-### 2.3 图谱与后台任务
+默认正式主数据路径是仓库级 `data/library_tracker/`。`library_tracker/data/` 仅保留为一次性 repair / 冻结迁移时的旧位置提示，不再作为常规运行路径。
 
-- 支持 Library Graph 重建与缺失同步。
-- 支持 embedding 增量刷新与指定条目刷新。
-- `nav_dashboard` 的任务中心会展示这类后台任务状态。
+## 与 Dashboard 的关系
 
-## 3. 关键目录与文件
+- Dashboard Agent 会直接调用 `/api/library/search`
+- 媒体结构化回答依赖这里的字段质量和召回质量
+- 个人评价类回答会直接展示本地评分和短评，因此：
+    - `rating`
+    - `review`
+    - `author`
+    - `publisher`
+    - `channel`
+    等字段都属于高价值数据
 
-- `web/main.py`：FastAPI 服务入口
-- `web/api/library.py`：检索、条目 CRUD、图谱与 embedding API
-- `web/services/library_service.py`：核心数据加载、过滤、检索、统计逻辑
-- `scripts/csv_extract.py`：通用 CSV 提取脚本
-- `scripts/setup_env.py`：环境初始化逻辑
-- `data/structured/`：结构化输出
-- `launch_web.bat`：Windows 双击启动脚本
+## 安装
 
-## 4. 安装（Windows）
+推荐复用仓库根 `.venv`：
 
 ```powershell
-cd library_tracker
+..\.venv\Scripts\python.exe -m pip install -r requirements.txt
+```
+
+也可以运行：
+
+```text
 setup.bat
 ```
 
-`setup.bat` 会优先复用仓库根目录 `.venv` 并安装 `requirements.txt`。
-
-## 5. 启动
-
-```text
-launch_web.bat
-```
-
-或命令行：
+## 启动
 
 ```powershell
 ..\.venv\Scripts\python.exe launch_web.py
 ```
 
-默认地址：`http://127.0.0.1:8091/`
+或直接运行：
 
-## 6. 常用命令
-
-```powershell
-..\.venv\Scripts\python.exe scripts\csv_extract.py --profile book
-..\.venv\Scripts\python.exe scripts\csv_extract.py --profile game
-..\.venv\Scripts\python.exe scripts\csv_extract.py --profile music
-..\.venv\Scripts\python.exe scripts\csv_extract.py --profile video
+```text
+launch_web.bat
 ```
 
-## 7. 环境变量
+`launch_web.py` 会自动读取根目录 `env.local.ps1`，优先重启到根 `.venv`，清理占用端口的旧进程，并在服务可用后打开浏览器。
+
+如需跑分析或后台任务，使用同一套根 `.venv` 启动对应 worker / 调度脚本，避免与 Web 进程出现依赖漂移。
+
+## 常用命令
+
+```powershell
+..\.venv\Scripts\python.exe scripts\importers\csv_extract.py --profile book
+..\.venv\Scripts\python.exe scripts\importers\csv_extract.py --profile game
+..\.venv\Scripts\python.exe scripts\importers\csv_extract.py --profile music
+..\.venv\Scripts\python.exe scripts\importers\csv_extract.py --profile video
+```
+
+## 常用环境变量
 
 - `LIBRARY_WEB_HOST`
 - `LIBRARY_WEB_PORT`
 
-## 8. 与 Nav Dashboard 的协同
-
-- `nav_dashboard` 的 Agent 媒体工具会直接调用 `/api/library/search`。
-- 对筛选型 query，Dashboard Agent 会优先使用本地结构化字段生成答案，而不是完全依赖 LLM 自由总结。
-- 因此这里的 `author / publisher / channel / review / rating` 字段质量会直接影响 Agent 回答质量。
-
-## 9. 健康检查
+## 健康检查
 
 ```powershell
 Invoke-WebRequest -Uri "http://127.0.0.1:8091/healthz" -UseBasicParsing

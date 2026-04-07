@@ -27,10 +27,22 @@ PROJECT_ROOT = Path(__file__).resolve().parent.parent
 if str(WORKSPACE_ROOT) not in sys.path:
     sys.path.insert(0, str(WORKSPACE_ROOT))
 
-from api_config import API_BASE_URL, API_KEY, EMBEDDING_MODEL, MODEL, TAVILY_API_KEY, TIMEOUT
-from core_service.config import get_settings
 try:
-    from core_service.llm_client import chat_completion, stream_chat_completion_text
+    from ai_conversations_summary.scripts.api_config import API_BASE_URL, API_KEY, EMBEDDING_MODEL, MODEL, TAVILY_API_KEY, TIMEOUT
+except ImportError:
+    try:
+        from scripts.api_config import API_BASE_URL, API_KEY, EMBEDDING_MODEL, MODEL, TAVILY_API_KEY, TIMEOUT
+    except ImportError:
+        from api_config import API_BASE_URL, API_KEY, EMBEDDING_MODEL, MODEL, TAVILY_API_KEY, TIMEOUT  # type: ignore[no-redef]
+try:
+    from ai_conversations_summary.embedding_runtime import resolve_embedding_model as resolve_runtime_embedding_model
+except ImportError:
+    from embedding_runtime import resolve_embedding_model as resolve_runtime_embedding_model  # type: ignore[no-redef]
+from core_service import get_settings
+from core_service.runtime_data import iter_core_runtime_data_roots
+from ai_conversations_summary.runtime_paths import DATA_DIR, DEEPSEEK_AUDIT_DIR, DOCUMENTS_DIR as DEFAULT_DOCUMENTS_DIR, VECTOR_DB_DIR as DEFAULT_VECTOR_DB_DIR
+try:
+    from core_service.llm import chat_completion, chat_completion_with_retry, stream_chat_completion_text
 except ModuleNotFoundError:
     def chat_completion(
         *,
@@ -64,6 +76,44 @@ except ModuleNotFoundError:
             raise RuntimeError("LLM response text is empty")
         return text
 
+    def chat_completion_with_retry(
+        *,
+        api_key: str,
+        base_url: str,
+        model: str,
+        timeout: int,
+        messages: list[dict[str, str]],
+        temperature: float = 0.2,
+        max_retries: int = 3,
+        retry_delay: float = 2.0,
+        max_tokens: int | None = None,
+    ) -> str:
+        attempt = 0
+        max_attempts = max(1, int(max_retries) + 1)
+        last_error: Exception | None = None
+        while attempt < max_attempts:
+            attempt += 1
+            try:
+                return chat_completion(
+                    api_key=api_key,
+                    base_url=base_url,
+                    model=model,
+                    timeout=timeout,
+                    messages=messages,
+                    temperature=temperature,
+                    max_tokens=max_tokens,
+                )
+            except RuntimeError as exc:
+                if str(exc).strip() not in {"LLM response is empty", "LLM response text is empty"}:
+                    raise
+                last_error = exc
+                if attempt >= max_attempts:
+                    break
+                time.sleep(float(retry_delay) * (2 ** (attempt - 1)))
+        if last_error is not None:
+            raise RuntimeError(f"LLM request failed after {max_attempts} attempts") from last_error
+        raise RuntimeError("LLM request failed for unknown reason")
+
     def stream_chat_completion_text(
         *,
         api_key: str,
@@ -95,16 +145,33 @@ except ModuleNotFoundError:
             delta = chunk.choices[0].delta
             if delta and delta.content:
                 yield str(delta.content)
-from rag_vector_index import (
-    RAGIndexError,
-    _embed_texts_local,
-    _normalize_embedding_model_value,
-    search_vector_index_with_diagnostics,
-)
-from rag_knowledge_graph import expand_query_by_graph, sync_rag_graph
+try:
+    from ai_conversations_summary.scripts.rag_vector_index import (
+        RAGIndexError,
+        _embed_texts_local,
+        _normalize_embedding_model_value,
+        search_vector_index_with_diagnostics,
+    )
+    from ai_conversations_summary.scripts.rag_knowledge_graph import expand_query_by_graph, sync_rag_graph
+except ImportError:
+    try:
+        from scripts.rag_vector_index import (
+            RAGIndexError,
+            _embed_texts_local,
+            _normalize_embedding_model_value,
+            search_vector_index_with_diagnostics,
+        )
+        from scripts.rag_knowledge_graph import expand_query_by_graph, sync_rag_graph
+    except ImportError:
+        from rag_vector_index import (  # type: ignore[no-redef]
+            RAGIndexError,
+            _embed_texts_local,
+            _normalize_embedding_model_value,
+            search_vector_index_with_diagnostics,
+        )
+        from rag_knowledge_graph import expand_query_by_graph, sync_rag_graph  # type: ignore[no-redef]
 
 
-DEEPSEEK_AUDIT_DIR = PROJECT_ROOT / "data" / "deepseek_api_audit"
 _CORE_SETTINGS = get_settings()
 DEFAULT_RESPONSE_MAX_TOKENS_WITH_CONTEXT = int(_CORE_SETTINGS.rag_response_max_tokens_with_context)
 DEFAULT_RESPONSE_MAX_TOKENS_NO_CONTEXT = int(_CORE_SETTINGS.rag_response_max_tokens_no_context)
@@ -196,14 +263,11 @@ def _write_deepseek_audit_log(entry: dict[str, Any]) -> None:
 def _parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     script_dir = Path(__file__).resolve().parent
     root_dir = script_dir.parent
-    default_index_dir = os.getenv(
-        "AI_SUMMARY_VECTOR_DB_DIR",
-        str(root_dir.parent / "core_service" / "data" / "vector_db"),
-    )
+    default_index_dir = os.getenv("AI_SUMMARY_VECTOR_DB_DIR", str(DEFAULT_VECTOR_DB_DIR))
 
     parser = argparse.ArgumentParser(description="RAG Q&A over local documents")
     parser.add_argument("--question", default="", help="Question text. If empty, reads from stdin.")
-    parser.add_argument("--documents-dir", default=str(root_dir / "documents"), help="Documents directory")
+    parser.add_argument("--documents-dir", default=str(DEFAULT_DOCUMENTS_DIR), help="Documents directory")
     parser.add_argument("--index-dir", default=default_index_dir, help="Vector index directory")
     parser.add_argument("--backend", default="faiss", choices=["auto", "faiss", "chroma"], help="Vector backend")
     parser.add_argument("--search-mode", default="hybrid", choices=["hybrid", "local_only"], help="Retrieval mode")
@@ -337,7 +401,9 @@ def _parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         action="store_true",
         help="When local LLM endpoint is unavailable, degrade to retrieval-only local answer",
     )
-    return parser.parse_args(argv)
+    args = parser.parse_args(argv)
+    args.embedding_model = resolve_runtime_embedding_model(args.embedding_model, index_dir=Path(args.index_dir))
+    return args
 
 
 def build_runtime_args(**overrides: Any) -> argparse.Namespace:
@@ -412,13 +478,16 @@ _COMPLEXITY_PATTERNS = re.compile(
 
 
 def _should_rewrite_query(question: str) -> bool:
-    """Return True when the query is long enough or complex enough to benefit from rewriting.
-
-    Rules (OR logic):
-    - length > 20 characters
-    - contains comparison / contrast keywords
-    - contains multiple clauses (comma-separated)
-    - contains mixed question-word pairs (为什么…怎)
+    """判断是否需要对查询进行改写，降低小规模简单问题的改写频率。
+    
+    触发条件（满足任意一条即返回 True）：
+    1. 长度超过 40 个字符（约 13-15 个中文字词）
+    2. 包含类似以下比较/对比/逻辑关键词：
+       {"比", "较", "对比", "相比", "区别", "差异", "相同", "不同", 
+        "以及", "或者", "但是", "然而", "不仅", "而且", "既", "又"}
+    3. 包含类似以下复杂疑问结构：
+       {"为什么", "怎么", "如何", "哪些", "几种", "各个", "分别", "先后"}
+    4. 句子中包含两个或以上标点分隔的子句（逗号、分号、句号）
     """
     q = (question or "").strip()
     if len(q) > 20:
@@ -440,11 +509,11 @@ def _rewrite_queries_with_local_llm(
         return [question], "fallback:missing_local_llm_url"
 
     system_prompt = (
-        "你是RAG检索查询改写助手。"
-        "请将用户问题改写为最多2条用于中文知识库检索的查询。"
-        "保留原问题的核心表述，不要偏离原语义。"
+        "你是一个专业的RAG检索查询改写助手。"
+        "你的任务是将用户问题扩展改写为最多2条适合中文知识库检索的查询语句。"
+        "保留原问题的核心核心语义，不增加无关内容。"
         "知识库文档结构包含title/summary/keywords/topic。"
-        "只返回JSON：{\"queries\":[\"q1\",\"q2\"]}。"
+        "只返回合法的 JSON 对象：{\"queries\":[\"q1\",\"q2\"]}。"
     )
     user_prompt = f"问题: {question}\n会话记忆:\n{memory_context or '<empty>'}"
     rewrite_timeout_env = str(os.getenv("AI_SUMMARY_QUERY_REWRITE_TIMEOUT_SECONDS", "8") or "8").strip()
@@ -454,7 +523,7 @@ def _rewrite_queries_with_local_llm(
         rewrite_timeout = 8
     rewrite_timeout = max(3, min(max(3, int(timeout)), rewrite_timeout))
     try:
-        raw = chat_completion(
+        raw = chat_completion_with_retry(
             api_key=local_key,
             base_url=local_url,
             model=local_model,
@@ -546,9 +615,15 @@ def _approx_tokens(text: str) -> int:
 
 
 def _data_roots() -> list[Path]:
-    workspace_root = Path(__file__).resolve().parent.parent
-    core_data_root = workspace_root.parent / "core_service" / "data"
-    return [core_data_root, workspace_root / "data"]
+    roots: list[Path] = []
+    seen: set[str] = set()
+    for root in [DATA_DIR, *iter_core_runtime_data_roots()]:
+        key = str(root)
+        if key in seen:
+            continue
+        seen.add(key)
+        roots.append(root)
+    return roots
 
 
 def _find_local_snapshot_path(model_name: str) -> Path | None:
@@ -1904,19 +1979,18 @@ def _ask_llm(
         raise RuntimeError("Missing API settings: api_url/api_key/model are required")
 
     response_max_tokens = DEFAULT_RESPONSE_MAX_TOKENS_WITH_CONTEXT if context_text.strip() else DEFAULT_RESPONSE_MAX_TOKENS_NO_CONTEXT
-
     system_prompt = (
-        "你是一个知识助手。回答时区分三类证据来源：\n"
-        "① 本地资料事实 — 直接陈述，可用「[资料N]」轻度标注来源编号\n"
-        "② 通用知识补充 — 行内或末尾标注「[通用知识]」\n"
-        "③ 推断/外推 — 标注「[推断]」，语气保守\n"
-        "严禁混淆三类来源或编造资料中不存在的事实。\n"
+        "你是一个专业知识助手。基于你的通用知识，结合以下三类补充证据来源回答：\n"
+        "1. 本地资料（检索返回的片段） — 直接陈述事实，句末标注「[资料k]」（k为片段序号，从1开始）\n"
+        "2. 通用知识（你的内置知识）\n"
+        "3. 合理推断 — 语气委婉（如“可能是”“推测”）\n"
+        "禁止混淆三类来源，禁止编造资料中不存在的内容。\n"
+        "引用方式：先综合归纳多个资料，再在该句末加「[资料k]」；"
+        "不要写成“根据资料1说……”“资料2指出……”这种逐条复述。\n"
         f"当前调用类型 call_type={call_type or 'answer'}。\n\n"
-        "4) 如果资料无法回答，应明确说明\n"
-        "5) 输出使用Markdown\n"
-        "6) 默认给出更完整的解释；优先包含结论、原因机制、影响或局限。\n"
+        "- 如果资料无法回答，应优先使用通用知识补充并声明\n"
+        "- 输出格式为Markdown（标题、列表、引用、加粗）。尽量给出完整解释，包含结论、原因、影响或局限。\n"
     )
-    
     memory_block = (memory_context or "").strip()
     memory_section = f"\n会话记忆(可为空):\n{memory_block}\n" if memory_block else ""
 
@@ -1931,36 +2005,32 @@ def _ask_llm(
 
     if context_text.strip():
         user_prompt = (
-            "请先阅读下面的本地检索资料，再回答用户问题。\n"
-            "会话记忆：\n"
+            "请阅读下面的检索资料和会话记忆，再回答用户问题。\n"
             f"{memory_section}"
             f"{confidence_note}"
-            "检索资料：\n"
-            f"资料:\n{context_text}\n\n"
-            "用户问题：\n"
-            f"问题:\n{question}\n"
-            "回答要求：\n"
-            "1) 如果问题复杂，允许进行简短思考（不超过400字），用<think>思考内容</think>标签包裹；\n"
-            "2) 基于资料和会话记忆（如果不为空）给出最终答案；\n"
-            "3) 资料不足或有必要时可用通用知识补充，须标注「[通用知识]」；\n"
-            "4) 默认至少写成 3 个要点或 2 段以上，说明背景、关键机制、实际影响；\n"
-            "5) 不要编造不存在的细节；\n"
-            "6) 可用「[资料N]」格式轻度引用来源，末尾不必重复完整资料列表。\n\n"
+            "## 检索资料\n"
+            f"{context_text}\n\n"
+            "## 用户问题\n"
+            f"{question}\n\n"
+            "## 回答要求\n"
+            "1) 如果问题复杂，先用<think>包裹简短思考（≤200 tokens），再输出最终答案。\n"
+            "2) 基于资料和记忆回答，不足时用通用知识补充并标注「[通用]」。\n"
+            "3) 答案至少包含3个要点或2段，说明背景、机制、影响。\n"
+            "4) 引用格式：综合后句末加「[资料k]」，不要写成“根据资料N说”。\n"
+            "5) 禁止编造细节。\n"
         )
     else:
         user_prompt = (
             "会话记忆：\n"
             f"{memory_section}"
             f"{confidence_note}"
-            "用户问题：\n"
-            f"问题:\n{question}\n"
-            "本地知识库中未找到与问题高度相关的资料。\n"
-            "请基于通用知识回答下面问题，并明确标注「[通用知识]」，区分已知事实与推断（标「[推断]」）。\n"
-            "回答要求：\n"
-            "1) 明确说明未找到相关本地资料；\n"
-            "2) 基于通用知识给出尽量完整的分析，不要只给结论；\n"
-            "3) 默认至少写成 3 个要点，覆盖背景、原因机制、影响或建议；\n"
-            "4) 不要编造不存在的细节。\n\n"
+            "## 用户问题\n"
+            f"{question}\n\n"
+            "## 回答要求\n"
+            "1) 先用<think>思考（≤200 tokens），再输出答案。\n"
+            "2) 依赖通用知识回答，标注「[通用]」。\n"
+            "3) 答案至少3个要点或2段。\n"
+            "4) 不要编造信息。\n"
         )
 
     request_id = str(trace_id or "").strip() or str(uuid4())
@@ -2098,7 +2168,7 @@ def _ask_llm(
     else:
         # Non-stream mode: original behavior.
         try:
-            answer = chat_completion(
+            answer = chat_completion_with_retry(
                 api_key=api_key,
                 base_url=api_url,
                 model=model,
@@ -2191,7 +2261,7 @@ def _generate_session_title(question: str, answer: str, api_key: str, api_url: s
     )
     
     try:
-        title = chat_completion(
+        title = chat_completion_with_retry(
             api_key=api_key,
             base_url=api_url,
             model=model,

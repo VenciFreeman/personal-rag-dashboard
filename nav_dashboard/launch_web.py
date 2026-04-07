@@ -19,13 +19,19 @@ import webbrowser
 from pathlib import Path
 
 
+WORKSPACE_ROOT = Path(__file__).resolve().parent.parent
+if str(WORKSPACE_ROOT) not in sys.path:
+    sys.path.insert(0, str(WORKSPACE_ROOT))
+
+from nav_dashboard.web.services.runtime_paths import DEPLOY_INFO_FILE
+
+
 def _mark_deploy_start() -> str:
     deployed_at = time.strftime("%Y-%m-%dT%H:%M:%S", time.localtime())
     os.environ["NAV_DASHBOARD_DEPLOYED_AT"] = deployed_at
     try:
-        deploy_file = Path(__file__).resolve().parent.parent / "data" / "nav_dashboard_deploy.json"
-        deploy_file.parent.mkdir(parents=True, exist_ok=True)
-        deploy_file.write_text('{"deployed_at": "%s"}' % deployed_at, encoding="utf-8")
+        DEPLOY_INFO_FILE.parent.mkdir(parents=True, exist_ok=True)
+        DEPLOY_INFO_FILE.write_text('{"deployed_at": "%s"}' % deployed_at, encoding="utf-8")
     except Exception:
         pass
     return deployed_at
@@ -54,6 +60,15 @@ def _load_workspace_env_local() -> None:
         os.environ[key] = value
 
 
+def _migrate_runtime_data_if_needed() -> None:
+    try:
+        from core_service.runtime_migration_cli import ensure_runtime_data_migrated
+
+        ensure_runtime_data_migrated()
+    except Exception as exc:
+        print(f"[launch_web] runtime migration skipped: {exc}")
+
+
 def _maybe_reexec_into_venv() -> None:
     """Ensure double-click always runs with workspace venv Python."""
     root = Path(__file__).resolve().parent
@@ -80,10 +95,11 @@ def _maybe_reexec_into_venv() -> None:
 
 _maybe_reexec_into_venv()
 _load_workspace_env_local()
+_migrate_runtime_data_if_needed()
 _mark_deploy_start()
 
-from web.config import HOST, PORT
-from web.main import run
+from nav_dashboard.web.config import HOST, PORT
+from nav_dashboard.web.main import run
 
 
 def _list_listening_pids_on_port(port: int) -> set[int]:

@@ -1,0 +1,368 @@
+.sidebar-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: 8px;
+}
+
+.analysis-sidebar .sidebar-head strong {
+  font-size: 13px;
+  color: #d7d7c9;
+}
+
+.analysis-sidebar .sidebar-toggle {
+  padding: 6px 8px;
+  min-width: 36px;
+}
+
+.analysis-sidebar .sidebar-body {
+  height: calc(100% - 40px);
+  overflow-y: auto;
+  overscroll-behavior: contain;
+}
+
+.analysis-sidebar .list {
+  list-style: none;
+  padding: 0;
+  margin: 0;
+}
+
+.analysis-sidebar .list li {
+  padding: 8px;
+  border-radius: 6px;
+  cursor: pointer;
+  border: 1px solid transparent;
+  color: #d7d7c9;
+  margin-bottom: 4px;
+  overflow: hidden;
+  width: 100%;
+  min-width: 0;
+}
+
+.analysis-sidebar .list li.active {
+  background: #394136;
+  border-color: #5f6b4b;
+}
+
+.analysis-sidebar .list li .title {
+  display: block;
+  width: 100%;
+  min-width: 0;
+  font-size: 13px;
+  font-weight: 700;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.analysis-sidebar .list li .meta {
+  display: block;
+  width: 100%;
+  min-width: 0;
+  font-size: 11px;
+  color: #a8ad98;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.analysis-workspace {
+  --sidebar-width: 280px;
+  --sidebar-collapsed-width: 48px;
+  display: grid;
+  grid-template-columns: var(--sidebar-width) minmax(0, 1fr);
+  gap: 10px;
+  height: 100%;
+  min-height: 0;
+}
+
+.analysis-workspace.sidebar-collapsed {
+  grid-template-columns: var(--sidebar-collapsed-width) minmax(0, 1fr);
+}
+
+.analysis-sidebar {
+  width: 100%;
+  background: #252720;
+  border: 1px solid #42443a;
+  border-radius: 8px;
+  padding: 10px;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+  transition: width 0.18s ease, padding 0.18s ease, opacity 0.18s ease;
+  min-width: 0;
+  min-height: 0;
+}
+
+.analysis-sidebar.collapsed {
+  width: var(--sidebar-collapsed-width);
+  padding: 10px 6px;
+  overflow: hidden;
+}
+
+.analysis-sidebar.collapsed > *:not(.sidebar-head) {
+  display: none;
+}
+
+.analysis-sidebar.collapsed .sidebar-head strong {
+  display: none;
+}
+
+.analysis-sidebar.collapsed .sidebar-head {
+  justify-content: center;
+}
+
+.analysis-side-tabs {
+  display: flex;
+  gap: 8px;
+  margin-bottom: 10px;
+  flex: 0 0 auto;
+}
+
+.analysis-side-tab {
+  flex: 1 1 0;
+  text-align: center;
+  padding: 8px 10px;
+}
+
+.analysis-side-tab.active {
+  font-weight: 600;
+}
+
+.analysis-sidebar-section-title {
+  font-size: 12px;
+  color: #8e917f;
+  margin-bottom: 8px;
+  flex: 0 0 auto;
+}
+
+.analysis-report-list {
+  flex: 1 1 auto;
+  min-height: 0;
+  max-height: none;
+  overflow-y: auto;
+  overflow-x: hidden;
+}
+
+.analysis-report-nav {
+  margin-bottom: 4px;
+  cursor: pointer;
+  user-select: none;
+}
+
+.analysis-report-nav.active {
+  background: #394136;
+  border-color: #5f6b4b;
+}
+
+.analysis-main {
+  min-width: 0;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+}
+
+.analysis-view {
+  display: none;
+  min-height: 0;
+  flex: 1 1 auto;
+  overflow: hidden;
+}
+
+.analysis-view.active {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  overflow: hidden;
+}
+
+.analysis-toolbar-row {
+  display: flex;
+  align-items: flex-end;
+  justify-content: space-between;
+  gap: 12px;
+  flex-wrap: wrap;
+}
+
+.analysis-select-field {
+  display: grid;
+  gap: 4px;
+  min-width: 180px;
+  color: #b7b7a4;
+  font-size: 13px;
+}
+
+.analysis-select-field select {
+  width: 100%;
+  background: #262821;
+  color: #f2f2ea;
+  border: 1px solid #4a4b42;
+  border-radius: 8px;
+  padding: 10px 12px;
+  font-size: 14px;
+  font-family: inherit;
+}
+
+.analysis-toolbar-actions {
+  display: flex;
+  gap: 8px;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+}
+
+.analysis-meta-row {
+  display: flex;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.analysis-meta-pill {
+  display: inline-flex;
+  align-items: center;
+  min-height: 34px;
+  padding: 0 12px;
+  border-radius: 999px;
+  border: 1px solid #42443a;
+  background: #20221c;
+  color: #d8dccd;
+  font-size: 12px;
+}
+
+.analysis-meta-pill.muted {
+  color: #8e917f;
+}
+
+.analysis-doc {
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow-y: auto;
+  overflow-x: hidden;
+  padding: 12px;
+  border: 1px solid #42443a;
+  border-radius: 8px;
+  background: #1e1f1c;
+}
+
+.analysis-sidebar .sidebar-body {
+  flex: 1 1 auto;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+  overscroll-behavior: contain;
+}
+
+.analysis-empty-state {
+  max-width: 520px;
+  margin: 40px auto;
+  text-align: center;
+  color: #aeb3a0;
+}
+
+.analysis-empty-state h3 {
+  margin-bottom: 8px;
+  color: #eef1e6;
+}
+
+.analysis-context-menu {
+  position: fixed;
+  z-index: 1200;
+  min-width: 140px;
+  padding: 6px;
+  border: 1px solid #4a4b42;
+  border-radius: 10px;
+  background: #1f211c;
+  box-shadow: 0 14px 30px rgba(0, 0, 0, 0.35);
+}
+
+.analysis-context-menu.hidden {
+  display: none;
+}
+
+.analysis-context-menu-item {
+  width: 100%;
+  padding: 10px 12px;
+  border: 0;
+  border-radius: 8px;
+  background: transparent;
+  color: #f2b6b6;
+  text-align: left;
+  cursor: pointer;
+}
+
+.analysis-context-menu-item:hover {
+  background: #3a2222;
+}
+
+@media (max-width: 700px), (hover: none) and (pointer: coarse) {
+  .analysis-workspace,
+  .analysis-workspace.sidebar-collapsed {
+    grid-template-columns: 1fr;
+    grid-template-rows: auto minmax(0, 1fr);
+  }
+
+  .analysis-sidebar {
+    max-height: 480px;
+  }
+
+  #panel-analysis.active,
+  #panel-personal.active {
+    overflow-y: auto;
+    overflow-x: hidden;
+    -webkit-overflow-scrolling: touch;
+    overscroll-behavior: contain;
+  }
+
+  .analysis-workspace,
+  .analysis-workspace.sidebar-collapsed {
+    height: auto;
+    min-height: 100%;
+  }
+
+  .analysis-main,
+  .analysis-view,
+  .analysis-view.active {
+    min-height: auto;
+    overflow: visible;
+  }
+
+  .analysis-doc {
+    flex: 0 0 auto;
+    min-height: auto;
+    overflow: visible;
+  }
+
+  .analysis-sidebar .sidebar-body,
+  .analysis-report-list {
+    min-height: auto;
+  }
+
+  .analysis-sidebar.collapsed {
+    width: 100%;
+    padding: 8px 10px;
+    max-height: 56px;
+    overflow: hidden;
+  }
+
+  .analysis-workspace.sidebar-collapsed {
+    grid-template-columns: 1fr;
+    grid-template-rows: auto minmax(0, 1fr);
+  }
+
+  .analysis-sidebar.collapsed .sidebar-head {
+    justify-content: flex-end;
+  }
+
+  .analysis-toolbar-actions {
+    width: 100%;
+    justify-content: flex-start;
+  }
+}
+
+@media (min-width: 701px) and (max-width: 1200px) {
+  .analysis-workspace,
+  .analysis-workspace.sidebar-collapsed {
+    grid-template-columns: 240px minmax(0, 1fr);
+  }
+}

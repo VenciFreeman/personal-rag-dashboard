@@ -9,20 +9,18 @@ instead of duplicating bootstrap code.
 from __future__ import annotations
 
 import os
-import sys
-from pathlib import Path
 from unittest.mock import patch
 
-# ── repo root on sys.path ─────────────────────────────────────────────────────
-_REPO_ROOT = Path(__file__).resolve().parent.parent
-if str(_REPO_ROOT) not in sys.path:
-    sys.path.insert(0, str(_REPO_ROOT))
+from tests._app_bootstrap import ensure_repo_on_path
+
+ensure_repo_on_path()
 
 # Minimal env stubs so imports that reach for LLM clients don't crash.
 os.environ.setdefault("DEEPSEEK_API_KEY", "stub")
 os.environ.setdefault("LOCAL_LLM_URL", "http://127.0.0.1:11434")
 
 import nav_dashboard.web.services.agent_service as svc  # noqa: E402
+from nav_dashboard.web.services.agent.domain import router_service as router_owner  # noqa: E402
 
 # ── test helpers ──────────────────────────────────────────────────────────────
 _EMPTY_QUOTA: dict = {}
@@ -69,6 +67,19 @@ def _decide(
         patch.object(svc, "_classify_media_query_with_llm", return_value=llm_response),
         patch.object(svc, "_rewrite_tool_queries_with_llm", return_value={}),
     ):
+        base_deps = router_owner.build_default_router_deps()
+        deps = router_owner.RouterDeps(
+            llm_chat=base_deps.llm_chat,
+            find_previous_trace_context=base_deps.find_previous_trace_context,
+            apply_router_semantic_repairs=base_deps.apply_router_semantic_repairs,
+            resolve_library_aliases=svc._resolve_library_aliases,
+            planner_router_semantic_deps=base_deps.planner_router_semantic_deps,
+            perf_counter=base_deps.perf_counter,
+            normalize_timing_breakdown=base_deps.normalize_timing_breakdown,
+            classify_media_query_with_llm=svc._classify_media_query_with_llm,
+            rewrite_tool_queries_with_llm=svc._rewrite_tool_queries_with_llm,
+            resolve_media_entity=svc._er_resolve_media_entity,
+        )
         decision, _, _ = svc._build_router_decision(
             question=question,
             history=[] if previous_state is None else [
@@ -80,6 +91,7 @@ def _decide(
             ],
             quota_state=_EMPTY_QUOTA,
             query_profile=_profile(question),
+            deps=deps,
         )
     return decision
 

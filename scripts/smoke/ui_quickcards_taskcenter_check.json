@@ -1,0 +1,13 @@
+{
+  "quick_card": {
+    "modal_visible_after_longpress": true
+  },
+  "task_center_mobile": {
+    "job_cards": 2,
+    "expanded_visible": true,
+    "log_box_visible": true,
+    "actions_visible": true
+  },
+  "page_errors": [],
+  "console_errors": []
+}

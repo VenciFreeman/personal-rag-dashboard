@@ -1,41 +1,33 @@
-# Python virtual environments
+﻿# library_tracker module .gitignore
+# Inherits from root .gitignore, this file adds module-specific rules
+
+# Python
+__pycache__/
+*.py[cod]
+*.pyo
+.pytest_cache/
+
+# Virtual environment
 .venv/
 venv/
-env/
-**/.venv/
-**/venv/
 
-# Local model assets
-local_models/
-**/local_models/
-
-# Python cache/build artifacts
-__pycache__/
-**/__pycache__/
-*.py[cod]
-*$py.class
-.pytest_cache/
-.mypy_cache/
-.ruff_cache/
-.coverage
-.coverage.*
-htmlcov/
-*.egg-info/
-.eggs/
-build/
-dist/
-
-# Jupyter/runtime
-.ipynb_checkpoints/
-
-# Logs/temp
-*.log
-*.tmp
-*.temp
-
-# Editor/OS
+# IDE
 .vscode/
 .idea/
+
+# Runtime data
+/data/
+/data.backup/
+
+# Database files
+*.db
+*.sqlite3
+
+# Logs and temporary
+*.log
+*.tmp
+*_temp_*
+
+# OS/IDE
 .DS_Store
 Thumbs.db
-Desktop.ini

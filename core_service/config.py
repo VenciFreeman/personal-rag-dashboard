@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -49,6 +50,29 @@ def _config_candidates() -> list[Path]:
     return paths
 
 
+def _load_env_local_ps1() -> None:
+    root = _workspace_root()
+    path = root / "env.local.ps1"
+    if not path.exists() or not path.is_file():
+        return
+    try:
+        raw = path.read_text(encoding="utf-8")
+    except Exception:
+        return
+    for line in raw.splitlines():
+        text = line.strip()
+        if not text or text.startswith("#"):
+            continue
+        match = re.match(r'^\$env:([A-Za-z_][A-Za-z0-9_]*)\s*=\s*(["\'])(.*?)\2\s*$', text)
+        if not match:
+            continue
+        key = match.group(1)
+        value = match.group(3)
+        if os.getenv(key, "").strip():
+            continue
+        os.environ[key] = value
+
+
 def _read_config_file() -> dict[str, Any]:
     for path in _config_candidates():
         if not path.exists() or not path.is_file():
@@ -71,6 +95,7 @@ def _first_non_empty(*values: str) -> str:
 
 
 def get_settings() -> CoreSettings:
+    _load_env_local_ps1()
     file_cfg = _read_config_file()
 
     api_cfg = file_cfg.get("api", {}) if isinstance(file_cfg.get("api"), dict) else {}
@@ -150,7 +175,9 @@ def get_settings() -> CoreSettings:
     local_llm_model = _first_non_empty(
         os.getenv("AI_SUMMARY_LOCAL_LLM_MODEL", ""),
         str(local_llm_cfg.get("model", "")),
+        # ── One-line switch: change the default below to switch models ──
         "qwen2.5-7b-instruct",
+        # "unsloth/Qwen3.5-4B-GGUF-no-thinking",
     )
     local_llm_api_key = _first_non_empty(
         os.getenv("AI_SUMMARY_LOCAL_LLM_API_KEY", ""),
@@ -258,3 +285,26 @@ def get_settings() -> CoreSettings:
         tmdb_language=tmdb_language,
         bangumi_access_token=bangumi_access_token,
     )
+
+
+_PACKAGING_SUFFIX_RE = re.compile(
+    r"[-_](?:GGUF|GPTQ|AWQ|EXL2|EXL|MLX).*$",
+    re.IGNORECASE,
+)
+
+
+def display_model_name(model: str) -> str:
+    """Derive a short human-readable display name from a model path or ID.
+
+    Examples:
+        "unsloth/Qwen3.5-4B-GGUF-no-thinking"  -> "Qwen3.5-4B"
+        "qwen2.5-7b-instruct"                   -> "qwen2.5-7b-instruct"
+        "/path/to/models/Qwen2.5-7B-Instruct"   -> "Qwen2.5-7B-Instruct"
+    """
+    value = (model or "").strip()
+    if not value:
+        return value
+    parts = [p for p in value.replace("\\", "/").split("/") if p]
+    name = parts[-1] if parts else value
+    clean = _PACKAGING_SUFFIX_RE.sub("", name).strip()
+    return clean or name

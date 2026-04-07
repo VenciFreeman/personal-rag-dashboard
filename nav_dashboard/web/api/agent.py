@@ -29,7 +29,9 @@ from fastapi import APIRouter, HTTPException, Request
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, Field
 
-from web.services import agent_service
+from nav_dashboard.web.api.response_models import AgentChatResponse, build_agent_chat_response, build_agent_stream_event
+from nav_dashboard.web.services import agent_service
+from nav_dashboard.web.services.agent import agent_session_store
 
 router = APIRouter(prefix="/api/agent", tags=["agent"])
 
@@ -102,17 +104,17 @@ class SessionRenamePayload(BaseModel):
 
 @router.get("/sessions")
 def get_sessions() -> dict[str, Any]:
-    return {"sessions": agent_service.list_sessions()}
+    return {"sessions": agent_session_store.list_sessions()}
 
 
 @router.post("/sessions")
 def post_session(payload: SessionCreatePayload) -> dict[str, Any]:
-    return agent_service.create_session(payload.title)
+    return agent_session_store.create_session(payload.title)
 
 
 @router.patch("/sessions/{session_id}")
 def patch_session(session_id: str, payload: SessionRenamePayload) -> dict[str, Any]:
-    session = agent_service.set_session_title(session_id, payload.title, lock=payload.lock)
+    session = agent_session_store.set_session_title(session_id, payload.title, lock=payload.lock)
     if session is None:
         raise HTTPException(status_code=404, detail="Session not found")
     return session
@@ -120,16 +122,16 @@ def patch_session(session_id: str, payload: SessionRenamePayload) -> dict[str, A
 
 @router.delete("/sessions/{session_id}")
 def delete_session(session_id: str) -> dict[str, bool]:
-    ok = agent_service.delete_session(session_id)
+    ok = agent_session_store.delete_session(session_id)
     if not ok:
         raise HTTPException(status_code=404, detail="Session not found")
     return {"ok": True}
 
 
-@router.post("/chat")
+@router.post("/chat", response_model=AgentChatResponse, response_model_exclude_unset=True)
 def post_chat(payload: ChatPayload, request: Request) -> dict[str, Any]:
     try:
-        return agent_service.run_agent_round(
+        response = agent_service.run_agent_round(
             question=payload.question,
             session_id=payload.session_id,
             trace_id=payload.trace_id or str(request.headers.get("X-Trace-Id", "")),
@@ -142,6 +144,7 @@ def post_chat(payload: ChatPayload, request: Request) -> dict[str, Any]:
             request_base_url=_public_request_base_url(request),
             benchmark_mode=payload.benchmark_mode,
         )
+        return build_agent_chat_response(response)
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
     except RuntimeError as exc:
@@ -185,9 +188,9 @@ def post_chat_stream(payload: ChatPayload, request: Request) -> StreamingRespons
                 request_base_url=_public_request_base_url(request),
                 benchmark_mode=payload.benchmark_mode,
             ):
-                yield f"data: {json.dumps(event, ensure_ascii=False)}\n\n"
+                yield f"data: {json.dumps(build_agent_stream_event(event), ensure_ascii=False)}\n\n"
         except Exception as exc:  # noqa: BLE001
-            err = {"type": "error", "message": str(exc)}
+            err = build_agent_stream_event({"type": "error", "message": str(exc)})
             yield f"data: {json.dumps(err, ensure_ascii=False)}\n\n"
 
     return StreamingResponse(

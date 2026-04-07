@@ -4,6 +4,7 @@ from typing import Any
 from dataclasses import dataclass
 from pathlib import Path
 
+from ai_conversations_summary.embedding_runtime import resolve_embedding_model as resolve_runtime_embedding_model
 from web.config import DOCUMENTS_DIR, VECTOR_DB_DIR
 from web.services.context import (
     DEFAULT_EMBEDDING_MODEL,
@@ -67,10 +68,11 @@ def build_directory_children(rel_path: str) -> list[dict[str, object]]:
         return []
 
     is_root = dir_path == DOCUMENTS_DIR
-    dirs = sorted((p for p in dir_path.iterdir() if p.is_dir()), key=lambda p: p.name.lower())
+    dirs = sorted((p for p in dir_path.iterdir() if p.is_dir()), key=lambda p: p.name.lower(), reverse=True)
     files = sorted(
         (p for p in dir_path.iterdir() if p.is_file() and p.name != ".gitkeep"),
         key=lambda p: p.name.lower(),
+        reverse=True,
     )
 
     children: list[dict[str, object]] = []
@@ -173,19 +175,10 @@ def keyword_search(query: str, max_results: int = 50) -> list[PreviewHit]:
 
 
 def resolve_embedding_model() -> str:
-    import os
-    from pathlib import Path
-
-    model = (
-        os.getenv("LOCAL_EMBEDDING_MODEL", "").strip()
-        or os.getenv("DEEPSEEK_EMBEDDING_MODEL", "").strip()
-        or (DEFAULT_EMBEDDING_MODEL or "").strip()
-        or "BAAI/bge-base-zh-v1.5"
-    )
-    if model and Path(model).is_absolute() and not Path(model).exists():
-        # Keep preview search stable even when user/session env keeps stale paths.
-        return "BAAI/bge-base-zh-v1.5"
-    return model
+    model = resolve_runtime_embedding_model(index_dir=VECTOR_DB_DIR)
+    if model:
+        return model
+    return (DEFAULT_EMBEDDING_MODEL or "").strip() or "BAAI/bge-base-zh-v1.5"
 
 
 def vector_search(query: str, *, top_k: int = 10, embedding_model: str | None = None) -> tuple[list[PreviewHit], dict[str, Any]]:

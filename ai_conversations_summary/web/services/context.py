@@ -1,16 +1,13 @@
 from __future__ import annotations
 
 import os
-import sys
 
-from web.config import SCRIPTS_DIR
-
-
-if str(SCRIPTS_DIR) not in sys.path:
-    sys.path.insert(0, str(SCRIPTS_DIR))
-
-from api_config import API_BASE_URL, API_KEY, EMBEDDING_MODEL, MODEL, TAVILY_API_KEY, TIMEOUT  # noqa: E402
-from rag_vector_index import RAGIndexError, search_vector_index_with_diagnostics  # noqa: E402
+try:
+    from ai_conversations_summary.scripts.api_config import API_BASE_URL, API_KEY, EMBEDDING_MODEL, MODEL, TAVILY_API_KEY, TIMEOUT
+    from ai_conversations_summary.scripts.rag_vector_index import RAGIndexError, search_vector_index_with_diagnostics
+except ImportError:
+    from scripts.api_config import API_BASE_URL, API_KEY, EMBEDDING_MODEL, MODEL, TAVILY_API_KEY, TIMEOUT  # type: ignore[no-redef]
+    from scripts.rag_vector_index import RAGIndexError, search_vector_index_with_diagnostics  # type: ignore[no-redef]
 
 
 DEFAULT_API_BASE_URL = os.getenv("DEEPSEEK_BASE_URL", API_BASE_URL).strip() or API_BASE_URL

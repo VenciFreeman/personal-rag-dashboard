@@ -20,7 +20,20 @@ from hashlib import sha1, sha256
 from pathlib import Path
 from typing import Any, Callable
 
-from api_config import EMBEDDING_MODEL, TIMEOUT
+WORKSPACE_ROOT = Path(__file__).resolve().parent.parent.parent
+if str(WORKSPACE_ROOT) not in sys.path:
+    sys.path.insert(0, str(WORKSPACE_ROOT))
+
+try:
+    from ai_conversations_summary.scripts.api_config import EMBEDDING_MODEL, TIMEOUT
+except ImportError:
+    try:
+        from scripts.api_config import EMBEDDING_MODEL, TIMEOUT
+    except ImportError:
+        from api_config import EMBEDDING_MODEL, TIMEOUT  # type: ignore[no-redef]
+from ai_conversations_summary.embedding_runtime import resolve_embedding_model as resolve_runtime_embedding_model
+from core_service.runtime_data import iter_core_runtime_data_roots
+from ai_conversations_summary.runtime_paths import DATA_DIR, DOCUMENTS_DIR as DEFAULT_DOCUMENTS_DIR, VECTOR_DB_DIR as DEFAULT_VECTOR_DB_DIR
 
 
 QUOTE_FIELD_RE = re.compile(r"^\s*>\s*-\s*\*\*(tags|categories)\*\*:\s*(.+?)\s*$", re.IGNORECASE)
@@ -128,10 +141,15 @@ def _record_to_metadata_dict(record: TopicRecord, *, changed: bool = False) -> d
 
 
 def _data_roots() -> list[Path]:
-    workspace_root = Path(__file__).resolve().parent.parent
-    core_data_root = workspace_root.parent / "core_service" / "data"
-    # Prefer shared core_service data first, then legacy project-local data for compatibility.
-    return [core_data_root, workspace_root / "data"]
+    roots: list[Path] = []
+    seen: set[str] = set()
+    for root in [DATA_DIR, *iter_core_runtime_data_roots()]:
+        key = str(root)
+        if key in seen:
+            continue
+        seen.add(key)
+        roots.append(root)
+    return roots
 
 
 def _ensure_stdio_streams() -> None:
@@ -459,15 +477,17 @@ def _resolve_api_settings(
     api_url: str | None = None,
     api_key: str | None = None,
     embedding_model: str | None = None,
+    index_dir: Path | None = None,
     timeout: int | None = None,
 ) -> tuple[str, str, str, int]:
     _ = api_url, api_key
-    resolved_model = (
+    preferred_model = (
         embedding_model
         or os.getenv("LOCAL_EMBEDDING_MODEL")
         or os.getenv("DEEPSEEK_EMBEDDING_MODEL")
         or EMBEDDING_MODEL
     ).strip()
+    resolved_model = resolve_runtime_embedding_model(preferred_model, index_dir=index_dir or DEFAULT_VECTOR_DB_DIR)
     resolved_model = _normalize_embedding_model_value(resolved_model)
     resolved_timeout = int(timeout if timeout is not None else TIMEOUT)
 
@@ -771,6 +791,7 @@ def sync_missing_embeddings_to_faiss(
         api_url=api_url,
         api_key=api_key,
         embedding_model=embedding_model,
+        index_dir=index_dir,
         timeout=timeout,
     )
     embedding_batch_size = _resolve_bulk_embedding_batch_size(resolved_model)
@@ -973,6 +994,7 @@ def build_vector_index(
         api_url=api_url,
         api_key=api_key,
         embedding_model=embedding_model,
+        index_dir=index_dir,
         timeout=timeout,
     )
     selected_backend = _select_backend(backend)
@@ -1417,6 +1439,7 @@ def search_vector_index(
         api_url=api_url,
         api_key=api_key,
         embedding_model=embedding_model,
+        index_dir=index_dir,
         timeout=timeout,
     )
 
@@ -1496,6 +1519,7 @@ def search_vector_index_with_diagnostics(
         api_url=api_url,
         api_key=api_key,
         embedding_model=embedding_model,
+        index_dir=index_dir,
         timeout=timeout,
     )
 
@@ -1547,13 +1571,10 @@ def search_vector_index_with_diagnostics(
 def _parse_args() -> argparse.Namespace:
     script_dir = Path(__file__).resolve().parent
     root_dir = script_dir.parent
-    default_index_dir = os.getenv(
-        "AI_SUMMARY_VECTOR_DB_DIR",
-        str(root_dir.parent / "core_service" / "data" / "vector_db"),
-    )
+    default_index_dir = os.getenv("AI_SUMMARY_VECTOR_DB_DIR", str(DEFAULT_VECTOR_DB_DIR))
 
     parser = argparse.ArgumentParser(description="Build/search RAG vector index from documents")
-    parser.add_argument("--documents-dir", default=str(root_dir / "documents"), help="Documents directory")
+    parser.add_argument("--documents-dir", default=str(DEFAULT_DOCUMENTS_DIR), help="Documents directory")
     parser.add_argument("--index-dir", default=default_index_dir, help="Vector index directory")
     parser.add_argument("--backend", default="auto", choices=["auto", "faiss", "chroma"], help="Vector backend")
     parser.add_argument("--query", default="", help="Optional query text to run vector search")

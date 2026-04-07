@@ -33,16 +33,20 @@ const qaDebugToggle = document.getElementById("qa-debug-toggle");
 const dashboardGrid = document.getElementById("dashboard-grid");
 const dashboardGeneratedAt = document.getElementById("dashboard-generated-at");
 const dashboardDeployTime = document.getElementById("dashboard-deploy-time");
+const dashboardBackupTime = document.getElementById("dashboard-backup-time");
+const dashboardLoadStatus = document.getElementById("dashboard-load-status");
+const dashboardInformationNotices = document.getElementById("dashboard-information-notices");
 const dashboardRefreshBtn = document.getElementById("dashboard-refresh");
 const dashboardLatencyTable = document.getElementById("dashboard-latency-table");
 const dashboardObservabilityTable = document.getElementById("dashboard-observability-table");
 const dashboardStartupLogs = document.getElementById("dashboard-startup-logs");
 const dashboardJobsList = document.getElementById("dashboard-jobs-list");
+const dashboardJobsClearBtn = document.getElementById("dashboard-jobs-clear-history");
 const dashboardJobsRefreshBtn = document.getElementById("dashboard-jobs-refresh");
-const dashboardJobsFilter = document.getElementById("dashboard-jobs-filter");
 const dashboardTicketSummaryMeta = document.getElementById("dashboard-ticket-summary-meta");
 const dashboardTicketSummaryBody = document.getElementById("dashboard-ticket-summary-body");
 const dashboardTicketTrendMeta = document.getElementById("dashboard-ticket-trend-meta");
+const dashboardTicketTrendModeSelect = document.getElementById("dashboard-ticket-trend-mode");
 const dashboardTicketTrendChart = document.getElementById("dashboard-ticket-trend-chart");
 const warningsModal = document.getElementById("warnings-modal");
 const warningsModalList = document.getElementById("warnings-modal-list");
@@ -79,6 +83,17 @@ const runtimeDataModalMeta = document.getElementById("runtime-data-modal-meta");
 const runtimeDataRefreshBtn = document.getElementById("runtime-data-refresh-btn");
 const runtimeDataClearBtn = document.getElementById("runtime-data-clear-btn");
 const runtimeDataCloseBtn = document.getElementById("runtime-data-close-btn");
+const dataBackupMeta = document.getElementById("data-backup-meta");
+const dataBackupSummary = document.getElementById("data-backup-summary");
+const dataBackupExportBtn = document.getElementById("data-backup-export-btn");
+const dataBackupCreateBtn = document.getElementById("data-backup-create-btn");
+const dataBackupRestoreBtn = document.getElementById("data-backup-restore-btn");
+const dataBackupRestoreInput = document.getElementById("data-backup-restore-input");
+const usageModalMeta = document.getElementById("usage-modal-meta");
+const usageProviderSelect = document.getElementById("usage-provider-select");
+const usageTraceList = document.getElementById("usage-trace-list");
+const usageExportBtn = document.getElementById("usage-export-btn");
+const usageClearBtn = document.getElementById("usage-clear-btn");
 const dashboardTraceInput = document.getElementById("dashboard-trace-input");
 const dashboardTraceQueryBtn = document.getElementById("dashboard-trace-query-btn");
 const dashboardTraceOpenBtn = document.getElementById("dashboard-trace-open-btn");
@@ -91,6 +106,13 @@ const traceModalContent = document.getElementById("trace-modal-content");
 const traceModalExport = document.getElementById("trace-modal-export");
 const traceModalExportBtn = document.getElementById("trace-modal-export-btn");
 const traceModalCloseBtn = document.getElementById("trace-modal-close-btn");
+const libraryAliasModal = document.getElementById("library-alias-modal");
+const libraryAliasModalMeta = document.getElementById("library-alias-modal-meta");
+const libraryAliasReviewList = document.getElementById("library-alias-review-list");
+const libraryAliasPageInfo = document.getElementById("library-alias-page-info");
+const libraryAliasPagePrevBtn = document.getElementById("library-alias-page-prev");
+const libraryAliasPageNextBtn = document.getElementById("library-alias-page-next");
+const libraryAliasCloseBtn = document.getElementById("library-alias-close-btn");
 const appErrorModal = document.getElementById("app-error-modal");
 const appErrorTitle = document.getElementById("app-error-title");
 const appErrorMeta = document.getElementById("app-error-meta");
@@ -98,6 +120,44 @@ const appErrorCopybox = document.getElementById("app-error-copybox");
 const appErrorCopyBtn = document.getElementById("app-error-copy-btn");
 const appErrorCloseBtn = document.getElementById("app-error-close-btn");
 const benchmarkCaseTraceRefreshBtn = document.getElementById("bm-case-trace-refresh");
+const benchmarkRouterClsAddBtn = document.getElementById("bm-router-cls-add");
+const benchmarkRouterClsModal = document.getElementById("bm-router-cls-modal");
+const benchmarkRouterClsModalTitle = document.getElementById("bm-router-cls-modal-title");
+const benchmarkRouterClsModalMeta = document.getElementById("bm-router-cls-modal-meta");
+const benchmarkRouterClsTraceIdInput = document.getElementById("bm-router-cls-trace-id");
+const benchmarkRouterClsImportBtn = document.getElementById("bm-router-cls-import");
+const benchmarkRouterClsQueryInput = document.getElementById("bm-router-cls-query");
+const benchmarkRouterClsExpectedDomainInput = document.getElementById("bm-router-cls-expected-domain");
+const benchmarkRouterClsExpectedArbitrationInput = document.getElementById("bm-router-cls-expected-arbitration");
+const benchmarkRouterClsNoteInput = document.getElementById("bm-router-cls-note");
+const benchmarkRouterClsMockLabelInput = document.getElementById("bm-router-cls-mock-label");
+const benchmarkRouterClsMockDomainInput = document.getElementById("bm-router-cls-mock-domain");
+const benchmarkRouterClsMockLookupModeInput = document.getElementById("bm-router-cls-mock-lookup-mode");
+const benchmarkRouterClsMockEntitiesInput = document.getElementById("bm-router-cls-mock-entities");
+const benchmarkRouterClsLastRunBox = document.getElementById("bm-router-cls-last-run-box");
+const benchmarkRouterClsSaveBtn = document.getElementById("bm-router-cls-save");
+const benchmarkRouterClsDeleteBtn = document.getElementById("bm-router-cls-delete");
+const benchmarkRouterClsCancelBtn = document.getElementById("bm-router-cls-cancel");
+const authorizationMeta = document.getElementById("authorization-meta");
+const authorizationRefreshBtn = document.getElementById("authorization-refresh-btn");
+const authorizationReauthShell = document.getElementById("authorization-reauth-shell");
+const authorizationPasswordInput = document.getElementById("authorization-password-input");
+const authorizationUnlockBtn = document.getElementById("authorization-unlock-btn");
+const authorizationReauthError = document.getElementById("authorization-reauth-error");
+const authorizationBootstrapShell = document.getElementById("authorization-bootstrap-shell");
+const authorizationBootstrapUsername = document.getElementById("authorization-bootstrap-username");
+const authorizationBootstrapPassword = document.getElementById("authorization-bootstrap-password");
+const authorizationBootstrapBtn = document.getElementById("authorization-bootstrap-btn");
+const authorizationBootstrapError = document.getElementById("authorization-bootstrap-error");
+const authorizationAdminShell = document.getElementById("authorization-admin-shell");
+const authorizationSessionMeta = document.getElementById("authorization-session-meta");
+const authorizationCreateUsername = document.getElementById("authorization-create-username");
+const authorizationCreatePassword = document.getElementById("authorization-create-password");
+const authorizationCreateRole = document.getElementById("authorization-create-role");
+const authorizationCreateActive = document.getElementById("authorization-create-active");
+const authorizationCreateApps = document.getElementById("authorization-create-apps");
+const authorizationCreateBtn = document.getElementById("authorization-create-btn");
+const authorizationUsersList = document.getElementById("authorization-users-list");
 const customCardModal = document.getElementById("custom-card-modal");
 const customCardModalTitle = document.getElementById("custom-card-modal-title");
 const customCardNameInput = document.getElementById("custom-card-name");
@@ -153,11 +213,50 @@ const ticketDeleteMeta = document.getElementById("ticket-delete-meta");
 const ticketDeleteConfirmSelect = document.getElementById("ticket-delete-confirm-select");
 const ticketDeleteConfirmBtn = document.getElementById("ticket-delete-confirm-btn");
 const ticketDeleteCancelBtn = document.getElementById("ticket-delete-cancel-btn");
+const dashboardJobContextMenu = document.getElementById("dashboard-job-context-menu");
+const dashboardJobContextDeleteBtn = document.getElementById("dashboard-job-context-delete");
+const taskDeleteModal = document.getElementById("task-delete-modal");
+const taskDeleteMeta = document.getElementById("task-delete-meta");
+const taskDeleteHint = document.getElementById("task-delete-hint");
+const taskDeleteConfirmBtn = document.getElementById("task-delete-confirm-btn");
+const taskDeleteCancelBtn = document.getElementById("task-delete-cancel-btn");
 const pageLocalModel = (document.body?.dataset?.localModel || "").trim();
+const SOURCE_LABELS = Object.freeze({
+  agent: "LLM Agent",
+  rag_qa: "RAG 问答",
+  rag_qa_stream: "RAG 问答（流式）",
+  benchmark_rag: "Benchmark / RAG",
+  benchmark_agent: "Benchmark / Agent",
+  agent_chat: "LLM Agent",
+  rag_chat: "RAG 问答",
+});
+
+function isLoopbackHostname(hostname) {
+  const value = String(hostname || "").trim().toLowerCase();
+  return value === "localhost" || value === "127.0.0.1" || value === "::1";
+}
+
+function rewriteLoopbackServiceUrl(rawUrl, fallbackPort) {
+  const explicit = String(rawUrl || "").trim();
+  if (!explicit) return "";
+  try {
+    const parsed = new URL(explicit, window.location.origin);
+    if (!/^https?:$/.test(parsed.protocol) || !isLoopbackHostname(parsed.hostname)) return explicit;
+    const currentHostname = String(window.location?.hostname || "").trim();
+    if (!currentHostname) return explicit;
+    parsed.protocol = String(window.location?.protocol || parsed.protocol || "http:").trim() || parsed.protocol || "http:";
+    parsed.hostname = currentHostname;
+    const targetPort = Number(parsed.port || fallbackPort || 0);
+    if (targetPort > 0) parsed.port = String(targetPort);
+    return parsed.toString();
+  } catch (_) {
+    return explicit;
+  }
+}
 
 function deriveServiceUrl(explicitUrl, fallbackPort) {
   const explicit = String(explicitUrl || "").trim();
-  if (explicit) return explicit;
+  if (explicit) return rewriteLoopbackServiceUrl(explicit, fallbackPort) || explicit;
   const scheme = String(window.location?.protocol || "http:").trim() || "http:";
   const host = String(window.location?.host || "").trim();
   if (host) {
@@ -170,9 +269,26 @@ function deriveServiceUrl(explicitUrl, fallbackPort) {
   return `${scheme}//localhost:${Number(fallbackPort)}/`;
 }
 
+function rewriteLoopbackLinksInContainer(container) {
+  if (!(container instanceof Element)) return;
+  const currentHostname = String(window.location?.hostname || "").trim();
+  if (!currentHostname) return;
+  container.querySelectorAll('a[href]').forEach((anchor) => {
+    const rawHref = String(anchor.getAttribute("href") || "").trim();
+    if (!rawHref) return;
+    try {
+      const parsed = new URL(rawHref, window.location.origin);
+      if (!/^https?:$/.test(parsed.protocol) || !isLoopbackHostname(parsed.hostname)) return;
+      parsed.protocol = String(window.location?.protocol || parsed.protocol || "http:").trim() || parsed.protocol || "http:";
+      parsed.hostname = currentHostname;
+      anchor.href = parsed.toString();
+    } catch (_) {}
+  });
+}
+
 const pageAiSummaryUrl = deriveServiceUrl(document.body?.dataset?.aiSummaryUrl, 8000);
 const pageLibraryUrl = deriveServiceUrl(document.body?.dataset?.libraryUrl, 8091);
-const MAX_REFERENCE_ITEMS = 6;
+const MAX_REFERENCE_ITEMS = 10;
 const uiDebugStatus = document.getElementById("ui-debug-status");
 const UI_DEBUG_ENABLED = (() => {
   try {
@@ -220,20 +336,30 @@ function installUiClickProbe() {
 let activeController = null;
 let askInFlight = false;
 let dashboardRefreshInFlight = false;
+let dashboardHasFullOverview = false;
+let dashboardLastFullRefreshAt = 0;
 // Per-tab state objects: handlersBound is managed by _register* guards,
 // loading/loaded/error drive the data-load state machine.
 const dashboardState = { loading: false, loaded: false, error: null };
 const ticketsState   = { loading: false, loaded: false, error: null };
 const benchmarkState = { loading: false, loaded: false, error: null };
+const authorizationState = { loading: false, loaded: false, error: null, token: "", expiresAt: "", data: null };
 let sessionsCache = [];
 let currentSessionId = "";
 let activeAgentStreamState = null;
-let customCards = [];
-let editingCardIndex = -1;
-const CARD_LONG_PRESS_MS = 520;
+const DASHBOARD_CACHE_STORAGE_KEY = "navDashboardOverviewCache";
+const DASHBOARD_FULL_OVERVIEW_TIMEOUT_MS = 120000;
+const DASHBOARD_FULL_REFRESH_TTL_MS = 120000;
 
 // Warnings state
 let currentWarnings = [];
+
+function basenameFromPath(rawPath) {
+  const text = String(rawPath || "").trim();
+  if (!text) return "";
+  const parts = text.split(/[\\/]+/).filter(Boolean);
+  return parts.length ? parts[parts.length - 1] : text;
+}
 let currentWarningsTimestamp = "";
 let dismissedWarnings = new Set();
 let currentMissingQueries = [];
@@ -243,10 +369,31 @@ let currentFeedbackSource = "all";
 let currentFeedbackDetailItem = null;
 let currentRuntimeDataItems = [];
 let currentRuntimeDataSummary = {};
+let currentDataBackupSummary = {};
 let currentTraceRecord = null;
 let currentTraceExportText = "";
-let currentRenameSessionId = "";
+let currentUsageTraceProvider = "all";
+let currentUsageTraceItems = [];
+let currentLibraryAliasItems = [];
+let currentLibraryAliasPage = 1;
+let currentLibraryAliasTotalPages = 1;
+let currentLibraryAliasSummary = {};
+let activeLibraryAliasEditProposalId = "";
+let activeLibraryAliasSaveProposalId = "";
+let currentLibraryAliasEditDraft = { aliasesText: "" };
+let currentDashboardData = null;
 let suppressSessionClickUntil = 0;
+let currentTaskJobs = [];
+let currentTaskJobsAll = [];
+let currentTaskContextJobId = "";
+let selectedTaskJobId = "";
+let pendingTaskDeleteMode = "";
+let pendingDeleteTaskJobId = "";
+let taskLogFollowFrame = 0;
+let dashboardTicketTrendChartInstance = null;
+let lastDashboardForceRefreshAt = 0;
+let lastReportJobRefreshMarker = "";
+let hadRunningReportJob = false;
 let currentTickets = [];
 let currentTicketId = "";
 let pendingDeleteTicketId = "";
@@ -259,156 +406,279 @@ const TICKETS_LIST_COLLAPSED_STORAGE_KEY = "navDashboardTicketsListCollapsed";
 // Startup polling
 let lastStartupStatus = "";
 let startupPollInterval = null;
-
-// Crop state
-let cropState = null;
-const CROP_VSIZE = 200;
-
-// Usage modal: last known values for prefill
-let lastApiUsage = {};
-let currentTaskJobs = [];
-let selectedTaskJobId = "";
 let taskCenterPollInterval = null;
-let dashboardJobsView = "active";
-let taskLogFollowFrame = 0;
-let lastDashboardForceRefreshAt = 0;
 
-if (dashboardJobsFilter?.value) {
-  dashboardJobsView = String(dashboardJobsFilter.value || "active");
+// First-paint bootstrap state shared with the SSR template. Keep all early
+// handoff fields under one object so the template and JS bundle do not drift.
+const NavBootstrap = window.__navDashboardBootstrap || null;
+
+function consumePendingCardEditIndex() {
+  const value = NavBootstrap?.consumeCardEdit?.();
+  return Number.isInteger(value) ? value : null;
 }
 
-const SOURCE_LABELS = {
-  all: "全部",
-  agent: "LLM Agent",
-  rag_qa: "RAG 问答",
-  rag_qa_stream: "RAG 问答（流式）",
-  agent_chat: "LLM Agent",
-  rag_chat: "RAG 问答",
-  unknown: "未知来源",
-};
+const AppShell = window.CoreUI?.get?.("appShell") || window.SharedAppShell || null;
+const DashboardTraceModule = window.NavDashboardTrace || null;
+const DashboardTraceBootstrapModule = window.NavDashboardTraceBootstrap || null;
+const DashboardLibraryAliasModule = window.NavDashboardLibraryAlias || null;
+const DashboardTicketsModule = window.NavDashboardTickets || null;
+const DashboardTicketsBootstrapModule = window.NavDashboardTicketsBootstrap || null;
+const DashboardBenchmarkModule = window.NavDashboardBenchmark || null;
+const DashboardBenchmarkBootstrapModule = window.NavDashboardBenchmarkBootstrap || null;
+const DashboardDataAdminModule = window.NavDashboardDataAdmin || null;
+const DashboardDataAdminBootstrapModule = window.NavDashboardDataAdminBootstrap || null;
+const DashboardSharedDom = window.NavDashboardSharedDom || null;
+const DashboardSharedModal = window.NavDashboardSharedModal || null;
+const DashboardSharedApi = window.NavDashboardSharedApi || null;
+const DashboardSharedMarkdown = window.NavDashboardSharedMarkdown || null;
+const DashboardSharedTrace = window.NavDashboardSharedTrace || null;
+const DashboardOverviewBootstrapModule = window.NavDashboardOverviewBootstrap || null;
+const DashboardCustomCardsBootstrapModule = window.NavDashboardCustomCardsBootstrap || null;
+const DashboardUsageBootstrapModule = window.NavDashboardUsageBootstrap || null;
+const DashboardModalBootstrapModule = window.NavDashboardModalBootstrap || null;
+const DashboardTaskCenterBootstrapModule = window.NavDashboardTaskCenterBootstrap || null;
+const DashboardHandlersBootstrapModule = window.NavDashboardHandlersBootstrap || null;
+const DashboardAgentSessionsBootstrapModule = window.NavDashboardAgentSessionsBootstrap || null;
+const DashboardAgentSessionUiBootstrapModule = window.NavDashboardAgentSessionUiBootstrap || null;
+const escapeHtml = DashboardSharedDom?.escapeHtml || ((text) => String(text || "")
+  .replaceAll("&", "&amp;")
+  .replaceAll("<", "&lt;")
+  .replaceAll(">", "&gt;"));
+const traceModalController = AppShell?.createModalController?.({ root: traceModal, hiddenClass: "hidden" }) || null;
+const libraryAliasModalController = AppShell?.createModalController?.({ root: libraryAliasModal, hiddenClass: "hidden" }) || null;
+const ticketDeleteModalController = AppShell?.createModalController?.({ root: ticketDeleteModal, hiddenClass: "hidden" }) || null;
+const taskDeleteModalController = AppShell?.createModalController?.({ root: taskDeleteModal, hiddenClass: "hidden" }) || null;
+const benchmarkRouterClsModalController = AppShell?.createModalController?.({ root: benchmarkRouterClsModal, hiddenClass: "hidden" }) || null;
+let ticketsShellController = null;
+ticketsShellController = AppShell?.createListDetailShellController?.({
+  container: ticketsMainGrid,
+  listPane: ticketsListShell,
+  toggleButton: ticketsListCollapseBtn,
+  compactMediaQuery: "(max-width: 980px)",
+  collapsedClass: "is-list-collapsed",
+  listCollapsedClass: "is-collapsed",
+  storageKey: TICKETS_LIST_COLLAPSED_STORAGE_KEY,
+  onLayoutChange: ({ collapsed }) => {
+    ticketsListCollapsed = !!collapsed;
+    syncTicketsPaneHeights();
+  },
+}) || null;
 
-function escapeHtml(text) {
-  return String(text || "")
-    .replaceAll("&", "&amp;")
-    .replaceAll("<", "&lt;")
-    .replaceAll(">", "&gt;");
+function reportMissingFrontendModule(moduleName) {
+  const label = String(moduleName || "frontend module").trim() || "frontend module";
+  console.error(`[nav_dashboard] ${label} is unavailable during app bootstrap`);
 }
 
-function basenameFromPath(path) {
-  const raw = String(path || "").trim().replace(/\\/g, "/");
-  if (!raw) return "";
-  const parts = raw.split("/").filter(Boolean);
-  return parts.length ? parts[parts.length - 1] : raw;
+function createMissingController(moduleName, syncMethods = [], asyncMethods = [], overrides = {}) {
+  let warned = false;
+  const warn = () => {
+    if (warned) return;
+    warned = true;
+    reportMissingFrontendModule(moduleName);
+  };
+  const controller = { ...(overrides || {}) };
+  syncMethods.forEach((methodName) => {
+    if (typeof controller[methodName] === "function") return;
+    controller[methodName] = () => {
+      warn();
+      return undefined;
+    };
+  });
+  asyncMethods.forEach((methodName) => {
+    if (typeof controller[methodName] === "function") return;
+    controller[methodName] = async () => {
+      warn();
+      throw new Error(`${String(moduleName || "frontend module")} unavailable`);
+    };
+  });
+  return controller;
 }
 
-function sleep(ms) {
-  return new Promise((resolve) => setTimeout(resolve, ms));
-}
-
-function extractApiErrorMessage(value) {
-  const raw = String(value || "").trim();
-  if (!raw) return "未知错误";
-  try {
-    const payload = JSON.parse(raw);
-    if (typeof payload?.detail === "string" && payload.detail.trim()) return payload.detail.trim();
-    if (typeof payload?.message === "string" && payload.message.trim()) return payload.message.trim();
-  } catch (_err) {
-    // keep raw
+function showToast(message, options = undefined) {
+  if (AppShell?.showToast) {
+    AppShell.showToast(message, {
+      id: "nav-dashboard-toast",
+      className: "nav-dashboard-toast hidden",
+      hiddenClass: "hidden",
+      duration: 2200,
+      ...(options || {}),
+    });
+    return;
   }
-  return raw;
+  window.alert(String(message || ""));
+}
+
+function autoSizeReadonlyTextarea(textarea) {
+  if (!(textarea instanceof HTMLTextAreaElement)) return;
+  textarea.style.height = "auto";
+  textarea.style.height = `${Math.max(textarea.scrollHeight, 120)}px`;
 }
 
 function closeAppErrorModal() {
-  if (!appErrorModal) return;
-  appErrorModal.classList.add("hidden");
-  appErrorModal.setAttribute("aria-hidden", "true");
+  if (DashboardSharedModal?.closeModal) {
+    DashboardSharedModal.closeModal(appErrorModal, null);
+  } else if (appErrorModal) {
+    appErrorModal.classList.add("hidden");
+    appErrorModal.setAttribute("aria-hidden", "true");
+  }
+}
+
+function showAppErrorModal(title, message, detail = "") {
+  const heading = String(title || "操作提示").trim() || "操作提示";
+  const summary = String(message || "").trim();
+  const extra = String(detail || "").trim();
+  if (appErrorTitle) appErrorTitle.textContent = heading;
+  if (appErrorMeta) appErrorMeta.textContent = summary;
+  if (appErrorCopybox instanceof HTMLTextAreaElement) {
+    appErrorCopybox.value = [heading, summary, extra].filter(Boolean).join("\n\n");
+    autoSizeReadonlyTextarea(appErrorCopybox);
+  }
+  if (DashboardSharedModal?.openModal) {
+    DashboardSharedModal.openModal(appErrorModal, null);
+    return;
+  }
+  if (appErrorModal) {
+    appErrorModal.classList.remove("hidden");
+    appErrorModal.setAttribute("aria-hidden", "false");
+  }
 }
 
 async function copyAppErrorText() {
-  const text = String(appErrorCopybox?.value || "").trim();
+  const text = String(appErrorCopybox?.value || "");
   if (!text) return;
-  await navigator.clipboard.writeText(text);
-}
-
-function showAppErrorModal(title, detail, meta = "") {
-  if (!appErrorModal || !appErrorCopybox) {
-    window.alert(`${title}: ${detail}`);
+  if (navigator.clipboard?.writeText) {
+    await navigator.clipboard.writeText(text);
+    showToast("错误信息已复制");
     return;
   }
-  if (appErrorTitle) appErrorTitle.textContent = String(title || "操作提示");
-  if (appErrorMeta) appErrorMeta.textContent = String(meta || "");
-  appErrorCopybox.value = extractApiErrorMessage(detail);
-  autoSizeReadonlyTextarea(appErrorCopybox);
-  appErrorModal.classList.remove("hidden");
-  appErrorModal.setAttribute("aria-hidden", "false");
-  appErrorCopybox.focus();
-  appErrorCopybox.select();
+  if (appErrorCopybox instanceof HTMLTextAreaElement) {
+    appErrorCopybox.focus();
+    appErrorCopybox.select();
+    document.execCommand("copy");
+    showToast("错误信息已复制");
+  }
 }
 
-function autoSizeReadonlyTextarea(node) {
-  if (!node) return;
-  const viewportHeight = Math.max(window.innerHeight || 0, document.documentElement?.clientHeight || 0, 720);
-  const maxHeight = Math.max(180, Math.round(viewportHeight * 0.42));
-  node.style.height = "0px";
-  const nextHeight = Math.min(Math.max(node.scrollHeight + 2, 96), maxHeight);
-  node.style.height = `${nextHeight}px`;
-  node.style.overflowY = node.scrollHeight > nextHeight ? "auto" : "hidden";
+function createContextMenuController(menu, options = {}) {
+  const fallbackWidth = Number(options.width || 160);
+  const fallbackHeight = Number(options.height || 60);
+  let autoCloseBound = false;
+  return {
+    open(x, y) {
+      if (!menu) return;
+      menu.classList.remove("hidden");
+      menu.setAttribute("aria-hidden", "false");
+      const rect = menu.getBoundingClientRect();
+      const width = Math.max(fallbackWidth, Number(rect.width || 0));
+      const height = Math.max(fallbackHeight, Number(rect.height || 0));
+      menu.style.left = `${Math.min(Number(x || 0), window.innerWidth - width - 8)}px`;
+      menu.style.top = `${Math.min(Number(y || 0), window.innerHeight - height - 8)}px`;
+    },
+    close() {
+      if (!menu) return;
+      menu.classList.add("hidden");
+      menu.setAttribute("aria-hidden", "true");
+    },
+    isOpen() {
+      return !!(menu && !menu.classList.contains("hidden"));
+    },
+    bindAutoClose() {
+      if (autoCloseBound) return;
+      autoCloseBound = true;
+      document.addEventListener("click", (event) => {
+        if (!(event.target instanceof Element) || !menu?.contains(event.target)) {
+          this.close();
+        }
+      });
+      document.addEventListener("scroll", () => this.close(), true);
+      window.addEventListener("keydown", (event) => {
+        if (event.key === "Escape") this.close();
+      });
+      window.addEventListener("resize", () => this.close());
+    },
+  };
 }
 
-function formatAssertionBadge(passed, label) {
-  const cls = passed ? "status-completed" : "status-failed";
-  const prefix = passed ? "通过" : "失败";
-  return `<span class="dashboard-job-badge ${cls}">${prefix} ${escapeHtml(String(label || ""))}</span>`;
-}
+const dashboardJobContextMenuController = createContextMenuController(dashboardJobContextMenu, {
+  width: 176,
+  height: 64,
+});
+dashboardJobContextMenuController.bindAutoClose();
 
 function summarizeAssertionScope(scope) {
   const checks = Array.isArray(scope?.checks) ? scope.checks : [];
-  if (!checks.length) return `<span style='color:#5a5f50'>—</span>`;
-  const passed = checks.filter((item) => item?.passed).length;
-  const failed = checks.length - passed;
-  return `${formatAssertionBadge(failed === 0, `${passed}/${checks.length}`)}${failed > 0 ? ` <span style="color:#d9a6a6">失败 ${failed}</span>` : ""}`;
+  if (!checks.length) return '<span style="color:#7a7f6f">—</span>';
+  const passedCount = checks.filter((item) => item?.passed).length;
+  const failedCount = checks.length - passedCount;
+  const tone = failedCount > 0 ? "#d08770" : "#9ecb8b";
+  return `<span style="color:${tone}">${passedCount}/${checks.length}${failedCount > 0 ? `，失败 ${failedCount}` : "，全部通过"}</span>`;
 }
 
-function summarizeAssertionFailures(scope) {
-  const checks = Array.isArray(scope?.checks) ? scope.checks : [];
-  const failed = checks.filter((item) => !item?.passed);
-  if (!failed.length) return `<span style="color:#8fb08d">全部通过</span>`;
-  return failed.map((item) => {
-    const name = escapeHtml(String(item?.name || "unknown"));
-    const traceIds = Array.isArray(item?.trace_ids)
-      ? item.trace_ids.map((value) => String(value || "").trim()).filter(Boolean)
-      : [];
-    if (!traceIds.length) return `<span class="bm-assert-fail-item">${name}</span>`;
-    const preview = traceIds
-      .slice(0, 2)
-      .map((value) => `<span class="bm-assert-fail-trace"><code>${escapeHtml(value)}</code></span>`)
-      .join("");
-    const more = traceIds.length > 2 ? `<span class="bm-assert-fail-more">+${traceIds.length - 2} more</span>` : "";
-    return `<span class="bm-assert-fail-item"><span>${name}</span>${preview}${more}</span>`;
+function summarizeAssertionFailures(scope, title = "失败项") {
+  const failed = (Array.isArray(scope?.checks) ? scope.checks : []).filter((item) => item && item.passed === false);
+  if (!failed.length) return '<span style="color:#7a7f6f">无</span>';
+  const preview = failed.slice(0, 3).map((item) => {
+    const name = escapeHtml(String(item?.name || "check"));
+    const actual = escapeHtml(String(item?.actual ?? "—"));
+    const expected = escapeHtml(String(item?.expected ?? "—"));
+    return `<span class="bm-assert-fail-item"><span>${name}</span><span class="bm-assert-fail-more">${actual} / ${expected}</span></span>`;
   }).join(" ");
+  const more = failed.length > 3 ? ` <span class="bm-assert-fail-more">+${failed.length - 3} more</span>` : "";
+  return `<div class="dashboard-meta">${escapeHtml(title)}: ${preview}${more}</div>`;
 }
 
-function syncBenchmarkLogBox(logBox, logs, { reset = false } = {}) {
+function summarizeBenchmarkContractFailures(records) {
+  const failures = (Array.isArray(records) ? records : [])
+    .flatMap((record) => Array.isArray(record?.contract_checks) ? record.contract_checks.map((check) => ({ record, check })) : [])
+    .filter((entry) => entry.check && entry.check.passed === false);
+  if (!failures.length) return '<span style="color:#7a7f6f">无</span>';
+  const preview = failures.slice(0, 3).map(({ record, check }) => {
+    const name = escapeHtml(String(check?.name || "contract"));
+    const traceId = escapeHtml(String(record?.trace_id || "—"));
+    return `<span class="bm-assert-fail-item"><span>${name}</span><span class="bm-assert-fail-more">trace ${traceId}</span></span>`;
+  }).join(" ");
+  const more = failures.length > 3 ? ` <span class="bm-assert-fail-more">+${failures.length - 3} more</span>` : "";
+  return `<div class="dashboard-meta">Contract: ${preview}${more}</div>`;
+}
+
+function renderBenchmarkContractFailureSummary(record, options = {}) {
+  const title = String(options?.title || "Contract 诊断");
+  const checks = Array.isArray(record?.contract_checks) ? record.contract_checks : [];
+  if (!checks.length) {
+    return `<span style="color:#7a7f6f">${escapeHtml(title)}: 暂无 contract 检查</span>`;
+  }
+  const failed = checks.filter((item) => item && item.passed === false);
+  if (!failed.length) {
+    return `<span style="color:#9ecb8b">${escapeHtml(title)}: 全部通过</span>`;
+  }
+  const items = failed.map((item) => {
+    const name = escapeHtml(String(item?.name || "contract"));
+    const actual = escapeHtml(String(item?.actual ?? "—"));
+    const expected = escapeHtml(String(item?.expected ?? "—"));
+    return `<span class="bm-assert-fail-item"><span>${name}</span><span class="bm-assert-fail-more">${actual} / ${expected}</span></span>`;
+  }).join(" ");
+  return `<div class="dashboard-meta">${escapeHtml(title)}: ${items}</div>`;
+}
+
+function syncBenchmarkLogBox(logBox, logs, markerState = {}, { reset = false } = {}) {
   if (!logBox) return;
   const normalized = Array.isArray(logs) ? logs.map((line) => String(line || "")) : [];
-  if (reset || !lastBenchmarkLogMarker) {
+  const lastMarker = String(markerState?.marker || "");
+  if (reset || !lastMarker) {
     logBox.textContent = normalized.length ? `${normalized.join("\n")}\n` : "";
-    lastBenchmarkLogMarker = normalized.length ? normalized[normalized.length - 1] : "";
-    lastBenchmarkLogCount = normalized.length;
     logBox.scrollTop = logBox.scrollHeight;
-    return;
+    return { marker: normalized.length ? normalized[normalized.length - 1] : "", count: normalized.length };
   }
 
-  const markerIndex = normalized.lastIndexOf(lastBenchmarkLogMarker);
+  const markerIndex = normalized.lastIndexOf(lastMarker);
   if (markerIndex === -1) {
     logBox.textContent = normalized.length ? `${normalized.join("\n")}\n` : "";
   } else if (markerIndex < normalized.length - 1) {
     logBox.textContent += `${normalized.slice(markerIndex + 1).join("\n")}\n`;
   }
 
-  lastBenchmarkLogMarker = normalized.length ? normalized[normalized.length - 1] : "";
-  lastBenchmarkLogCount = normalized.length;
   logBox.scrollTop = logBox.scrollHeight;
+  return { marker: normalized.length ? normalized[normalized.length - 1] : "", count: normalized.length };
 }
 
 function jobTypeLabel(type) {
@@ -416,6 +686,7 @@ function jobTypeLabel(type) {
     benchmark: "Benchmark",
     rag_sync: "RAG 同步",
     library_graph_rebuild: "Library Graph",
+    report_generation: "报告生成",
     runtime_cleanup: "运行时清理",
   };
   return labels[String(type || "")] || String(type || "未知任务");
@@ -432,55 +703,266 @@ function jobStatusLabel(status) {
   return labels[String(status || "")] || String(status || "未知");
 }
 
+function renderTaskCard(job, { selected = false, preview = false } = {}) {
+  const status = String(job?.status || "queued");
+  const selectedCls = selected ? " is-selected" : "";
+  const previewCls = preview ? " is-preview" : "";
+  const runningCls = status === "running" ? " is-running" : status === "failed" ? " is-failed" : status === "cancelled" ? " is-cancelled" : "";
+  const summary = String(job?.message || "等待开始");
+  const moduleMeta = Array.isArray(job?.metadata?.modules)
+    ? job.metadata.modules.join("+")
+    : String(job?.metadata?.module || "");
+  const createdAt = String(job?.created_at || "");
+  return `<div class="dashboard-job-card${selectedCls}${previewCls}${runningCls}" data-job-id="${escapeHtml(String(job?.id || ""))}">
+    <div class="dashboard-job-title">
+      <strong class="dashboard-job-title-text">${escapeHtml(job?.label || jobTypeLabel(job?.type))}</strong>
+      <span class="dashboard-job-badge status-${escapeHtml(status)}">${escapeHtml(jobStatusLabel(status))}</span>
+    </div>
+    <div class="dashboard-job-meta-line">${escapeHtml(jobTypeLabel(job?.type))}${moduleMeta ? ` | ${escapeHtml(moduleMeta)}` : ""}</div>
+    <div class="dashboard-job-meta-line dashboard-job-summary-line">${escapeHtml(summary)}</div>
+    <div class="dashboard-job-meta-line">${escapeHtml(createdAt || "-")}</div>
+  </div>`;
+}
+
+function renderTaskDetailPanel(job, { preview = false, previewMessage = "" } = {}) {
+  if (!job) {
+    return `<section class="dashboard-job-detail-panel dashboard-job-detail-panel-empty">
+      <div class="dashboard-job-detail-head">
+        <div class="dashboard-job-detail-title">
+          <strong class="dashboard-job-detail-heading">当前暂无后台任务</strong>
+          <div class="dashboard-job-meta-line">任务启动后会在这里显示详细进度。</div>
+        </div>
+        <span class="dashboard-job-badge">空闲</span>
+      </div>
+      <div class="dashboard-job-detail-summary">当前没有可显示的任务详情。</div>
+      <div class="dashboard-job-expanded">
+        <div class="dashboard-meta">暂无任务元信息</div>
+        <pre class="dashboard-job-log-window">暂无日志</pre>
+        <div class="card-modal-actions dashboard-job-actions">
+          <button class="ghost" type="button" disabled>暂无可取消任务</button>
+        </div>
+      </div>
+    </section>`;
+  }
+
+  const status = String(job?.status || "queued");
+  const moduleMeta = Array.isArray(job?.metadata?.modules)
+    ? job.metadata.modules.join("+")
+    : String(job?.metadata?.module || "");
+  const createdAt = String(job?.created_at || "");
+  const updatedAt = String(job?.updated_at || "");
+  const logs = Array.isArray(job?.logs) && job.logs.length
+    ? job.logs.join("\n")
+    : (job?.error ? `ERROR: ${job.error}` : "暂无日志");
+  const canCancel = !preview && ["queued", "running"].includes(status);
+  const metaText = preview
+    ? (previewMessage || "当前没有运行中的任务，正在展示最近任务预览。")
+    : `创建 ${createdAt || "-"} | 更新 ${updatedAt || createdAt || "-"}`;
+
+  return `<section class="dashboard-job-detail-panel${preview ? " is-preview" : ""}">
+    <div class="dashboard-job-detail-head">
+      <div class="dashboard-job-detail-title">
+        <strong class="dashboard-job-detail-heading">${escapeHtml(job?.label || jobTypeLabel(job?.type))}</strong>
+        <div class="dashboard-job-meta-line">${escapeHtml(jobTypeLabel(job?.type))}${moduleMeta ? ` | ${escapeHtml(moduleMeta)}` : ""}</div>
+      </div>
+      <span class="dashboard-job-badge status-${escapeHtml(status)}">${escapeHtml(jobStatusLabel(status))}</span>
+    </div>
+    <div class="dashboard-job-detail-summary">${escapeHtml(String(job?.message || "等待开始"))}</div>
+    <div class="dashboard-job-expanded">
+      <div class="dashboard-meta">${escapeHtml(metaText)}</div>
+      <pre class="dashboard-job-log-window">${escapeHtml(logs)}</pre>
+      <div class="card-modal-actions dashboard-job-actions">
+        <button class="ghost" data-job-cancel-id="${escapeHtml(String(job?.id || ""))}"${canCancel ? "" : " disabled"}>取消任务</button>
+      </div>
+    </div>
+  </section>`;
+}
+
 function renderTaskCenter() {
   if (!dashboardJobsList) return;
-  if (!currentTaskJobs.length) {
+  updateTaskHistoryClearButton();
+  if (!currentTaskJobs.length && !currentTaskJobsAll.length) {
     dashboardJobsList.innerHTML = '<div class="dashboard-job-empty">当前暂无后台任务</div>';
+    syncTaskCenterLayout();
     return;
   }
-  const selected = currentTaskJobs.find((job) => String(job.id) === String(selectedTaskJobId)) || currentTaskJobs[0];
+  const previewMode = !currentTaskJobs.length && currentTaskJobsAll.length > 0;
+  const listJobs = previewMode ? currentTaskJobsAll.slice(0, 8) : currentTaskJobsAll;
+  const selected = listJobs.find((job) => String(job?.id || "") === String(selectedTaskJobId)) || listJobs[0] || null;
   selectedTaskJobId = String(selected?.id || "");
-  dashboardJobsList.innerHTML = currentTaskJobs.map((job) => {
-    const selectedCls = String(job.id) === selectedTaskJobId ? " is-selected" : "";
-    const status = String(job.status || "queued");
-    const runningCls = status === "running" ? " is-running" : status === "failed" ? " is-failed" : status === "cancelled" ? " is-cancelled" : "";
-    const summary = String(job.message || "等待开始");
-    const moduleMeta = Array.isArray(job?.metadata?.modules) ? job.metadata.modules.join("+") : "";
-    const createdAt = String(job.created_at || "");
-    const logs = Array.isArray(job.logs) && job.logs.length
-      ? job.logs.join("\n")
-      : (job.error ? `ERROR: ${job.error}` : "暂无日志");
-    const canCancel = ["queued", "running"].includes(status);
-    const expanded = String(job.id) === selectedTaskJobId
-      ? `<div class="dashboard-job-expanded">
-          <div class="dashboard-meta">${escapeHtml(jobTypeLabel(job.type))} | ${escapeHtml(jobStatusLabel(status))} | 创建 ${escapeHtml(createdAt || "-")}</div>
-          <pre class="dashboard-job-log-window">${escapeHtml(logs)}</pre>
-          <div class="card-modal-actions dashboard-job-actions">
-            <button class="ghost" data-job-cancel-id="${escapeHtml(String(job.id || ""))}"${canCancel ? "" : " disabled"}>取消任务</button>
-          </div>
-        </div>`
-      : "";
-    return `<div class="dashboard-job-card${selectedCls}${runningCls}" data-job-id="${escapeHtml(String(job.id || ""))}">
-      <div class="dashboard-job-title">
-        <strong>${escapeHtml(job.label || jobTypeLabel(job.type))}</strong>
-        <span class="dashboard-job-badge status-${escapeHtml(status)}">${escapeHtml(jobStatusLabel(status))}</span>
-      </div>
-      <div class="dashboard-job-meta-line">${escapeHtml(jobTypeLabel(job.type))}${moduleMeta ? ` | ${escapeHtml(moduleMeta)}` : ""}</div>
-      <div class="dashboard-job-meta-line">${escapeHtml(summary)}</div>
-      <div class="dashboard-job-meta-line">${escapeHtml(createdAt)}</div>
-      ${expanded}
-    </div>`;
-  }).join("\n");
+  const previewNote = previewMode
+    ? '<div class="dashboard-job-list-note">当前没有运行中的任务，下面展示最近任务预览。</div>'
+    : "";
+  const cardsHtml = listJobs.map((job) => renderTaskCard(job, {
+    selected: String(job?.id || "") === selectedTaskJobId,
+    preview: previewMode,
+  })).join("\n");
+  const detailHtml = renderTaskDetailPanel(selected, {
+    preview: previewMode,
+    previewMessage: "当前没有运行中的任务，下面展示最近一条任务预览。",
+  });
+  dashboardJobsList.innerHTML = `<div class="dashboard-job-list">${previewNote}${cardsHtml}</div>${detailHtml}`;
+  syncTaskCenterLayout();
 
-  const selectedStatus = String(selected?.status || "");
-  if (["queued", "running"].includes(selectedStatus)) scheduleTaskLogFollow();
+  if (!previewMode && ["queued", "running"].includes(String(selected?.status || ""))) scheduleTaskLogFollow();
+}
+
+function syncTaskCenterLayout() {
+  if (!(dashboardJobsList instanceof HTMLElement)) return;
+  const list = dashboardJobsList.querySelector(".dashboard-job-list");
+  const detail = dashboardJobsList.querySelector(".dashboard-job-detail-panel");
+  const compactLayout = window.matchMedia("(max-width: 720px), (hover: none) and (pointer: coarse)").matches;
+  dashboardJobsList.style.removeProperty("--dashboard-job-list-height");
+  if (!(list instanceof HTMLElement) || !(detail instanceof HTMLElement) || compactLayout) {
+    list?.classList.remove("is-height-synced");
+    return;
+  }
+  const detailHeight = Math.ceil(detail.getBoundingClientRect().height);
+  if (!detailHeight) {
+    list.classList.remove("is-height-synced");
+    return;
+  }
+  dashboardJobsList.style.setProperty("--dashboard-job-list-height", `${detailHeight}px`);
+  list.classList.add("is-height-synced");
+}
+
+function getTaskJobIdFromTarget(target) {
+  if (!(target instanceof Element)) return "";
+  const card = target.closest(".dashboard-job-card[data-job-id]");
+  return String(card?.getAttribute("data-job-id") || "").trim();
+}
+
+function findTaskJob(jobId) {
+  const value = String(jobId || "").trim();
+  if (!value) return null;
+  return currentTaskJobsAll.find((item) => String(item?.id || "") === value)
+    || currentTaskJobs.find((item) => String(item?.id || "") === value)
+    || null;
+}
+
+function closeTaskJobContextMenu() {
+  dashboardJobContextMenuController.close();
+  currentTaskContextJobId = "";
+}
+
+function openTaskJobContextMenu(x, y, jobId) {
+  const value = String(jobId || "").trim();
+  if (!value) return;
+  const job = findTaskJob(value);
+  const status = String(job?.status || "");
+  currentTaskContextJobId = value;
+  if (dashboardJobContextDeleteBtn) {
+    dashboardJobContextDeleteBtn.disabled = ["queued", "running"].includes(status);
+  }
+  dashboardJobContextMenuController.open(x, y);
+}
+
+function closeTaskDeleteModal() {
+  if (DashboardSharedModal && typeof DashboardSharedModal.closeModal === "function") {
+    DashboardSharedModal.closeModal(taskDeleteModal, taskDeleteModalController);
+  } else if (taskDeleteModalController?.close) {
+    taskDeleteModalController.close();
+  } else if (taskDeleteModal) {
+    taskDeleteModal.classList.add("hidden");
+    taskDeleteModal.setAttribute("aria-hidden", "true");
+  }
+  pendingTaskDeleteMode = "";
+  pendingDeleteTaskJobId = "";
+}
+
+function taskHistoryJobs() {
+  return currentTaskJobsAll.filter((job) => !["queued", "running"].includes(String(job?.status || "")));
+}
+
+function updateTaskHistoryClearButton() {
+  if (!(dashboardJobsClearBtn instanceof HTMLButtonElement)) return;
+  const count = taskHistoryJobs().length;
+  dashboardJobsClearBtn.disabled = count < 1;
+  dashboardJobsClearBtn.title = count > 0 ? `清空 ${count} 条历史任务` : "暂无可清空的历史任务";
+}
+
+function openTaskDeleteModal(jobId) {
+  const value = String(jobId || currentTaskContextJobId || "").trim();
+  closeTaskJobContextMenu();
+  if (!value) return;
+  const job = findTaskJob(value);
+  const label = String(job?.label || jobTypeLabel(job?.type) || value);
+  const status = String(job?.status || "");
+  if (["queued", "running"].includes(status)) {
+    showAppErrorModal("删除任务失败", "运行中或排队中的任务不能直接删除，请先取消任务。");
+    return;
+  }
+  pendingTaskDeleteMode = "single";
+  pendingDeleteTaskJobId = value;
+  if (taskDeleteMeta) {
+    taskDeleteMeta.textContent = `${label} | ${jobStatusLabel(status || "completed")}`;
+  }
+  if (taskDeleteHint) {
+    taskDeleteHint.textContent = `确定删除任务“${label}”吗？删除后会从任务历史中移除该条目。`;
+  }
+  if (DashboardSharedModal && typeof DashboardSharedModal.openModal === "function") {
+    DashboardSharedModal.openModal(taskDeleteModal, taskDeleteModalController);
+  } else if (taskDeleteModalController?.open) {
+    taskDeleteModalController.open();
+  } else {
+    taskDeleteModal?.classList.remove("hidden");
+    taskDeleteModal?.setAttribute("aria-hidden", "false");
+  }
+}
+
+function openTaskHistoryClearModal() {
+  closeTaskJobContextMenu();
+  const removableJobs = taskHistoryJobs();
+  if (!removableJobs.length) {
+    showToast("当前没有可清空的任务历史");
+    return;
+  }
+  pendingTaskDeleteMode = "history";
+  pendingDeleteTaskJobId = "";
+  if (taskDeleteMeta) {
+    taskDeleteMeta.textContent = `历史任务 ${formatNum(removableJobs.length)} 条`;
+  }
+  if (taskDeleteHint) {
+    taskDeleteHint.textContent = `确定清空 ${removableJobs.length} 条历史任务吗？运行中和排队中的任务会保留。`;
+  }
+  if (DashboardSharedModal && typeof DashboardSharedModal.openModal === "function") {
+    DashboardSharedModal.openModal(taskDeleteModal, taskDeleteModalController);
+  } else if (taskDeleteModalController?.open) {
+    taskDeleteModalController.open();
+  } else {
+    taskDeleteModal?.classList.remove("hidden");
+    taskDeleteModal?.setAttribute("aria-hidden", "false");
+  }
+}
+
+async function confirmTaskDeleteAction() {
+  if (pendingTaskDeleteMode === "history") {
+    const payload = await apiDelete("/api/dashboard/jobs/clear-history");
+    closeTaskDeleteModal();
+    const removedJobs = Array.isArray(payload?.jobs) ? payload.jobs : [];
+    if (removedJobs.some((job) => String(job?.id || "") === String(selectedTaskJobId || ""))) {
+      selectedTaskJobId = "";
+    }
+    await refreshTaskCenter();
+    showToast(`已清空 ${formatNum(payload?.removed_count || removedJobs.length || 0)} 条历史任务`);
+    return;
+  }
+  const value = String(pendingDeleteTaskJobId || "").trim();
+  if (!value) {
+    showAppErrorModal("删除任务失败", "未找到要删除的任务。");
+    return;
+  }
+  await apiDelete(`/api/dashboard/jobs/${encodeURIComponent(value)}`);
+  closeTaskDeleteModal();
+  if (selectedTaskJobId === value) selectedTaskJobId = "";
+  await refreshTaskCenter();
 }
 
 function scheduleTaskLogFollow() {
   if (taskLogFollowFrame) cancelAnimationFrame(taskLogFollowFrame);
   taskLogFollowFrame = requestAnimationFrame(() => {
     taskLogFollowFrame = 0;
-    const logWindow = dashboardJobsList?.querySelector(".dashboard-job-expanded .dashboard-job-log-window");
+    const logWindow = dashboardJobsList?.querySelector(".dashboard-job-detail-panel .dashboard-job-log-window");
     if (!(logWindow instanceof HTMLElement)) return;
     logWindow.scrollTop = logWindow.scrollHeight;
     requestAnimationFrame(() => {
@@ -489,18 +971,40 @@ function scheduleTaskLogFollow() {
   });
 }
 
+window.addEventListener("resize", () => {
+  syncTaskCenterLayout();
+  dashboardTicketTrendChartInstance?.resize?.();
+});
+
 function hasRunningLibraryGraphJob() {
-  return currentTaskJobs.some((job) => {
+  return currentTaskJobsAll.some((job) => {
     const type = String(job?.type || "");
     const status = String(job?.status || "");
     return type === "library_graph_rebuild" && ["queued", "running"].includes(status);
   });
 }
 
+function hasRunningReportGenerationJob() {
+  return currentTaskJobsAll.some((job) => {
+    const type = String(job?.type || "");
+    const status = String(job?.status || "");
+    return type === "report_generation" && ["queued", "running"].includes(status);
+  });
+}
+
+function latestReportJobMarker() {
+  const jobs = currentTaskJobsAll
+    .filter((job) => String(job?.type || "") === "report_generation")
+    .sort((left, right) => String(right?.updated_at || right?.created_at || "").localeCompare(String(left?.updated_at || left?.created_at || "")));
+  const latest = jobs[0] || null;
+  if (!latest) return "";
+  return [String(latest.id || ""), String(latest.status || ""), String(latest.updated_at || latest.created_at || "")].join("|");
+}
+
 async function refreshTaskCenter() {
-  const onlyActive = dashboardJobsView !== "all";
-  const payload = await apiGet(`/api/dashboard/jobs?only_active=${onlyActive ? "true" : "false"}`);
-  currentTaskJobs = Array.isArray(payload?.jobs) ? payload.jobs : [];
+  const payload = await apiGet("/api/dashboard/jobs?only_active=false");
+  currentTaskJobsAll = Array.isArray(payload?.jobs) ? payload.jobs : [];
+  currentTaskJobs = currentTaskJobsAll.filter((job) => ["queued", "running"].includes(String(job?.status || "")));
   renderTaskCenter();
 
   const dashboardPanelActive = document.getElementById("panel-dashboard")?.classList.contains("active");
@@ -509,6 +1013,16 @@ async function refreshTaskCenter() {
     lastDashboardForceRefreshAt = now;
     refreshDashboard({ force: true, skipTaskCenter: true }).catch(() => {});
   }
+  const reportMarker = latestReportJobMarker();
+  const runningReportJob = hasRunningReportGenerationJob();
+  const reportJobChanged = !!reportMarker && reportMarker !== lastReportJobRefreshMarker;
+  const reportJobJustFinished = hadRunningReportJob && !runningReportJob;
+  if (dashboardPanelActive && (reportJobChanged || reportJobJustFinished) && (now - lastDashboardForceRefreshAt) >= 1500) {
+    lastDashboardForceRefreshAt = now;
+    refreshDashboard({ force: true, skipTaskCenter: true }).catch(() => {});
+  }
+  lastReportJobRefreshMarker = reportMarker;
+  hadRunningReportJob = runningReportJob;
 }
 
 function startTaskCenterPolling() {
@@ -610,10 +1124,16 @@ function normalizeMarkdown(source) {
 }
 
 function markdownToHtml(text) {
+  const sharedMarkdown = window.CoreMarkdown;
+  if (sharedMarkdown && typeof sharedMarkdown.render === "function") {
+    return sharedMarkdown.render(text || "");
+  }
+
   const source = normalizeMarkdown(text || "");
   const codeBlocks = [];
   const hrBlocks = [];
   const mathBlocks = [];
+  const rawAnchorBlocks = [];
 
   let protectedText = source.replace(/^-{3,}\s*$/gm, () => {
     const idx = hrBlocks.length;
@@ -639,18 +1159,32 @@ function markdownToHtml(text) {
     return `__CODE_BLOCK_${idx}__`;
   });
 
-  let html = escapeHtml(withCodeTokens);
+  const withRawAnchorTokens = withCodeTokens.replace(/<a\s+href="([^"]+)"[^>]*>([\s\S]*?)<\/a>/gi, (_m, hrefRaw, labelRaw) => {
+    const href = String(hrefRaw || "").trim().replace(/"/g, "%22");
+    if (!/^(?:https?:\/\/|doc:\/\/)/i.test(href)) return escapeHtml(_m);
+    const label = escapeHtml(String(labelRaw || "").trim());
+    const isExternal = /^https?:\/\//i.test(href);
+    const idx = rawAnchorBlocks.length;
+    rawAnchorBlocks.push(isExternal
+      ? `<a href="${href}" class="external-link" target="_blank" rel="noopener noreferrer">${label}</a>`
+      : `<a href="${href}">${label}</a>`);
+    return `__RAW_ANCHOR_BLOCK_${idx}__`;
+  });
+
+  let html = escapeHtml(withRawAnchorTokens);
   html = html.replace(/^(#{1,6})\s+(.+)$/gm, (_m, hashes, title) => `<h${hashes.length}>${title}</h${hashes.length}>`);
   html = html.replace(/^&gt;\s?(.+)$/gm, "<blockquote>$1</blockquote>");
   html = html.replace(/\*\*([^*]+)\*\*/g, "<strong>$1</strong>");
   html = html.replace(/`([^`]+)`/g, "<code>$1</code>");
   html = html.replace(/\[((?:[^\[\]]|\[[^\[\]]*\])+)]\(([^)]+)\)/g, (_m, label, url) => {
     const href = String(url || "").trim().replace(/"/g, "%22");
+    const normalizedLabel = String(label || "").trim();
+    const displayLabel = /^\d+$/.test(normalizedLabel) ? `[${normalizedLabel}]` : label;
     const isExternal = /^https?:\/\//i.test(href);
     if (isExternal) {
-      return `<a href=\"${href}\" class=\"external-link\" target=\"_blank\" rel=\"noopener noreferrer\">${label}<span class=\"ext-link-icon\" aria-hidden=\"true\">&#x2197;</span></a>`;
+      return `<a href=\"${href}\" class=\"external-link\" target=\"_blank\" rel=\"noopener noreferrer\">${displayLabel}</a>`;
     }
-    return `<a href=\"${href}\">${label}</a>`;
+    return `<a href=\"${href}\">${displayLabel}</a>`;
   });
 
   const lines = html.split("\n");
@@ -667,6 +1201,64 @@ function markdownToHtml(text) {
     const indent = m[1].replace(/\t/g, "    ").length;
     const type = /^\d+/.test(m[2]) ? "ol" : "ul";
     return { indent, type, text: m[3] };
+  }
+
+  function splitMarkdownTableRow(line) {
+    const normalizedLine = normalizeListWhitespace(stripZeroWidth(String(line || ""))).trim();
+    if (!normalizedLine || /^__HR_BLOCK_\d+__|^__CODE_BLOCK_\d+__|^__MATH_BLOCK_\d+__/.test(normalizedLine)) return null;
+    if (!normalizedLine.includes("|")) return null;
+    let value = normalizedLine;
+    if (value.startsWith("|")) value = value.slice(1);
+    if (value.endsWith("|")) value = value.slice(0, -1);
+    const cells = value.split("|").map((cell) => cell.trim());
+    return cells.length ? cells : null;
+  }
+
+  function getMarkdownTableAlignments(line) {
+    const cells = splitMarkdownTableRow(line);
+    if (!cells || !cells.length) return null;
+    const alignments = [];
+    for (const cell of cells) {
+      const compact = String(cell || "").replace(/\s+/g, "");
+      if (!/^:?-{3,}:?$/.test(compact)) return null;
+      if (compact.startsWith(":") && compact.endsWith(":")) alignments.push("center");
+      else if (compact.endsWith(":")) alignments.push("right");
+      else if (compact.startsWith(":")) alignments.push("left");
+      else alignments.push("");
+    }
+    return alignments;
+  }
+
+  function collectMarkdownTableBlock(startIdx) {
+    const headerCells = splitMarkdownTableRow(lines[startIdx]);
+    const alignments = startIdx + 1 < lines.length ? getMarkdownTableAlignments(lines[startIdx + 1]) : null;
+    if (!headerCells || !alignments || headerCells.length !== alignments.length) return null;
+    const bodyRows = [];
+    let idx = startIdx + 2;
+    while (idx < lines.length) {
+      const raw = String(lines[idx] || "");
+      if (!raw.trim()) break;
+      const cells = splitMarkdownTableRow(raw);
+      if (!cells || cells.length !== headerCells.length) break;
+      bodyRows.push(cells);
+      idx += 1;
+    }
+    return { headerCells, alignments, bodyRows, nextIdx: idx };
+  }
+
+  function renderMarkdownTable(block) {
+    const headerHtml = block.headerCells.map((cell, idx) => {
+      const align = block.alignments[idx] ? ` style="text-align:${block.alignments[idx]}"` : "";
+      return `<th${align}>${cell}</th>`;
+    }).join("");
+    const bodyHtml = block.bodyRows.map((row) => {
+      const cols = row.map((cell, idx) => {
+        const align = block.alignments[idx] ? ` style="text-align:${block.alignments[idx]}"` : "";
+        return `<td${align}>${cell}</td>`;
+      }).join("");
+      return `<tr>${cols}</tr>`;
+    }).join("\n");
+    return `<div class="markdown-table-wrap"><table class="markdown-table"><thead><tr>${headerHtml}</tr></thead><tbody>${bodyHtml}</tbody></table></div>`;
   }
 
   function collectListItems(startIdx) {
@@ -750,6 +1342,13 @@ function markdownToHtml(text) {
       continue;
     }
 
+    const tableBlock = collectMarkdownTableBlock(i);
+    if (tableBlock) {
+      out.push(renderMarkdownTable(tableBlock));
+      i = tableBlock.nextIdx;
+      continue;
+    }
+
     const meta = getListMeta(raw);
     if (meta) {
       const block = collectListItems(i);
@@ -772,6 +1371,7 @@ function markdownToHtml(text) {
   html = html.replace(/__CODE_BLOCK_(\d+)__/g, (_m, idx) => codeBlocks[Number(idx)] || "");
   html = html.replace(/__HR_BLOCK_(\d+)__/g, (_m, idx) => hrBlocks[Number(idx)] || "");
   html = html.replace(/__MATH_BLOCK_(\d+)__/g, (_m, idx) => mathBlocks[Number(idx)] || "");
+  html = html.replace(/__RAW_ANCHOR_BLOCK_(\d+)__/g, (_m, idx) => rawAnchorBlocks[Number(idx)] || "");
   return html;
 }
 
@@ -807,11 +1407,26 @@ function setMainTab(name) {
   const panelDashboard = document.getElementById("panel-dashboard");
   const panelTickets = document.getElementById("panel-tickets");
   const panelBenchmark = document.getElementById("panel-benchmark");
+  const panelAuthorization = document.getElementById("panel-authorization");
   if (panelHome) panelHome.classList.toggle("active", name === "home");
   if (panelAgent) panelAgent.classList.toggle("active", name === "agent");
   if (panelDashboard) panelDashboard.classList.toggle("active", name === "dashboard");
   if (panelTickets) panelTickets.classList.toggle("active", name === "tickets");
   if (panelBenchmark) panelBenchmark.classList.toggle("active", name === "benchmark");
+  if (panelAuthorization) panelAuthorization.classList.toggle("active", name === "authorization");
+  if (name === "dashboard") {
+    scheduleDashboardChartResize();
+  }
+}
+
+function scheduleDashboardChartResize() {
+  const resize = () => dashboardTicketTrendChartInstance?.resize?.();
+  resize();
+  requestAnimationFrame(() => {
+    resize();
+    setTimeout(resize, 80);
+    setTimeout(resize, 220);
+  });
 }
 
 window.addEventListener("resize", () => {
@@ -851,6 +1466,125 @@ function buildStatCard(title, value, sub = "", role = "", state = "") {
     </article>
   `;
 }
+
+function cloneJsonValue(value) {
+  try {
+    return JSON.parse(JSON.stringify(value));
+  } catch (_err) {
+    return null;
+  }
+}
+
+function loadDashboardCache() {
+  try {
+    const raw = window.localStorage.getItem(DASHBOARD_CACHE_STORAGE_KEY);
+    if (!raw) return null;
+    const parsed = JSON.parse(raw);
+    return parsed && typeof parsed === "object" ? parsed : null;
+  } catch (_err) {
+    return null;
+  }
+}
+
+function saveDashboardCache(data) {
+  try {
+    if (!data || typeof data !== "object") return;
+    const existing = loadDashboardCache();
+    const merged = mergeDashboardData(existing, data) || cloneJsonValue(data);
+    if (!merged || typeof merged !== "object") return;
+    if (!hasDashboardDetailSnapshot(merged)) return;
+    window.localStorage.setItem(DASHBOARD_CACHE_STORAGE_KEY, JSON.stringify(merged));
+  } catch (_err) {
+    // Ignore localStorage failures and keep the in-memory snapshot.
+  }
+}
+
+function hasMeaningfulDashboardValue(value) {
+  if (value == null) return false;
+  if (Array.isArray(value)) return value.length > 0;
+  if (typeof value === "object") return Object.keys(value).length > 0;
+  return true;
+}
+
+function mergeDashboardData(previous, incoming) {
+  const next = cloneJsonValue(incoming);
+  if (!next || typeof next !== "object") return null;
+  if (!next.is_core || !previous || typeof previous !== "object") return next;
+
+  const previousSnapshot = cloneJsonValue(previous) || {};
+  const merged = { ...previousSnapshot, ...next };
+  [
+    "retrieval_latency",
+    "cache_stats",
+    "retrieval_by_profile",
+    "retrieval_by_search_mode",
+    "agent_by_profile",
+    "agent_by_search_mode",
+    "agent_by_query_type",
+    "rerank_quality",
+    "missing_queries_last_30d",
+    "chat_feedback",
+    "ticket_weekly_stats",
+    "agent_wall_clock",
+    "runtime_data",
+  ].forEach((key) => {
+    if (!hasMeaningfulDashboardValue(next[key]) && hasMeaningfulDashboardValue(previous[key])) {
+      merged[key] = cloneJsonValue(previous[key]);
+    }
+  });
+  return merged;
+}
+
+function hasDashboardDetailSnapshot(data) {
+  if (!data || typeof data !== "object") return false;
+  const latencyStages = data?.retrieval_latency?.stages;
+  if (latencyStages && typeof latencyStages === "object" && Object.keys(latencyStages).length) return true;
+  if (hasMeaningfulDashboardValue(data?.cache_stats)) return true;
+  if (hasMeaningfulDashboardValue(data?.ticket_weekly_stats)) return true;
+  if (hasMeaningfulDashboardValue(data?.agent_wall_clock)) return true;
+  if (hasMeaningfulDashboardValue(data?.runtime_data)) return true;
+  if (hasMeaningfulDashboardValue(data?.rerank_quality)) return true;
+  return false;
+}
+
+function formatDateTimeLabel(value) {
+  const text = String(value || "").trim();
+  if (!text) return "";
+  return text.replace("T", " ").slice(0, 16);
+}
+
+function selectedDataBackupApps() {
+  if (window.NavDashboardOverviewMeta?.selectedDataBackupApps) {
+    return window.NavDashboardOverviewMeta.selectedDataBackupApps(document);
+  }
+  const selected = Array.from(document.querySelectorAll("input[name='data-backup-app']:checked"))
+    .map((input) => String(input.value || "").trim())
+    .filter(Boolean);
+  return selected.length ? selected : ["library_tracker", "property", "journey"];
+}
+
+function renderDataBackupPanel(data) {
+  const summary = data?.data_backups || {};
+  currentDataBackupSummary = summary;
+  if (window.NavDashboardOverviewMeta?.renderDataBackupPanel) {
+    window.NavDashboardOverviewMeta.renderDataBackupPanel(summary, {
+      metaElement: dataBackupMeta,
+      summaryElement: dataBackupSummary,
+      formatDateTimeLabel,
+      escapeHtml,
+      formatSizeValue,
+    });
+    return;
+  }
+  if (dataBackupMeta) {
+    const latestAt = formatDateTimeLabel(summary.latest_backup_at);
+    dataBackupMeta.textContent = latestAt ? `最近备份: ${latestAt}` : "最近备份: 暂无";
+  }
+  if (dataBackupSummary) {
+    dataBackupSummary.textContent = `备份目录: ${String(summary.backup_dir_relative || summary.backup_dir || "-")}`;
+  }
+}
+
 
 function formatDuration(seconds) {
   const n = Number(seconds);
@@ -1112,7 +1846,7 @@ function renderDashboardLatencyTable(data) {
 
   // Display order and Chinese labels; elapsed_seconds pinned to end as end-to-end
   const STAGE_ORDER = [
-    { key: "total",                    label: "向量召回" },
+    { key: "total",                    label: "RAG 检索总时长" },
     { key: "rerank_seconds",           label: "模型重排" },
     { key: "context_assembly_seconds", label: "上下文组装" },
     { key: "web_search_seconds",       label: "网络检索" },
@@ -1274,7 +2008,7 @@ function renderDashboardObservabilityTable(data) {
         <th>Embed 缓存命中率</th>
         <th>问题重写率</th>
         <th>端到端用时</th>
-        <th>召回用时</th>
+        <th>检索用时</th>
       </tr>
     </thead>
     <tbody>
@@ -1299,6 +2033,11 @@ function renderDashboardStartupLogs(data) {
 
 function renderDashboardError(err) {
   const text = `加载失败: ${String(err || "unknown error")}`;
+  renderDashboardLoadStatus(currentDashboardData, text);
+  if (currentDashboardData) {
+    if (dashboardGeneratedAt) dashboardGeneratedAt.textContent = `${text}，当前显示缓存数据`;
+    return;
+  }
   if (dashboardGrid) {
     dashboardGrid.innerHTML = `<div class="dashboard-error">${escapeHtml(text)}</div>`;
   }
@@ -1361,6 +2100,23 @@ function loadTicketsPrefill() {
   }
 }
 
+function formatDateInputValue(date) {
+  const year = date.getFullYear();
+  const month = String(date.getMonth() + 1).padStart(2, "0");
+  const day = String(date.getDate()).padStart(2, "0");
+  return `${year}-${month}-${day}`;
+}
+
+function getDefaultTicketDateRange() {
+  const createdToDate = new Date();
+  const createdFromDate = new Date(createdToDate);
+  createdFromDate.setDate(createdToDate.getDate() - 6);
+  return {
+    created_from: formatDateInputValue(createdFromDate),
+    created_to: formatDateInputValue(createdToDate),
+  };
+}
+
 function loadBenchmarkPrefill() {
   try {
     const raw = document.getElementById("benchmark-prefill-data")?.textContent || "";
@@ -1371,13 +2127,76 @@ function loadBenchmarkPrefill() {
   }
 }
 
+function markDashboardFreshness(data) {
+  if (!data || data.is_core) return;
+  const mode = String(data?.overview_status?.mode || "").trim();
+  if (mode && mode !== "full") return;
+  dashboardHasFullOverview = true;
+  dashboardLastFullRefreshAt = Date.now();
+}
+
+function isDashboardFullRefreshStale() {
+  if (!dashboardHasFullOverview || !dashboardLastFullRefreshAt) return true;
+  return (Date.now() - dashboardLastFullRefreshAt) > DASHBOARD_FULL_REFRESH_TTL_MS;
+}
+
+function ensureDashboardBackgroundTasks() {
+  startTaskCenterPolling();
+  scheduleStartupPollingIfNeeded();
+}
+
+function summarizeOverviewErrors(status) {
+  const errors = Array.isArray(status?.errors) ? status.errors : [];
+  if (!errors.length) return "";
+  return errors
+    .map((item) => {
+      const section = String(item?.section || "unknown").trim();
+      const message = String(item?.message || item?.type || "unknown error").trim();
+      return `${section}: ${message}`;
+    })
+    .join(" | ");
+}
+
+function renderDashboardLoadStatus(data, explicitError = "") {
+  if (!dashboardLoadStatus) return;
+  const directError = String(explicitError || "").trim();
+  const status = data?.overview_status && typeof data.overview_status === "object" ? data.overview_status : {};
+  const mode = String(status.mode || "").trim();
+  const baseMessage = String(status.message || "").trim();
+  const errorSummary = summarizeOverviewErrors(status);
+  let level = "info";
+  let text = "";
+
+  if (directError) {
+    level = "error";
+    text = `详细统计刷新失败：${directError}`;
+  } else if (mode === "core") {
+    text = baseMessage || "当前仅显示核心指标，详细统计补全中。";
+  } else if (mode === "degraded_full") {
+    level = "warning";
+    text = `${baseMessage || "部分详细统计加载失败。"}${errorSummary ? ` ${errorSummary}` : ""}`.trim();
+  } else if (mode === "core_fallback" || mode === "prefill_error") {
+    level = "error";
+    text = `${baseMessage || "详细统计加载失败。"}${errorSummary ? ` ${errorSummary}` : ""}`.trim();
+  }
+
+  dashboardLoadStatus.textContent = text;
+  dashboardLoadStatus.dataset.level = level;
+  dashboardLoadStatus.classList.toggle("hidden", !text);
+}
+
 // ── paintDashboardFromData ─────────────────────────────────────────────────
 // Single source of truth for turning a data dict (prefill or network fetch)
 // into visible DOM content. Both bootstrapDashboardTab() and refreshDashboard()
 // call this so prefill + fresh data produce an identical layout.
-function paintDashboardFromData(data, { skipTaskCenter = false } = {}) {
-  const rag = data?.rag || {};
-  const library = data?.library || {};
+function paintDashboardFromData(data, { skipTaskCenter = false, skipTicketInsights = false, markFreshness = true } = {}) {
+  const mergedData = mergeDashboardData(currentDashboardData, data) || {};
+  currentDashboardData = mergedData;
+  saveDashboardCache(mergedData);
+
+  const rag = mergedData?.rag || {};
+  const library = mergedData?.library || {};
+  const aliasProposal = library?.alias_proposal || {};
   const libraryGraphQuality = library?.graph_quality || {};
   const libraryCoverageRate = clampRate(
     libraryGraphQuality.item_coverage_rate ??
@@ -1385,22 +2204,24 @@ function paintDashboardFromData(data, { skipTaskCenter = false } = {}) {
     safeRatio(library.graph_nodes, library.total_items)
   );
   const isolatedNodeRate = clampRate(libraryGraphQuality.isolated_node_rate);
-  const apiUsage = data?.api_usage || {};
-  const agent = data?.agent || {};
-  const ragQa = data?.rag_qa || {};
-  const startup = data?.startup || {};
-  const latency = data?.retrieval_latency || {};
-  const cacheStats = data?.cache_stats || {};
-  const rerankQuality = data?.rerank_quality || {};
+  const apiUsage = mergedData?.api_usage || {};
+  const agent = mergedData?.agent || {};
+  const ragQa = mergedData?.rag_qa || {};
+  const startup = mergedData?.startup || {};
+  const latency = mergedData?.retrieval_latency || {};
+  const cacheStats = mergedData?.cache_stats || {};
+  const rerankQuality = mergedData?.rerank_quality || {};
   const ragRerank = rerankQuality.rag || {};
   const agentRerank = rerankQuality.agent || {};
-  const missingQueries = data?.missing_queries_last_30d || {};
-  const agentWallClock = data?.agent_wall_clock || {};
-  const runtimeData = data?.runtime_data || {};
+  const missingQueries = mergedData?.missing_queries_last_30d || {};
+  const agentWallClock = mergedData?.agent_wall_clock || {};
+  const runtimeData = mergedData?.runtime_data || {};
+  const dataBackups = mergedData?.data_backups || {};
   lastStartupStatus = String(startup.status || "unknown");
   lastApiUsage = apiUsage;
   currentRuntimeDataSummary = runtimeData;
-  const warnings = Array.isArray(data?.warnings) ? data.warnings : [];
+  currentDataBackupSummary = dataBackups;
+  const warnings = Array.isArray(mergedData?.warnings) ? mergedData.warnings : [];
   const health = buildDashboardHealthFlags({
     rag,
     library,
@@ -1417,18 +2238,16 @@ function paintDashboardFromData(data, { skipTaskCenter = false } = {}) {
     buildStatCard("书影音游戏总条目", formatNum(library.total_items), `今年条目 ${formatNum(library.this_year_items)}`),
 
     buildStatCard("RAG Graph 节点数", formatNum(rag.graph_nodes), `边数 ${formatNum(rag.graph_edges)}`),
-    buildStatCard("Library Graph 节点数", formatNum(library.graph_nodes), `边数 ${formatNum(library.graph_edges)} | 覆盖 ${formatRate(libraryCoverageRate)} | 孤点 ${formatRate(isolatedNodeRate)}`, "library-graph-summary", unhealthyState(health.libraryGraphScale)),
+    buildStatCard("Library Graph 节点数", formatNum(library.graph_nodes), `边数 ${formatNum(library.graph_edges)} | 覆盖 ${formatRate(libraryCoverageRate)}`, "library-graph-summary", unhealthyState(health.libraryGraphScale)),
 
-    buildStatCard("RAG 平均节点数", `${rag.nodes_per_doc != null ? Number(rag.nodes_per_doc).toFixed(2) : "—"}`, `每节点平均边数 ${rag.edges_per_node != null ? Number(rag.edges_per_node).toFixed(2) : "—"}`, "", unhealthyState(health.ragGraphDensity)),
-    buildStatCard("RAG 待重建文档", formatNum(rag.changed_pending), rag.changed_pending > 0 ? "等待后台同步" : "已全部同步", "rag-changed-pending", unhealthyState(health.ragPending)),
-
+    //buildStatCard("RAG 平均节点数", `${rag.nodes_per_doc != null ? Number(rag.nodes_per_doc).toFixed(2) : "—"}`, `每节点平均边数 ${rag.edges_per_node != null ? Number(rag.edges_per_node).toFixed(2) : "—"}`, "", unhealthyState(health.ragGraphDensity)),
     buildStatCard("本月 Tavily API 调用", formatNum(apiUsage.month_web_search_calls), `今日 ${formatNum(apiUsage.today_web_search)} / 限额 ${formatNum(apiUsage.daily_web_limit)}`, "web-search-usage", unhealthyState(health.webUsage)),
     buildStatCard("本月 DeepSeek API 调用", formatNum(apiUsage.month_deepseek_calls), `今日 ${formatNum(apiUsage.today_deepseek)} / 限额 ${formatNum(apiUsage.daily_deepseek_limit)}`, "deepseek-usage", unhealthyState(health.deepseekUsage)),
 
     buildStatCard("Agent 消息总数", formatNum(agent.message_count), `会话数 ${formatNum(agent.session_count)}`),
     buildStatCard("RAG Q&A 消息总数", formatNum(ragQa.message_count), `会话数 ${formatNum(ragQa.session_count)}`),
 
-    buildStatCard("向量召回均值", formatDuration(latency.stages?.total?.avg), `近 ${formatNum(latency.stages?.total?.count)} 次 | p50 ${formatDuration(latency.stages?.total?.p50)}`, "", unhealthyState(health.vectorRecall)),
+    buildStatCard("RAG 检索总时长均值", formatDuration(latency.stages?.total?.avg), `近 ${formatNum(latency.stages?.total?.count)} 次 | p50 ${formatDuration(latency.stages?.total?.p50)}`, "", unhealthyState(health.vectorRecall)),
     buildStatCard("RAG 模型重排均值", formatDuration(latency.stages?.rerank_seconds?.avg), `近 ${formatNum(latency.stages?.rerank_seconds?.count)} 次`, "", unhealthyState(health.rerankLatency)),
 
     buildStatCard("检索分位 p50", `${formatDuration(latency.stages?.total?.p50)}`, `p95 ${formatDuration(latency.stages?.total?.p95)} | p99 ${formatDuration(latency.stages?.total?.p99)}`, "", unhealthyState(health.retrievalPercentiles)),
@@ -1444,94 +2263,114 @@ function paintDashboardFromData(data, { skipTaskCenter = false } = {}) {
     buildStatCard("RAG 未命中率", formatRate(cacheStats.rag_no_context_rate), `Agent 未命中率 ${formatRate(cacheStats.agent_no_context_rate)}`, "", unhealthyState(health.noContext)),
     
     buildStatCard("月检索缺失问题数", formatNum(missingQueries.count), "长按查看导出", "missing-queries-summary"),
-    buildStatCard("聊天反馈数", formatNum(data?.chat_feedback?.count), "长按查看导出", "feedback-summary"),
+    buildStatCard("聊天反馈数", formatNum(mergedData?.chat_feedback?.count), "长按查看导出", "feedback-summary"),
+
+    buildStatCard("RAG 待重建文档", formatNum(rag.changed_pending), rag.changed_pending > 0 ? "等待后台同步" : "已全部同步", "rag-changed-pending", unhealthyState(health.ragPending)),
+    buildStatCard("待审核媒体同义词", formatNum(aliasProposal.pending_count), "长按查看待审核列表", "library-alias-proposal-summary"),
     
     buildStatCard("运行时数据", formatSizeValue(runtimeData.total_size_bytes), `非空 ${formatNum(runtimeData.nonzero_items)} 项 | 长按查看`, "runtime-data-summary"),
   ];
 
   // Store warnings for modal
   currentWarnings = warnings.filter(w => !dismissedWarnings.has(w));
-  currentWarningsTimestamp = String(data?.generated_at || "").trim();
+  currentWarningsTimestamp = String(mergedData?.generated_at || "").trim();
 
   cards.push(buildStatCard("系统告警", formatNum(currentWarnings.length), currentWarnings.length > 0 ? currentWarnings.slice(0, 2).join(" | ") : "无告警", "warnings-summary", unhealthyState(health.warnings)));
+
+  renderDashboardNotifications(mergedData);
 
   if (dashboardGrid) {
     dashboardGrid.innerHTML = cards.join("\n");
   }
 
-  renderDashboardLatencyTable(data);
-  renderDashboardObservabilityTable(data);
-  renderDashboardStartupLogs(data);
-  renderDashboardTicketTrend(data?.ticket_weekly_stats || {});
+  renderDashboardLatencyTable(mergedData);
+  renderDashboardObservabilityTable(mergedData);
+  renderDashboardStartupLogs(mergedData);
+  renderDataBackupPanel(mergedData);
+  if (!skipTicketInsights) {
+    renderDashboardTicketTrend(mergedData?.ticket_weekly_stats || {});
+  }
   if (!skipTaskCenter) refreshTaskCenter().catch(() => {});
 
-  const generated = String(data?.generated_at || "").trim();
-  const month = String(data?.month || "").trim();
-  const deployed = String(data?.deployed_at || "").trim();
+  const generated = String(mergedData?.generated_at || "").trim();
+  const month = String(mergedData?.month || "").trim();
+  const deployed = formatDateTimeLabel(mergedData?.deployed_at);
   if (dashboardGeneratedAt) {
     dashboardGeneratedAt.textContent = `统计月份: ${month || "-"} | 更新时间: ${generated || "-"}`;
   }
-  if (dashboardDeployTime && deployed) {
-    dashboardDeployTime.textContent = `部署时间: ${deployed}`;
+  if (dashboardDeployTime) {
+    dashboardDeployTime.textContent = `部署时间: ${deployed || "-"}`;
   }
+  if (dashboardBackupTime) {
+    dashboardBackupTime.textContent = ` | ${window.NavDashboardOverviewMeta?.buildLatestBackupText
+      ? window.NavDashboardOverviewMeta.buildLatestBackupText(dataBackups, formatDateTimeLabel, { includeName: false, emptyText: "最近备份: 暂无" })
+      : (formatDateTimeLabel(dataBackups?.latest_backup_at) ? `最近备份: ${formatDateTimeLabel(dataBackups.latest_backup_at)}` : "最近备份: 暂无")}`;
+  }
+  renderDashboardLoadStatus(mergedData);
+  if (markFreshness) markDashboardFreshness(mergedData);
 }
 
-async function refreshDashboard({ force = false, skipTaskCenter = false, coreOnly = false } = {}) {
-  if (dashboardGeneratedAt) dashboardGeneratedAt.textContent = "正在拉取最新状态...";
-  if (!coreOnly && dashboardRefreshBtn) dashboardRefreshBtn.disabled = true;
-  dashboardRefreshInFlight = true;
-  try {
-    const url = coreOnly
-      ? "/api/dashboard/overview/core"
-      : force ? "/api/dashboard/overview?force=true" : "/api/dashboard/overview";
-    const data = await apiGet(url);
-    paintDashboardFromData(data, { skipTaskCenter });
-  } catch (err) {
-    renderDashboardError(err);
-    if (dashboardGeneratedAt) dashboardGeneratedAt.textContent = coreOnly ? "核心数据加载失败" : "统计加载失败";
-  } finally {
-    dashboardRefreshInFlight = false;
-    if (!coreOnly && dashboardRefreshBtn) dashboardRefreshBtn.disabled = false;
-  }
+const dashboardOverviewBootstrap = DashboardOverviewBootstrapModule?.createOverviewBootstrap?.({
+  apiGet,
+  apiPost,
+  escapeHtml,
+  dashboardInformationNotices,
+  dashboardGeneratedAt,
+  dashboardRefreshBtn,
+  fullOverviewTimeoutMs: DASHBOARD_FULL_OVERVIEW_TIMEOUT_MS,
+  paintDashboardFromData,
+  renderDashboardError,
+  loadDashboardCache,
+  loadDashboardPrefill,
+  hasDashboardDetailSnapshot,
+  ensureDashboardBackgroundTasks,
+  getDashboardState: () => dashboardState,
+  patchDashboardState: (patch) => {
+    if (!patch || typeof patch !== "object") return;
+    Object.assign(dashboardState, patch);
+  },
+  getDashboardRefreshInFlight: () => dashboardRefreshInFlight,
+  setDashboardRefreshInFlight: (value) => {
+    dashboardRefreshInFlight = Boolean(value);
+  },
+  getCurrentDashboardData: () => currentDashboardData,
+  hasFullOverview: () => dashboardHasFullOverview,
+  isFullRefreshStale: () => isDashboardFullRefreshStale(),
+}) || {
+  hydrateInitialNotifications() {},
+  renderDashboardNotifications() {},
+  dismissDashboardNotification: async () => {},
+  refreshDashboard: async () => null,
+  hydrateDashboardShellFromStoredData: () => false,
+  prewarmDashboardOverview() {},
+  bootstrapDashboardTab: async () => {},
+};
+
+function renderDashboardNotifications(data) {
+  return dashboardOverviewBootstrap.renderDashboardNotifications(data);
+}
+
+async function dismissDashboardNotification(key) {
+  return dashboardOverviewBootstrap.dismissDashboardNotification(key);
+}
+
+async function refreshDashboard(options = {}) {
+  return dashboardOverviewBootstrap.refreshDashboard(options);
+}
+
+function hydrateDashboardShellFromStoredData() {
+  return dashboardOverviewBootstrap.hydrateDashboardShellFromStoredData();
+}
+
+function prewarmDashboardOverview() {
+  return dashboardOverviewBootstrap.prewarmDashboardOverview();
 }
 
 async function bootstrapDashboardTab() {
-  // Prevent concurrent fetches; allow retry after error (loaded stays false).
-  if (dashboardState.loading) return;
-
-  // First visit: paint SSR/prefill immediately for zero-wait visible content.
-  if (!dashboardState.loaded) {
-    try {
-      const prefill = loadDashboardPrefill();
-      if (prefill) paintDashboardFromData(prefill, { skipTaskCenter: true });
-    } catch (paintErr) {
-      console.warn("[dashboard] prefill paint failed:", paintErr);
-    }
-    try { if (window.__navBoot) window.__navBoot.mark("dashboard-painted"); } catch (_) {}
-  }
-
-  // Fire network refresh (non-blocking; prefill already visible).
-  if (!dashboardRefreshInFlight) {
-    dashboardState.loading = true;
-    refreshDashboard({ coreOnly: true })
-      .then(() => {
-        dashboardState.loaded = true;
-        dashboardState.error = null;
-        try { if (window.__navBoot) window.__navBoot.mark("dashboard-refreshed"); } catch (_) {}
-        refreshDashboard({ force: false }).catch((err) => { console.warn("[dashboard] detail refresh failed:", err); });
-        refreshTaskCenter().catch((err) => { console.warn("[dashboard] task center refresh failed:", err); });
-        startTaskCenterPolling();
-        scheduleStartupPollingIfNeeded();
-      })
-      .catch((err) => {
-        dashboardState.error = err;
-        dashboardState.loaded = false;
-        console.warn("[dashboard] core refresh failed:", err);
-        renderDashboardError(err);
-      })
-      .finally(() => { dashboardState.loading = false; });
-  }
+  return dashboardOverviewBootstrap.bootstrapDashboardTab();
 }
+
+dashboardOverviewBootstrap.hydrateInitialNotifications();
 
 function stopStartupPolling() {
   if (startupPollInterval) {
@@ -1545,12 +2384,12 @@ function scheduleStartupPollingIfNeeded() {
   if (lastStartupStatus === "ready" || !lastStartupStatus) return;
   startupPollInterval = setInterval(async () => {
     try {
-      const data = await apiGet("/api/startup/status");
+      const data = await apiGet("/api/startup/status?fresh=1");
       const status = String(data?.status || "");
       if (status === "ready") {
         stopStartupPolling();
         lastStartupStatus = status;
-        await refreshDashboard();
+        await refreshDashboard({ force: true });
       } else if (status !== lastStartupStatus) {
         lastStartupStatus = status;
       }
@@ -1694,37 +2533,98 @@ function closeFeedbackDetailModal() {
   currentFeedbackDetailItem = null;
 }
 
-function renderDashboardTicketTrend(stats) {
+function normalizeDashboardTicketTrendMode(mode) {
+  const value = String(mode || "").trim().toLowerCase();
+  if (value === "day" || value === "month") return value;
+  return "week";
+}
+
+function dashboardTicketTrendModeLabel(mode) {
+  if (mode === "day") return "日";
+  if (mode === "month") return "月";
+  return "周";
+}
+
+function dashboardPrioritySeriesLabel(priority) {
+  const key = String(priority || "").trim().toLowerCase();
+  return `优先级 ${key || "unknown"}`;
+}
+
+function dashboardPrioritySeriesColor(priority) {
+  const key = String(priority || "").trim().toLowerCase();
+  const colors = {
+    critical: "#ff6b6b",
+    high: "#f59f00",
+    medium: "#66d9ef",
+  };
+  return colors[key] || "#a5ab9e";
+}
+
+function resolveDashboardTicketTrendSeries(stats, mode) {
+  const trends = stats?.trends && typeof stats.trends === "object" ? stats.trends : {};
+  const normalized = normalizeDashboardTicketTrendMode(mode);
+  const fromTrends = Array.isArray(trends?.[normalized]) ? trends[normalized] : [];
+  if (fromTrends.length) return fromTrends;
+  if (normalized === "week" && Array.isArray(stats?.weeks)) return stats.weeks;
+  return [];
+}
+
+function ensureDashboardTicketTrendChartInstance() {
   if (!dashboardTicketTrendChart) return;
-  const weeks = Array.isArray(stats?.weeks) ? stats.weeks : [];
-  const summary = stats?.summary && typeof stats.summary === "object" ? stats.summary : {};
-  const statusCounts = stats?.status_counts && typeof stats.status_counts === "object" ? stats.status_counts : {};
-  const priorityCounts = stats?.priority_counts && typeof stats.priority_counts === "object" ? stats.priority_counts : {};
+  if (typeof window.echarts === "undefined" || !window.echarts?.init) return null;
+  const canvas = dashboardTicketTrendChart.querySelector(".ticket-trend-echart-canvas");
+  if (!(canvas instanceof HTMLElement)) return null;
+  if (dashboardTicketTrendChartInstance) {
+    const currentDom = dashboardTicketTrendChartInstance.getDom?.();
+    if (currentDom === canvas) return dashboardTicketTrendChartInstance;
+    dashboardTicketTrendChartInstance.dispose?.();
+    dashboardTicketTrendChartInstance = null;
+  }
+  dashboardTicketTrendChartInstance = window.echarts.init(canvas, "dark");
+  return dashboardTicketTrendChartInstance;
+}
+
+function renderDashboardTicketTrend(stats, options = {}) {
+  if (!dashboardTicketTrendChart) return;
+  if (stats && typeof stats === "object") {
+    currentDashboardTicketTrendStats = stats;
+  }
+  const sourceStats = currentDashboardTicketTrendStats && typeof currentDashboardTicketTrendStats === "object"
+    ? currentDashboardTicketTrendStats
+    : {};
+  const requestedMode = normalizeDashboardTicketTrendMode(options?.mode || dashboardTicketTrendModeSelect?.value || dashboardTicketTrendMode);
+  const fallbackModes = [requestedMode, "week", "day", "month"];
+  let mode = requestedMode;
+  let series = [];
+  for (const candidate of fallbackModes) {
+    const rows = resolveDashboardTicketTrendSeries(sourceStats, candidate);
+    if (rows.length) {
+      mode = candidate;
+      series = rows;
+      break;
+    }
+  }
+  dashboardTicketTrendMode = mode;
+  if (dashboardTicketTrendModeSelect) {
+    dashboardTicketTrendModeSelect.value = mode;
+  }
+
+  const weeks = series;
+  const summary = sourceStats?.summary && typeof sourceStats.summary === "object" ? sourceStats.summary : {};
+  const statusCounts = sourceStats?.status_counts && typeof sourceStats.status_counts === "object" ? sourceStats.status_counts : {};
+  const priorityCounts = sourceStats?.priority_counts && typeof sourceStats.priority_counts === "object" ? sourceStats.priority_counts : {};
   if (!weeks.length) {
     if (dashboardTicketSummaryMeta) dashboardTicketSummaryMeta.textContent = "暂无 ticket 统计";
     if (dashboardTicketSummaryBody) dashboardTicketSummaryBody.innerHTML = '<div class="ticket-trend-empty">暂无统计数据</div>';
-    if (dashboardTicketTrendMeta) dashboardTicketTrendMeta.textContent = "暂无 ticket 周统计";
+    if (dashboardTicketTrendMeta) dashboardTicketTrendMeta.textContent = "暂无 ticket 趋势统计";
     dashboardTicketTrendChart.innerHTML = '<div class="ticket-trend-empty">暂无图表数据</div>';
     return;
   }
 
-  const submitted = weeks.map((item) => Number(item?.submitted || 0));
-  const closed = weeks.map((item) => Number(item?.closed || 0));
-  const maxValue = Math.max(1, ...submitted, ...closed);
-  const width = 620;
-  const height = 180;
-  const padLeft = 40;
-  const padRight = 18;
-  const padTop = 12;
-  const padBottom = 34;
-  const plotWidth = width - padLeft - padRight;
-  const plotHeight = height - padTop - padBottom;
-  const xFor = (index) => padLeft + (weeks.length === 1 ? plotWidth / 2 : (plotWidth * index) / (weeks.length - 1));
-  const yFor = (value) => padTop + plotHeight - (plotHeight * value) / maxValue;
-  const submittedPoints = weeks.map((item, index) => `${xFor(index)},${yFor(Number(item?.submitted || 0))}`).join(" ");
-  const closedPoints = weeks.map((item, index) => `${xFor(index)},${yFor(Number(item?.closed || 0))}`).join(" ");
-  const yTicks = Array.from(new Set([0, Math.ceil(maxValue / 2), maxValue])).sort((left, right) => left - right);
-  const xLabelStep = weeks.length > 8 ? 2 : 1;
+  const priorityLegendKeys = ["critical", "high", "medium"];
+  const modeLabel = dashboardTicketTrendModeLabel(mode);
+  const firstLabel = String(weeks[0]?.label || weeks[0]?.bucket_start || "");
+  const lastLabel = String(weeks[weeks.length - 1]?.label || weeks[weeks.length - 1]?.bucket_start || "");
 
   const renderBreakdown = (counts) => Object.entries(counts)
     .sort((left, right) => Number(right[1] || 0) - Number(left[1] || 0))
@@ -1758,30 +2658,72 @@ function renderDashboardTicketTrend(stats) {
   }
 
   if (dashboardTicketTrendMeta) {
-    dashboardTicketTrendMeta.textContent = `近 ${weeks.length} 周 | 每周提交趋势 | 每周关闭趋势（仅 closed）`;
+    dashboardTicketTrendMeta.textContent = `${modeLabel}趋势 | ${firstLabel || "-"} 到 ${lastLabel || "-"} | 优先级堆叠面积图`;
   }
 
   dashboardTicketTrendChart.innerHTML = `
-    <div class="ticket-trend-legend">
-      <span class="ticket-trend-legend-item"><i class="ticket-trend-legend-swatch submitted"></i>每周提交</span>
-      <span class="ticket-trend-legend-item"><i class="ticket-trend-legend-swatch closed"></i>每周关闭</span>
-    </div>
-    <svg class="ticket-trend-svg" viewBox="0 0 ${width} ${height}" role="img" aria-label="每周 Ticket 提交和关闭趋势图">
-      ${yTicks.map((tick) => `
-        <line class="ticket-trend-grid" x1="${padLeft}" y1="${yFor(tick)}" x2="${width - padRight}" y2="${yFor(tick)}"></line>
-        <text class="ticket-trend-label" x="${padLeft - 8}" y="${yFor(tick) + 4}" text-anchor="end">${tick}</text>
-      `).join("")}
-      <line class="ticket-trend-axis" x1="${padLeft}" y1="${padTop}" x2="${padLeft}" y2="${padTop + plotHeight}"></line>
-      <line class="ticket-trend-axis" x1="${padLeft}" y1="${padTop + plotHeight}" x2="${width - padRight}" y2="${padTop + plotHeight}"></line>
-      <polyline class="ticket-trend-line submitted" points="${submittedPoints}"></polyline>
-      <polyline class="ticket-trend-line closed" points="${closedPoints}"></polyline>
-      ${weeks.map((item, index) => `
-        <circle class="ticket-trend-dot submitted" cx="${xFor(index)}" cy="${yFor(Number(item?.submitted || 0))}" r="3.5"></circle>
-        <circle class="ticket-trend-dot closed" cx="${xFor(index)}" cy="${yFor(Number(item?.closed || 0))}" r="3.5"></circle>
-        ${index % xLabelStep === 0 || index === weeks.length - 1 ? `<text class="ticket-trend-label" x="${xFor(index)}" y="${height - 10}" text-anchor="middle">${escapeHtml(String(item?.label || ""))}</text>` : ""}
-      `).join("")}
-    </svg>
+    <div class="ticket-trend-echart-canvas" role="img" aria-label="Ticket ${modeLabel}趋势图（优先级堆叠面积）"></div>
   `;
+
+  const chart = ensureDashboardTicketTrendChartInstance();
+  if (!chart) {
+    dashboardTicketTrendChart.innerHTML = '<div class="ticket-trend-empty">图表组件未加载，无法渲染趋势图。</div>';
+    return;
+  }
+
+  const labels = weeks.map((item) => String(item?.label || item?.bucket_start || "-"));
+  chart.setOption({
+    backgroundColor: "transparent",
+    tooltip: {
+      trigger: "axis",
+      axisPointer: { type: "line" },
+      formatter: (params = []) => {
+        const list = Array.isArray(params) ? params : [];
+        if (!list.length) return "";
+        const title = String(list[0]?.axisValue || "");
+        const lines = list.map((item) => `${item.marker}${item.seriesName}: ${formatNum(item.value)}`);
+        return `<strong>${escapeHtml(title)}</strong><br/>${lines.join("<br/>")}`;
+      },
+    },
+    legend: {
+      top: 4,
+      textStyle: { color: "#b7b7a4", fontSize: 12 },
+      data: [...priorityLegendKeys.map((priority) => dashboardPrioritySeriesLabel(priority))],
+    },
+    grid: { left: 12, right: 12, top: 58, bottom: 26, containLabel: true },
+    xAxis: {
+      type: "category",
+      data: labels,
+      boundaryGap: false,
+      axisLabel: {
+        color: "#98a08d",
+        fontSize: 11,
+        interval: Math.max(0, Math.ceil(labels.length / 10) - 1),
+      },
+      axisLine: { lineStyle: { color: "#41453a" } },
+      axisTick: { show: false },
+    },
+    yAxis: {
+      type: "value",
+      minInterval: 1,
+      axisLabel: { color: "#98a08d", fontSize: 11 },
+      splitLine: { lineStyle: { color: "#41453a", type: "dashed" } },
+    },
+    series: priorityLegendKeys.map((priority) => ({
+      name: dashboardPrioritySeriesLabel(priority),
+      type: "line",
+      stack: "priority-submitted-area",
+      smooth: true,
+      symbol: "circle",
+      symbolSize: 6,
+      data: weeks.map((item) => Number((item?.priority_submitted || {})[priority] || 0)),
+      lineStyle: { color: dashboardPrioritySeriesColor(priority), width: 2.5 },
+      itemStyle: { color: dashboardPrioritySeriesColor(priority) },
+      areaStyle: { color: `${dashboardPrioritySeriesColor(priority)}33` },
+      emphasis: { focus: "series" },
+    })),
+  }, true);
+  scheduleDashboardChartResize();
 }
 
 async function openFeedbackModal() {
@@ -1914,6 +2856,12 @@ function closeRuntimeDataModal() {
   runtimeDataModal.setAttribute("aria-hidden", "true");
 }
 
+function sleep(ms) {
+  return new Promise((resolve) => {
+    window.setTimeout(resolve, Math.max(0, Number(ms || 0)));
+  });
+}
+
 async function pollJsonJob(url, { interval = 1200, onUpdate } = {}) {
   while (true) {
     const payload = await apiGet(url);
@@ -1923,6 +2871,177 @@ async function pollJsonJob(url, { interval = 1200, onUpdate } = {}) {
     if (["completed", "failed", "cancelled"].includes(status)) return job;
     await sleep(interval);
   }
+}
+
+const UI_SUPPORTED_API_SCHEMA_VERSION = 1;
+
+function readApiSchemaVersion(payload) {
+  const data = payload && typeof payload === "object" ? payload : {};
+  const raw = Number(data.api_schema_version || 0);
+  return Number.isFinite(raw) && raw > 0 ? raw : 0;
+}
+
+function assertSupportedApiSchemaVersion(payload, contractName) {
+  const version = readApiSchemaVersion(payload);
+  if (version > UI_SUPPORTED_API_SCHEMA_VERSION) {
+    throw new Error(`${contractName} 返回了更高版本的 API 契约（api_schema_version=${version}，当前 UI 仅支持 ${UI_SUPPORTED_API_SCHEMA_VERSION}）。请刷新到匹配版本后再试。`);
+  }
+  return version;
+}
+
+function normalizeAgentResponse(payload) {
+  const data = payload && typeof payload === "object" ? payload : {};
+  const apiSchemaVersion = assertSupportedApiSchemaVersion(data, "Agent");
+  return {
+    api_schema_version: apiSchemaVersion,
+    trace_id: String(data.trace_id || "").trim(),
+    session_id: String(data.session_id || "").trim(),
+    answer: String(data.answer || ""),
+    query_classification: data.query_classification && typeof data.query_classification === "object" ? data.query_classification : {},
+    query_understanding: data.query_understanding && typeof data.query_understanding === "object" ? data.query_understanding : {},
+    planned_tools: Array.isArray(data.planned_tools) ? data.planned_tools : [],
+    tool_results: Array.isArray(data.tool_results) ? data.tool_results : [],
+  };
+}
+
+function normalizeTraceResponse(payload) {
+  const data = payload && typeof payload === "object" ? payload : {};
+  const apiSchemaVersion = assertSupportedApiSchemaVersion(data, "Dashboard trace");
+  return {
+    api_schema_version: apiSchemaVersion,
+    ok: data.ok !== false,
+    trace: data.trace && typeof data.trace === "object" ? data.trace : null,
+    exportText: String(data.export_text || data.exportText || ""),
+  };
+}
+
+function normalizeBenchmarkRunResult(run) {
+  const value = run && typeof run === "object" ? run : {};
+  const extensions = value.extensions && typeof value.extensions === "object" ? value.extensions : {};
+  const merged = { ...extensions, ...value };
+  return {
+    ...merged,
+    cases: merged.cases && typeof merged.cases === "object" ? merged.cases : {},
+    case_details: merged.case_details && typeof merged.case_details === "object" ? merged.case_details : {},
+    case_details_by_taxonomy: merged.case_details_by_taxonomy && typeof merged.case_details_by_taxonomy === "object" ? merged.case_details_by_taxonomy : {},
+    taxonomy_counts: merged.taxonomy_counts && typeof merged.taxonomy_counts === "object" ? merged.taxonomy_counts : {},
+    assertions: merged.assertions && typeof merged.assertions === "object" ? merged.assertions : {},
+    assertion_summary: merged.assertion_summary && typeof merged.assertion_summary === "object" ? merged.assertion_summary : null,
+  };
+}
+
+function normalizeBenchmarkHistoryResponse(payload) {
+  const data = payload && typeof payload === "object" ? payload : {};
+  const apiSchemaVersion = assertSupportedApiSchemaVersion(data, "Benchmark history");
+  return {
+    api_schema_version: apiSchemaVersion,
+    results: Array.isArray(data.results) ? data.results.map((item) => normalizeBenchmarkRunResult(item)) : [],
+  };
+}
+
+function normalizeBenchmarkCaseSetsResponse(payload) {
+  const data = payload && typeof payload === "object" ? payload : {};
+  const apiSchemaVersion = assertSupportedApiSchemaVersion(data, "Benchmark case sets");
+  return {
+    api_schema_version: apiSchemaVersion,
+    case_sets: Array.isArray(data.case_sets) ? data.case_sets.map((item) => normalizeBenchmarkCaseSet(item)) : [],
+    chains: Array.isArray(data.chains) ? data.chains : [],
+  };
+}
+
+function normalizeBenchmarkCaseSet(caseSet) {
+  const value = caseSet && typeof caseSet === "object" ? caseSet : {};
+  const extensions = value.extensions && typeof value.extensions === "object" ? value.extensions : {};
+  const merged = { ...extensions, ...value };
+  return {
+    ...merged,
+    lengths: merged.lengths && typeof merged.lengths === "object" ? merged.lengths : {},
+    taxonomy_counts: merged.taxonomy_counts && typeof merged.taxonomy_counts === "object" ? merged.taxonomy_counts : {},
+    source_counts: merged.source_counts && typeof merged.source_counts === "object" ? merged.source_counts : {},
+    supported_modules: Array.isArray(merged.supported_modules)
+      ? merged.supported_modules.map((item) => String(item || "").trim()).filter(Boolean)
+      : [],
+    module_case_counts: merged.module_case_counts && typeof merged.module_case_counts === "object" ? merged.module_case_counts : {},
+  };
+}
+
+function getSelectedBenchmarkModules() {
+  const modules = [];
+  if (document.getElementById("bm-rag")?.checked) modules.push("rag");
+  if (document.getElementById("bm-agent")?.checked) modules.push("agent");
+  if (document.getElementById("bm-hybrid")?.checked) modules.push("hybrid");
+  return modules;
+}
+
+function formatBenchmarkModuleName(moduleId) {
+  if (moduleId === "rag") return "RAG";
+  if (moduleId === "agent") return "Agent";
+  if (moduleId === "hybrid") return "Hybrid";
+  return String(moduleId || "").trim();
+}
+
+function renderBenchmarkCaseSetOptions() {
+  return dashboardBenchmarkController.renderBenchmarkCaseSetOptions();
+}
+
+function normalizeBenchmarkJobResponse(payload) {
+  const data = payload && typeof payload === "object" ? payload : {};
+  const apiSchemaVersion = assertSupportedApiSchemaVersion(data, "Benchmark job");
+  const job = data.job && typeof data.job === "object" ? data.job : data;
+  return {
+    api_schema_version: apiSchemaVersion,
+    ok: data.ok !== false,
+    job: {
+      ...job,
+      metadata: job.metadata && typeof job.metadata === "object" ? job.metadata : {},
+      logs: Array.isArray(job.logs) ? job.logs : [],
+      result: job.result && typeof job.result === "object" ? normalizeBenchmarkRunResult(job.result) : job.result,
+    },
+  };
+}
+
+function normalizeRouterClassificationCase(item) {
+  const value = item && typeof item === "object" ? item : {};
+  return {
+    ...value,
+    id: String(value.id || "").trim(),
+    query: String(value.query || "").trim(),
+    expected_domain: String(value.expected_domain || "").trim(),
+    expected_arbitration: value.expected_arbitration,
+    expected_query_class: String(value.expected_query_class || "").trim(),
+    subject_scope: String(value.subject_scope || "").trim(),
+    time_scope_type: String(value.time_scope_type || "").trim(),
+    answer_shape: String(value.answer_shape || "").trim(),
+    media_family: String(value.media_family || "").trim(),
+    followup_mode: String(value.followup_mode || "").trim(),
+    mock_entities: Array.isArray(value.mock_entities) ? value.mock_entities : [],
+  };
+}
+
+function normalizeRouterClassificationCasesResponse(payload) {
+  const data = payload && typeof payload === "object" ? payload : {};
+  const apiSchemaVersion = assertSupportedApiSchemaVersion(data, "Benchmark router classification cases");
+  return {
+    api_schema_version: apiSchemaVersion,
+    ok: data.ok !== false,
+    case: data.case && typeof data.case === "object" ? normalizeRouterClassificationCase(data.case) : null,
+    cases: Array.isArray(data.cases) ? data.cases.map((item) => normalizeRouterClassificationCase(item)) : [],
+  };
+}
+
+function normalizeRouterClassificationRunResponse(payload) {
+  const data = payload && typeof payload === "object" ? payload : {};
+  const apiSchemaVersion = assertSupportedApiSchemaVersion(data, "Benchmark router classification run");
+  return {
+    api_schema_version: apiSchemaVersion,
+    timestamp: String(data.timestamp || "").trim(),
+    total: Number(data.total || 0),
+    passed: Number(data.passed || 0),
+    failed: Number(data.failed || 0),
+    pass_rate: Number(data.pass_rate || 0),
+    cases: Array.isArray(data.cases) ? data.cases.map((item) => normalizeRouterClassificationCase(item)) : [],
+    violations: Array.isArray(data.violations) ? data.violations : [],
+  };
 }
 
 async function startDashboardJob(endpoint, payload, { confirmText, queuedText, onUpdate, onComplete } = {}) {
@@ -1990,16 +3109,60 @@ async function triggerLibraryGraphRebuild() {
 
 // ─── Usage edit modal ─────────────────────────────────────────────────────────
 
-function openUsageModal() {
-  const modal = document.getElementById("usage-edit-modal");
-  if (!modal) return;
+function usageProviderLabel(provider) {
+  const normalized = String(provider || "").trim().toLowerCase();
+  if (normalized === "deepseek") return "DeepSeek";
+  if (normalized === "web_search") return "Tavily";
+  return "全部";
+}
+
+async function loadUsageTraces(provider = "all") {
+  currentUsageTraceProvider = String(provider || "all").trim() || "all";
+  const data = await apiGet(`/api/dashboard/usage/traces?days=7&limit=200&provider=${encodeURIComponent(currentUsageTraceProvider)}`);
+  currentUsageTraceItems = Array.isArray(data?.items) ? data.items : [];
+}
+
+function renderUsageModal() {
   const webInput = document.getElementById("usage-web-input");
   const dsInput = document.getElementById("usage-deepseek-input");
+  const totalCalls = currentUsageTraceItems.reduce((sum, item) => {
+    const count = Number(item?.count || 1);
+    return sum + (Number.isFinite(count) && count > 0 ? count : 1);
+  }, 0);
   if (webInput) webInput.value = String(lastApiUsage.month_web_search_calls ?? "");
   if (dsInput) dsInput.value = String(lastApiUsage.month_deepseek_calls ?? "");
+  if (usageProviderSelect) usageProviderSelect.value = currentUsageTraceProvider;
+  if (usageModalMeta) {
+    usageModalMeta.textContent = `最近7天: ${formatNum(currentUsageTraceItems.length)} 条记录 / ${formatNum(totalCalls)} 次调用 | 筛选: ${usageProviderLabel(currentUsageTraceProvider)}`;
+  }
+  if (usageTraceList) {
+    usageTraceList.innerHTML = currentUsageTraceItems.length
+      ? currentUsageTraceItems.map((item) => {
+          const ts = escapeHtml(String(item?.timestamp || ""));
+          const count = Math.max(1, Number(item?.count || 1) || 1);
+          const provider = escapeHtml(String(item?.provider_label || usageProviderLabel(item?.provider || "")));
+          const feature = escapeHtml(String(item?.feature || "未知功能"));
+          const page = escapeHtml(String(item?.page || "未知页面"));
+          const source = escapeHtml(String(item?.source || ""));
+          const preview = escapeHtml(String(item?.message_preview || "")) || "—";
+          const traceId = escapeHtml(String(item?.trace_id || ""));
+          const meta = [provider, feature, page, source].filter(Boolean).join(" | ");
+          const traceLine = traceId ? `<span class="dashboard-meta">trace_id: ${traceId}</span>` : "";
+          const countBadge = count > 1 ? `<span class="usage-trace-count">x${formatNum(count)}</span>` : "";
+          return `<li class="usage-trace-item" data-provider="${escapeHtml(String(item?.provider || ""))}"><strong>${ts}</strong>${countBadge}<br/><span class="dashboard-meta">${meta}</span><br/><span class="usage-trace-preview">${preview}</span>${traceLine ? `<br/>${traceLine}` : ""}</li>`;
+        }).join("")
+      : "<li>最近7天暂无 API 调用明细</li>";
+  }
+}
+
+async function openUsageModal(provider = "all") {
+  const modal = document.getElementById("usage-edit-modal");
+  if (!modal) return;
+  await loadUsageTraces(provider);
+  renderUsageModal();
   modal.classList.remove("hidden");
   modal.setAttribute("aria-hidden", "false");
-  webInput?.focus();
+  document.getElementById("usage-web-input")?.focus();
 }
 
 function closeUsageModal() {
@@ -2021,136 +3184,71 @@ async function saveUsage() {
   refreshDashboard().catch((err) => renderDashboardError(err));
 }
 
-// ─── Image crop UI ────────────────────────────────────────────────────────────
-
-function drawCropCanvas() {
-  if (!cropState) return;
-  const canvas = document.getElementById("crop-canvas");
-  if (!canvas) return;
-  canvas.width = CROP_VSIZE;
-  canvas.height = CROP_VSIZE;
-  const ctx = canvas.getContext("2d");
-  ctx.clearRect(0, 0, CROP_VSIZE, CROP_VSIZE);
-  ctx.drawImage(
-    cropState.img,
-    cropState.ox,
-    cropState.oy,
-    cropState.img.naturalWidth * cropState.scale,
-    cropState.img.naturalHeight * cropState.scale
-  );
+async function clearUsageTraces() {
+  await apiPost(`/api/dashboard/usage/traces?provider=${encodeURIComponent(currentUsageTraceProvider)}`, {}, "DELETE");
+  currentUsageTraceItems = [];
+  renderUsageModal();
+  refreshDashboard({ force: false }).catch((err) => renderDashboardError(err));
 }
 
-function showCropWrap(show) {
-  const wrap = document.getElementById("crop-wrap");
-  if (wrap) wrap.classList.toggle("hidden", !show);
-  // Hide the flat rectangular preview when the crop canvas is active
-  if (customCardPreview) customCardPreview.classList.toggle("hidden", !!show);
-}
-
-function initCropper(imageUrl) {
-  const clean = String(imageUrl || "").trim();
-  if (!clean) { showCropWrap(false); return; }
-  const img = new Image();
-  img.crossOrigin = "anonymous";
-  img.onload = () => {
-    const s = Math.max(CROP_VSIZE / img.naturalWidth, CROP_VSIZE / img.naturalHeight);
-    cropState = {
-      img,
-      scale: s,
-      ox: (CROP_VSIZE - img.naturalWidth * s) / 2,
-      oy: (CROP_VSIZE - img.naturalHeight * s) / 2,
-      dragging: false,
-      lastX: 0,
-      lastY: 0,
-    };
-    drawCropCanvas();
-    showCropWrap(true);
-  };
-  img.onerror = () => showCropWrap(false);
-  img.src = clean;
-}
-
-function cropZoom(factor) {
-  if (!cropState) return;
-  const cx = CROP_VSIZE / 2;
-  const cy = CROP_VSIZE / 2;
-  const newScale = Math.max(0.05, Math.min(20, cropState.scale * factor));
-  const ratio = newScale / cropState.scale;
-  cropState.ox = cx - (cx - cropState.ox) * ratio;
-  cropState.oy = cy - (cy - cropState.oy) * ratio;
-  cropState.scale = newScale;
-  drawCropCanvas();
-}
-
-async function applyCrop() {
-  if (!cropState) return;
-  const srcCanvas = document.getElementById("crop-canvas");
-  if (!srcCanvas) return;
-  const blob = await new Promise((res) => srcCanvas.toBlob(res, "image/jpeg", 0.92));
-  const file = new File([blob], "crop.jpg", { type: "image/jpeg" });
-  const payload = await apiUploadImage("/api/custom_cards/upload", file);
-  const image = String(payload?.image || "").trim();
-  if (!image) throw new Error("裁剪图片上传失败");
-  if (customCardImageInput) customCardImageInput.value = image;
-  setCardPreview(image);
-  showCropWrap(false);
-}
-
-function bindCropCanvasEvents() {
-  const canvas = document.getElementById("crop-canvas");
-  if (!canvas) return;
-  canvas.addEventListener("pointerdown", (e) => {
-    if (!cropState) return;
-    canvas.setPointerCapture(e.pointerId);
-    cropState.dragging = true;
-    cropState.lastX = e.clientX;
-    cropState.lastY = e.clientY;
-  });
-  canvas.addEventListener("pointermove", (e) => {
-    if (!cropState || !cropState.dragging) return;
-    cropState.ox += e.clientX - cropState.lastX;
-    cropState.oy += e.clientY - cropState.lastY;
-    cropState.lastX = e.clientX;
-    cropState.lastY = e.clientY;
-    drawCropCanvas();
-  });
-  canvas.addEventListener("pointerup", () => {
-    if (cropState) cropState.dragging = false;
-  });
-  canvas.addEventListener("pointercancel", () => {
-    if (cropState) cropState.dragging = false;
-  });
-  canvas.addEventListener("wheel", (e) => {
-    e.preventDefault();
-    cropZoom(e.deltaY < 0 ? 1.12 : 1 / 1.12);
-  }, { passive: false });
-  document.getElementById("crop-zoom-in")?.addEventListener("click", () => cropZoom(1.25));
-  document.getElementById("crop-zoom-out")?.addEventListener("click", () => cropZoom(1 / 1.25));
-  document.getElementById("crop-apply-btn")?.addEventListener("click", () => {
-    applyCrop().catch((e) => window.alert(`裁剪失败: ${String(e)}`));
-  });
+async function exportUsageTracesCsv() {
+  const resp = await fetch(`/api/dashboard/usage/traces/export?days=7&limit=5000&provider=${encodeURIComponent(currentUsageTraceProvider)}`);
+  if (!resp.ok) throw new Error(`导出失败: HTTP ${resp.status}`);
+  const text = await resp.text();
+  const normalized = String(text || "").replace(/\r?\n/g, "\r\n");
+  const blob = new Blob(["\uFEFF", normalized], { type: "text/csv;charset=utf-8" });
+  const url = URL.createObjectURL(blob);
+  const ts = new Date().toISOString().slice(0, 19).replace(/[:T]/g, "-");
+  const a = document.createElement("a");
+  a.href = url;
+  a.download = `api_usage_traces_${currentUsageTraceProvider}_${ts}.csv`;
+  document.body.appendChild(a);
+  a.click();
+  a.remove();
+  URL.revokeObjectURL(url);
 }
 
 // ─── Benchmark tab ────────────────────────────────────────────────────────────
 
 let benchmarkEventSource = null;
 let benchmarkHistory = [];
-let benchmarkAbortController = null;
 let benchmarkTimerInterval = null;
 let activeBenchmarkJobId = "";
+let benchmarkWatchingJobId = "";
 let lastBenchmarkLogCount = 0;
 let lastBenchmarkLogMarker = "";
 const BENCHMARK_HISTORY_COLUMNS = 5;
 let benchmarkCaseSets = [];
+let routerClassificationCases = [];
+let routerClassificationLastResults = [];
+let editingRouterClassificationCaseId = "";
 const TRACE_STAGE_COLORS = ["#7fc97f", "#beaed4", "#fdc086", "#ffff99", "#386cb0", "#f0027f", "#bf5b17", "#666666"];
 const TRACE_STAGE_ORDER = [
   "session_prepare_seconds",
   "query_profile_seconds",
+  "router_llm_classification_seconds",
+  "router_entity_resolution_seconds",
+  "router_alias_resolution_seconds",
+  "router_followup_resolution_seconds",
+  "router_semantic_repairs_seconds",
+  "router_llm_rewrite_seconds",
+  "router_non_llm_seconds",
+  "router_normalization_seconds",
+  "execution_plan_shape_seconds",
+  "query_classification_finalize_seconds",
+  "tool_planning_llm_seconds",
+  "tool_planning_non_llm_seconds",
   "tool_planning_seconds",
   "planning_seconds",
   "vector_recall_seconds",
   "rerank_seconds",
   "context_assembly_seconds",
+  "reference_limit_seconds",
+  "per_item_expansion_seconds",
+  "post_retrieval_evaluate_seconds",
+  "post_retrieval_repairs_seconds",
+  "answer_strategy_seconds",
+  "guardrail_mode_seconds",
   "web_search_seconds",
   "tool_execution_seconds",
   "llm_seconds",
@@ -2158,14 +3256,73 @@ const TRACE_STAGE_ORDER = [
 const TRACE_STAGE_LABELS = {
   session_prepare_seconds: "session_prepare",
   query_profile_seconds: "query_profile",
+  router_llm_classification_seconds: "router_llm_classification",
+  router_entity_resolution_seconds: "router_entity_resolution",
+  router_alias_resolution_seconds: "router_alias_resolution",
+  router_followup_resolution_seconds: "router_followup_resolution",
+  router_semantic_repairs_seconds: "router_semantic_repairs",
+  router_llm_rewrite_seconds: "router_llm_rewrite",
+  router_non_llm_seconds: "router_non_llm",
+  router_normalization_seconds: "router_normalization",
+  execution_plan_shape_seconds: "execution_plan_shape",
+  query_classification_finalize_seconds: "query_classification_finalize",
+  tool_planning_llm_seconds: "tool_planning_llm",
+  tool_planning_non_llm_seconds: "tool_planning_non_llm",
   tool_planning_seconds: "tool_planning",
   planning_seconds: "planning",
   vector_recall_seconds: "vector_recall",
   rerank_seconds: "rerank",
   context_assembly_seconds: "context_assembly",
+  reference_limit_seconds: "reference_limit",
+  per_item_expansion_seconds: "per_item_expansion",
+  post_retrieval_evaluate_seconds: "post_retrieval_evaluate",
+  post_retrieval_repairs_seconds: "post_retrieval_repairs",
+  answer_strategy_seconds: "answer_strategy",
+  guardrail_mode_seconds: "guardrail_mode",
   web_search_seconds: "web_search",
   tool_execution_seconds: "tool_execution",
   llm_seconds: "llm",
+};
+const TRACE_STAGE_DESCRIPTIONS = {
+  planner: "planner 汇总本轮 query 理解、router、tool planning 与最终分类封装的总耗时。",
+  execution: "execution 汇总实际工具执行墙钟时间，下面的明细用于解释这段时间内部发生了什么。",
+  answer: "answer 汇总上下文拼装、回答策略、LLM 生成和最终整理等回答阶段耗时。",
+  observability: "observability 汇总会话持久化和指标记录等收尾开销。",
+  system: "system 仅负责内部口径核对；展示层统一只看 unaccounted。",
+  tool_planning: "tool planning 是 planner 内部的子阶段，包含 router、执行计划成形和分类结果封装。",
+  router: "router 是 planner 内部最核心的决策节点，负责 query 理解、followup 解析、别名解析和 LLM 辅助分类/改写。",
+  session_prepare_seconds: "整理当前会话上下文、历史状态和入口参数，决定这一轮推理的初始工作面。",
+  query_profile_seconds: "分析 query 的长度、结构和信号强弱，给后续路由和检索策略提供基础画像。",
+  router_llm_classification_seconds: "planning 阶段里用于理解问题意图、domain 和 lookup_mode 的 LLM 分类耗时。",
+  router_entity_resolution_seconds: "根据标题、作者、作品名等线索做实体解析和主实体选择的耗时。",
+  router_alias_resolution_seconds: "用本地别名和标题词典做作品别名扩展、命中校正和媒体类型提示的耗时。",
+  router_followup_resolution_seconds: "判断这一问是否承接上一轮，以及应该继承实体、筛选条件还是时间范围的耗时。",
+  router_semantic_repairs_seconds: "对初始路由结果做语义修正，例如 creator collection、music compare、lookup_mode 修复的耗时。",
+  router_llm_rewrite_seconds: "planning 阶段里生成 tool-grade retrieval query 的 LLM rewrite 耗时。",
+  router_non_llm_seconds: "路由阶段中除 LLM 之外的本地判定、规则修复和状态整合耗时。",
+  router_normalization_seconds: "把 router 决策规范化成执行前统一结构的耗时。",
+  execution_plan_shape_seconds: "根据路由结果生成最终工具计划、上下文解析和执行选项的耗时。",
+  query_classification_finalize_seconds: "把路由和执行计划序列化成 trace / UI 使用的 query classification 载荷的耗时。",
+  tool_planning_llm_seconds: "tool planning 内部所有 LLM 调用的合计耗时。",
+  tool_planning_non_llm_seconds: "tool planning 内部所有非 LLM 逻辑的合计耗时。",
+  tool_planning_seconds: "在细化 planning 阶段时，确定要不要查库、检索文档、调用工具以及它们的顺序。",
+  planning_seconds: "较粗粒度的整体路由规划时间；如果已经拆出更细阶段，这一项会被隐藏避免重复统计。",
+  vector_recall_seconds: "向量检索召回候选文档或条目，决定后续可供排序和生成的原始素材范围。",
+  rerank_seconds: "对召回结果进行重排，把最可能有用的内容提到前面。",
+  context_assembly_seconds: "把最终入选的文档、片段和结构化结果拼成可供回答使用的上下文。",
+  reference_limit_seconds: "控制引用数量和长度，避免上下文过长或引用噪声过多。",
+  per_item_expansion_seconds: "对单条候选结果做额外展开、补字段或附加细节。",
+  post_retrieval_evaluate_seconds: "在检索之后做质量评估，判断当前结果是否足够支撑回答。",
+  post_retrieval_repairs_seconds: "对检索结果做补救，比如重试、修复排序、放宽阈值或补查缺漏。",
+  answer_strategy_seconds: "决定最后回答采用什么策略，例如直接回答、解释型回答或保守降级。",
+  guardrail_mode_seconds: "执行保护逻辑，判断是否需要走 no-context、保守回答或特殊降级分支。",
+  web_search_seconds: "调用外部 Web 搜索的耗时。",
+  tool_execution_seconds: "执行实际工具调用的总耗时，例如查库、检索、聚合外部结果。",
+  execution_seconds: "execution 聚合时间，对应工具执行墙钟时间。",
+  answer_seconds: "answer 聚合时间，对应回答阶段所有叶子耗时之和。",
+  observability_seconds: "observability 聚合时间，对应持久化与指标记录耗时。",
+  unaccounted_seconds: "未归类剩余时间，按 section totals 与 wall-clock 的差值计算，不再和叶子节点混算。",
+  llm_seconds: "最终进入语言模型推理和生成回答的耗时。",
 };
 let benchmarkLiveLatestCase = null;
 let benchmarkLiveLatestCaseKey = "";
@@ -2175,16 +3332,20 @@ let benchmarkLatestTraceCacheKey = "";
 // Current test-set selection: "<module>/<length>"
 let currentBmTestSet = "rag/short";
 
-function formatTraceNumber(value, digits = 4) {
-  const n = Number(value);
-  if (!Number.isFinite(n)) return "—";
-  return n.toFixed(digits);
-}
+const traceSummaryRenderer = DashboardSharedTrace?.createTraceSummaryRenderer?.({
+  escapeHtml,
+  formatDuration,
+  formatSigned,
+  computeRerankOptimization,
+  renderRerankOptimization,
+  traceStageColors: TRACE_STAGE_COLORS,
+  traceStageOrder: TRACE_STAGE_ORDER,
+  traceStageLabels: TRACE_STAGE_LABELS,
+  traceStageDescriptions: TRACE_STAGE_DESCRIPTIONS,
+}) || null;
 
-function formatTracePercent(value) {
-  const n = Number(value);
-  if (!Number.isFinite(n) || n < 0) return "—";
-  return (n * 100).toFixed(1) + "%";
+function formatTraceNumber(value, digits = 4) {
+  return traceSummaryRenderer?.formatTraceNumber?.(value, digits) || "—";
 }
 
 function downloadTextFile(text, filename) {
@@ -2199,218 +3360,311 @@ function downloadTextFile(text, filename) {
   URL.revokeObjectURL(url);
 }
 
-function formatTraceStageLabel(key) {
-  const normalized = String(key || "").trim();
-  if (!normalized) return "";
-  const mapped = TRACE_STAGE_LABELS[normalized] || normalized;
-  return mapped.replace(/_seconds$/i, "").replace(/_/g, " ");
+function downloadJsonFile(payload, filename) {
+  const blob = new Blob([JSON.stringify(payload ?? {}, null, 2)], { type: "application/json;charset=utf-8" });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement("a");
+  a.href = url;
+  a.download = filename;
+  document.body.appendChild(a);
+  a.click();
+  a.remove();
+  URL.revokeObjectURL(url);
 }
 
-function buildTraceStageEntries(trace) {
-  const stages = trace?.stages && typeof trace.stages === "object" ? trace.stages : {};
-  const hasDetailedPlanning = ["session_prepare_seconds", "query_profile_seconds", "tool_planning_seconds"].some(
-    (key) => Number(stages[key] || 0) > 0,
-  );
-  const orderedKeys = [
-    ...TRACE_STAGE_ORDER.filter((key) => Object.prototype.hasOwnProperty.call(stages, key)),
-    ...Object.keys(stages).filter((key) => key !== "wall_clock_seconds" && !TRACE_STAGE_ORDER.includes(key)),
-  ];
-  const entries = orderedKeys
-    .filter((key) => key !== "wall_clock_seconds")
-    .filter((key) => !(hasDetailedPlanning && key === "planning_seconds"))
-    .map((key, index) => ({
-      key,
-      label: formatTraceStageLabel(key),
-      value: Number(stages[key]),
-      color: TRACE_STAGE_COLORS[index % TRACE_STAGE_COLORS.length],
-    }))
-    .filter((entry) => Number.isFinite(entry.value) && entry.value > 0);
-  const stageTotal = entries.reduce((sum, entry) => sum + entry.value, 0);
-  return entries.map((entry) => ({
-    ...entry,
-    ratio: stageTotal > 0 ? Math.max(0, Math.min(1, entry.value / stageTotal)) : 0,
-  }));
+function formatTracePercent(value) {
+  return traceSummaryRenderer?.formatTracePercent?.(value) || "—";
+}
+
+function formatTraceStageLabel(key) {
+  return traceSummaryRenderer?.formatTraceStageLabel?.(key) || "";
+}
+
+function getTraceWallClockSeconds(trace) {
+  return traceSummaryRenderer?.getTraceWallClockSeconds?.(trace) || 0;
+}
+
+function getTraceStageDescription(key) {
+  return traceSummaryRenderer?.getTraceStageDescription?.(key) || "";
 }
 
 function renderTraceStageBars(trace) {
-  const entries = buildTraceStageEntries(trace);
-  if (!entries.length) return '<div class="trace-result-empty">暂无阶段时延</div>';
-  const totalSeconds = Number(trace?.total_elapsed_seconds || trace?.stages?.wall_clock_seconds || entries.reduce((sum, entry) => sum + entry.value, 0));
-  return `
-    <div class="trace-stage-composite-wrap">
-      <div class="trace-stage-composite" aria-label="阶段时长占比总览">${entries.map((entry) => {
-        const widthPct = Math.max(entry.ratio * 100, entry.ratio > 0 ? 1.5 : 0);
-        const label = `${entry.label}: ${formatDuration(entry.value)} / ${formatTracePercent(entry.ratio)}`;
-        return `<button type="button" class="trace-stage-segment" data-trace-stage-key="${escapeHtml(String(entry.key))}" title="${escapeHtml(label)}" style="width:${widthPct.toFixed(2)}%;background:${entry.color}"></button>`;
-      }).join("")}</div>
-      <div class="trace-stage-table-wrap">
-        <table class="trace-stage-table">
-          <thead><tr><th>阶段</th><th>用时</th><th>占比</th></tr></thead>
-          <tbody>${entries.map((entry) => `<tr data-trace-stage-row="${escapeHtml(String(entry.key))}"><td><span class="trace-stage-label"><i style="background:${entry.color}"></i>${escapeHtml(String(entry.label))}</span></td><td>${escapeHtml(formatDuration(entry.value))}</td><td>${escapeHtml(formatTracePercent(entry.ratio))}</td></tr>`).join("")}</tbody>
-          <tfoot><tr><td>total</td><td>${escapeHtml(formatDuration(totalSeconds))}</td><td>100.0%</td></tr></tfoot>
-        </table>
-      </div>
-    </div>`;
+  return traceSummaryRenderer?.renderTraceStageBars?.(trace) || '<div class="trace-result-empty">暂无阶段时延</div>';
 }
 
 function renderTraceSummary(trace) {
-  if (!trace || typeof trace !== "object") return '<div class="trace-result-empty">未找到 trace 数据</div>';
-  const profile = trace.query_profile && typeof trace.query_profile === "object" ? trace.query_profile : {};
-  const router = trace.router && typeof trace.router === "object" ? trace.router : {};
-  const retrieval = trace.retrieval && typeof trace.retrieval === "object" ? trace.retrieval : {};
-  const ranking = trace.ranking && typeof trace.ranking === "object" ? trace.ranking : {};
-  const llm = trace.llm && typeof trace.llm === "object" ? trace.llm : {};
-  const result = trace.result && typeof trace.result === "object" ? trace.result : {};
-  const tools = Array.isArray(trace.tools) ? trace.tools : [];
-  const plannedTools = Array.isArray(router.planned_tools) ? router.planned_tools : [];
-  const rerankOptimization = computeRerankOptimization(trace);
-  const sessionId = String(trace.session_id || "").trim();
-  const totalElapsed = trace.total_elapsed_seconds || trace?.stages?.wall_clock_seconds || 0;
-  const usedContextDocs = Number(result.used_context_docs ?? 0);
-  return `
-    <div class="trace-summary-grid">
-      <section class="trace-summary-card">
-        <div class="bm-card-section-label">基本信息</div>
-        <div class="trace-kv"><span>trace_id</span><strong>${escapeHtml(String(trace.trace_id || ""))}</strong></div>
-        <div class="trace-kv"><span>时间</span><strong>${escapeHtml(String(trace.timestamp || ""))}</strong></div>
-        <div class="trace-kv"><span>入口</span><strong>${escapeHtml(String(trace.entrypoint || ""))}</strong></div>
-        <div class="trace-kv"><span>调用类型</span><strong>${escapeHtml(String(trace.call_type || ""))}</strong></div>
-        <div class="trace-kv"><span>检索模式</span><strong>${escapeHtml(String(trace.search_mode || ""))}</strong></div>
-        <div class="trace-kv"><span>问题长度判定</span><strong>${escapeHtml(String(profile.profile || ""))} / ${escapeHtml(String(profile.token_count || 0))} tokens</strong></div>
-        <div class="trace-kv"><span>问题类型判定</span><strong>${escapeHtml(String(trace.query_type || "—"))}</strong></div>
-        <div class="trace-kv"><span>Session</span><strong>${escapeHtml(sessionId || "—")}</strong></div>
-        <div class="trace-kv"><span>总耗时</span><strong>${escapeHtml(formatDuration(totalElapsed))}</strong></div>
-      </section>
-      <section class="trace-summary-card">
-        <div class="bm-card-section-label">路由与工具</div>
-        <div class="trace-kv"><span>调用工具</span><strong>${escapeHtml(String(router.selected_tool || "—"))}</strong></div>
-        <div class="trace-kv"><span>分类器结果</span><strong>${escapeHtml(String(router.classifier_label || "—"))}</strong></div>
-        <div class="trace-kv"><span>文档相似度</span><strong>${escapeHtml(formatTraceNumber(router.doc_similarity))}</strong></div>
-        <div class="trace-kv"><span>媒体工具调用</span><strong>${router.media_entity_confident ? "true" : "false"}</strong></div>
-        <div class="trace-kv"><span>计划工具数</span><strong>${escapeHtml(String(plannedTools.length || 0))}</strong></div>
-        <div class="trace-kv"><span>实际工具数</span><strong>${escapeHtml(String(tools.length || 0))}</strong></div>
-        <div class="trace-chip-list">${plannedTools.length ? plannedTools.map((tool) => `<span class="trace-chip">${escapeHtml(String(tool))}</span>`).join("") : '<span class="trace-chip">none</span>'}</div>
-        <div class="trace-tool-list">${tools.length ? tools.map((tool) => {
-          const sourceCounts = tool?.source_counts && typeof tool.source_counts === "object" ? Object.entries(tool.source_counts) : [];
-          const sourceLabel = sourceCounts.length
-            ? sourceCounts.map(([key, value]) => `${String(key)}:${String(value)}`).join(", ")
-            : String(tool?.per_item_source || "");
-          return `<div class="trace-tool-row"><strong>${escapeHtml(String(tool?.display_name || tool?.name || ""))}</strong><span>${escapeHtml(String(tool?.status || ""))}</span><span>${escapeHtml(formatDuration((Number(tool?.latency_ms || 0) || 0) / 1000))}</span>${sourceLabel ? `<span>${escapeHtml(sourceLabel)}</span>` : ""}</div>`;
-        }).join("") : '<div class="trace-result-empty">暂无工具记录</div>'}</div>
-      </section>
-      <section class="trace-summary-card">
-        <div class="bm-card-section-label">检索与排序</div>
-        <div class="trace-kv"><span>向量命中</span><strong>${escapeHtml(String(retrieval.vector_hits ?? "—"))}</strong></div>
-        <div class="trace-kv"><span>阈值</span><strong>${escapeHtml(formatTraceNumber(retrieval.similarity_threshold))}</strong></div>
-        <div class="trace-kv"><span>问题重写</span><strong>${escapeHtml(String(retrieval.query_rewrite_status || "—"))} / ${escapeHtml(String(retrieval.query_rewrite_count ?? 0))}</strong></div>
-        <div class="trace-kv"><span>重排序</span><strong>${escapeHtml(String(ranking.method || "—"))} / k=${escapeHtml(String(ranking.rerank_k ?? "—"))}</strong></div>
-        ${renderRerankOptimization(trace)}
-        <div class="trace-kv"><span>阈值余量</span><strong>${escapeHtml(formatSigned(rerankOptimization.margin, 4))}</strong></div>
-      </section>
-      <section class="trace-summary-card">
-        <div class="bm-card-section-label">LLM 与结果</div>
-        <div class="trace-kv"><span>调用类型</span><strong>${escapeHtml(String(llm.backend || "—"))}</strong></div>
-        <div class="trace-kv"><span>使用模型</span><strong>${escapeHtml(String(llm.model || "—"))}</strong></div>
-        <div class="trace-kv"><span>LLM 用时</span><strong>${escapeHtml(formatDuration(llm.latency_seconds))}</strong></div>
-        <div class="trace-kv"><span>输入 Tokens</span><strong>${escapeHtml(String(llm.input_tokens_est ?? 0))}</strong></div>
-        <div class="trace-kv"><span>Prompt Tokens</span><strong>${escapeHtml(String(llm.prompt_tokens_est ?? 0))}</strong></div>
-        <div class="trace-kv"><span>Context Tokens</span><strong>${escapeHtml(String(llm.context_tokens_est ?? 0))}</strong></div>
-        <div class="trace-kv"><span>输出 Tokens</span><strong>${escapeHtml(String(llm.output_tokens_est ?? 0))}</strong></div>
-        <div class="trace-kv"><span>LLM 调用次数</span><strong>${escapeHtml(String(llm.calls ?? 0))}</strong></div>
-        <div class="trace-kv"><span>上下文文档数</span><strong>${escapeHtml(String(usedContextDocs || 0))}</strong></div>
-        <div class="trace-kv"><span>无效回答</span><strong>${result.no_context ? `true / ${escapeHtml(String(result.no_context_reason || ""))}` : "false"}</strong></div>
-      </section>
-    </div>
-    <section class="trace-summary-card trace-stage-panel">
-      <div class="bm-card-section-label">阶段用时</div>
-      ${renderTraceStageBars(trace)}
-    </section>
-  `;
+  return traceSummaryRenderer?.renderTraceSummary?.(trace) || '<div class="trace-result-empty">未找到 trace 数据</div>';
 }
 
-function renderDashboardTrace(trace, exportText) {
-  currentTraceRecord = trace;
-  currentTraceExportText = String(exportText || "");
-  if (dashboardTraceMeta) {
-    dashboardTraceMeta.textContent = trace
-      ? `${trace.entrypoint || "trace"} | ${trace.call_type || ""} | 总耗时 ${formatDuration(trace.total_elapsed_seconds || trace?.stages?.wall_clock_seconds || 0)}`
-      : "输入 trace_id 查看阶段用时、路由和工具调用摘要";
-  }
-  if (dashboardTraceOpenBtn) dashboardTraceOpenBtn.disabled = !trace;
-  if (dashboardTraceTicketBtn) dashboardTraceTicketBtn.disabled = !trace;
-  if (dashboardTraceResult) dashboardTraceResult.innerHTML = trace ? renderTraceSummary(trace) : '<div class="trace-result-empty">暂无 trace 数据</div>';
+function renderTraceModalSummary(trace) {
+  return dashboardTraceBootstrap.renderTraceModalSummary(trace);
 }
 
-async function fetchTrace(traceId) {
-  const payload = await apiGet(`/api/dashboard/trace?trace_id=${encodeURIComponent(traceId)}`);
+const dashboardDataAdminBootstrap = DashboardDataAdminBootstrapModule?.createDataAdminBootstrap?.({
+  module: DashboardDataAdminModule,
+  createMissingController,
+  controllerDeps: {
+    fetchImpl: fetch,
+    apiPost,
+    apiPostForm,
+    authorizationHeaders,
+    extractErrorDetail,
+    selectedApps: selectedDataBackupApps,
+    renderPanel: renderDataBackupPanel,
+    refreshDashboard,
+    showToast,
+    exportButton: dataBackupExportBtn,
+    createButton: dataBackupCreateBtn,
+    restoreButton: dataBackupRestoreBtn,
+    restoreInput: dataBackupRestoreInput,
+  },
+}) || (() => {
+  const controller = createMissingController("NavDashboardDataAdmin", ["bindEvents"]);
+  return { controller, bindEvents() {} };
+})();
+const dashboardDataAdminController = dashboardDataAdminBootstrap.controller;
+
+const dashboardTraceBootstrap = DashboardTraceBootstrapModule?.createTraceBootstrap?.({
+  module: DashboardTraceModule,
+  createMissingController,
+  controllerDeps: {
+    apiGet,
+    normalizeTraceResponse,
+    showAppErrorModal,
+    formatDuration,
+    getTraceWallClockSeconds,
+    renderTraceSummary,
+    escapeHtml,
+    downloadTextFile,
+    getCurrentTraceRecord: () => currentTraceRecord,
+    setCurrentTraceRecord: (value) => {
+      currentTraceRecord = value;
+    },
+    getCurrentTraceExportText: () => currentTraceExportText,
+    setCurrentTraceExportText: (value) => {
+      currentTraceExportText = String(value || "");
+    },
+    getElements: () => ({
+      dashboardTraceMeta,
+      dashboardTraceOpenBtn,
+      dashboardTraceTicketBtn,
+      dashboardTraceResult,
+      dashboardTraceInput,
+      traceModalController,
+      traceModal,
+      traceModalMeta,
+      traceModalContent,
+      traceModalExport,
+    }),
+  },
+  bindDataAdminEvents: () => dashboardDataAdminBootstrap.bindEvents(),
+  dashboardTraceQueryBtn,
+  dashboardTraceOpenBtn,
+  dashboardTraceTicketBtn,
+  dashboardTraceInput,
+  dashboardTraceResult,
+  onTraceStageClick: _traceStageClickHandler,
+  onTraceStageHover: _traceStageHoverHandler,
+  clearTraceStageTooltip,
+  closeAllTraceStageTooltips,
+  showAppErrorModal,
+  openTicketFromCurrentTrace: () => openTicketFromCurrentTrace(),
+}) || (() => {
+  const controller = createMissingController(
+    "NavDashboardTrace",
+    ["renderTraceModalSummary", "renderDashboardTrace", "closeTraceModal"],
+    ["fetchTrace", "lookupDashboardTrace", "openTraceModal", "exportCurrentTrace"],
+    {
+      renderTraceModalSummary: () => '<div class="trace-result-empty">Trace 模块未加载</div>',
+    },
+  );
   return {
-    trace: payload?.trace || null,
-    exportText: String(payload?.export_text || ""),
+    controller,
+    bindEvents() {},
+    renderTraceModalSummary: (trace) => controller.renderTraceModalSummary(trace),
+    renderDashboardTrace: (...args) => controller.renderDashboardTrace(...args),
+    fetchTrace: (...args) => controller.fetchTrace(...args),
+    lookupDashboardTrace: (...args) => controller.lookupDashboardTrace(...args),
+    closeTraceModal: (...args) => controller.closeTraceModal(...args),
+    openTraceModal: (...args) => controller.openTraceModal(...args),
+    exportCurrentTrace: (...args) => controller.exportCurrentTrace(...args),
   };
-}
+})();
+const dashboardTraceController = dashboardTraceBootstrap.controller;
+const renderDashboardTrace = (...args) => dashboardTraceBootstrap.renderDashboardTrace(...args);
+const fetchTrace = (...args) => dashboardTraceBootstrap.fetchTrace(...args);
+const lookupDashboardTrace = (...args) => dashboardTraceBootstrap.lookupDashboardTrace(...args);
+const closeTraceModal = (...args) => dashboardTraceBootstrap.closeTraceModal(...args);
+const openTraceModal = (...args) => dashboardTraceBootstrap.openTraceModal(...args);
+const exportCurrentTrace = (...args) => dashboardTraceBootstrap.exportCurrentTrace(...args);
 
-async function lookupDashboardTrace(traceId) {
-  const value = String(traceId || dashboardTraceInput?.value || "").trim();
-  if (!value) {
-    showAppErrorModal("Trace 查询失败", "请输入 trace_id", "可以直接粘贴 trace_id 后回车或点击查询");
-    return;
-  }
-  if (dashboardTraceMeta) dashboardTraceMeta.textContent = `正在查询 ${value} ...`;
-  const { trace, exportText } = await fetchTrace(value);
-  if (dashboardTraceInput) dashboardTraceInput.value = value;
-  renderDashboardTrace(trace, exportText);
-}
+const dashboardTicketsBootstrap = DashboardTicketsBootstrapModule?.createTicketsBootstrap?.({
+  module: DashboardTicketsModule,
+  createMissingController,
+  controllerDeps: {
+    modalApi: DashboardSharedModal,
+    ensureSelectValue,
+    syncTicketsPaneHeights,
+    showAppErrorModal,
+    escapeHtml,
+    getState: () => ({
+      currentTicketId,
+      pendingDeleteTicketId,
+      currentTickets,
+    }),
+    setState: (patch) => {
+      if (!patch || typeof patch !== "object") return;
+      if (Object.prototype.hasOwnProperty.call(patch, "currentTicketId")) currentTicketId = String(patch.currentTicketId || "");
+      if (Object.prototype.hasOwnProperty.call(patch, "pendingDeleteTicketId")) pendingDeleteTicketId = String(patch.pendingDeleteTicketId || "");
+    },
+    getElements: () => ({
+      ticketIdInput,
+      ticketTraceIdInput,
+      ticketTitleInput,
+      ticketStatusInput,
+      ticketPriorityInput,
+      ticketDomainInput,
+      ticketCategoryInput,
+      ticketCreatedAtInput,
+      ticketUpdatedAtInput,
+      ticketRelatedTracesInput,
+      ticketRelatedTracesLinks,
+      ticketReproQueryInput,
+      ticketSummaryInput,
+      ticketExpectedBehaviorInput,
+      ticketActualBehaviorInput,
+      ticketRootCauseInput,
+      ticketFixNotesInput,
+      ticketAdditionalNotesInput,
+      ticketsDetailMeta,
+      ticketsDeleteBtn,
+      ticketDeleteModal,
+      ticketDeleteModalController,
+      ticketDeleteMeta,
+      ticketDeleteConfirmSelect,
+      ticketDeleteConfirmBtn,
+    }),
+  },
+  ticketsRefreshBtn,
+  ticketsNewBtn,
+  ticketPasteFillBtn,
+  ticketsAIDraftBtn,
+  ticketsSaveBtn,
+  ticketsDeleteBtn,
+  ticketsList,
+  ticketRelatedTracesLinks,
+  ticketFilterNodes: [ticketsStatusFilter, ticketsPriorityFilter, ticketsDomainFilter, ticketsCategoryFilter, ticketsCreatedFrom, ticketsCreatedTo],
+  ticketsSearchInput,
+  ticketRelatedTracesInput,
+  ticketPasteInput,
+  ticketDeleteConfirmSelect,
+  ticketsSortToggleBtn,
+  ticketsListCollapseBtn,
+  ticketDeleteConfirmBtn,
+  ticketDeleteCancelBtn,
+  refreshTickets,
+  resetTicketEditor,
+  fillTicketFromPaste,
+  createTicketAIDraft,
+  saveCurrentTicket,
+  openTraceModal,
+  showAppErrorModal,
+  debugUiEvent,
+  renderTicketsList,
+  renderTicketTraceLinks,
+  syncTicketsPaneHeights,
+  findTicketById: (ticketId) => currentTickets.find((entry) => String(entry.ticket_id || "") === ticketId),
+  toggleTicketSort: () => {
+    currentTicketSort = currentTicketSort === "updated_asc" ? "updated_desc" : "updated_asc";
+  },
+  renderTicketSortButton,
+  isTicketsListCollapsed: () => ticketsShellController?.isCollapsed?.() ?? ticketsListCollapsed,
+  setTicketsListCollapsed,
+  confirmDeleteCurrentTicket,
+}) || (() => {
+  const controller = createMissingController("NavDashboardTickets", ["applyTicketToForm", "closeTicketDeleteModal", "openTicketDeleteModal"]);
+  return {
+    controller,
+    bindEvents() {},
+    applyTicketToForm: (ticket) => controller.applyTicketToForm(ticket),
+    closeTicketDeleteModal: (...args) => controller.closeTicketDeleteModal(...args),
+    openTicketDeleteModal: (...args) => controller.openTicketDeleteModal(...args),
+  };
+})();
+const dashboardTicketsController = dashboardTicketsBootstrap.controller;
 
-function closeTraceModal() {
-  traceModal?.classList.add("hidden");
-  traceModal?.setAttribute("aria-hidden", "true");
-}
-
-async function openTraceModal(traceId) {
-  const value = String(traceId || currentTraceRecord?.trace_id || "").trim();
-  if (!value) {
-    showAppErrorModal("Trace 打开失败", "缺少 trace_id");
-    return;
-  }
-  const { trace, exportText } = await fetchTrace(value);
-  currentTraceRecord = trace;
-  currentTraceExportText = exportText;
-  if (traceModalMeta) {
-    traceModalMeta.textContent = `${trace?.trace_id || value} | ${trace?.entrypoint || ""} | ${trace?.call_type || ""}`;
-  }
-  if (traceModalContent) traceModalContent.innerHTML = trace ? renderTraceSummary(trace) : '<div class="trace-result-empty">未找到 trace 数据</div>';
-  if (traceModalExport) traceModalExport.textContent = exportText;
-  traceModal?.classList.remove("hidden");
-  traceModal?.setAttribute("aria-hidden", "false");
-}
-
-async function exportCurrentTrace(traceId) {
-  const value = String(traceId || currentTraceRecord?.trace_id || dashboardTraceInput?.value || "").trim();
-  if (!value) {
-    showAppErrorModal("Trace 导出失败", "缺少 trace_id");
-    return;
-  }
-  if (currentTraceRecord && currentTraceRecord.trace_id === value && currentTraceExportText) {
-    downloadTextFile(currentTraceExportText, `${value}.txt`);
-    return;
-  }
-  const response = await fetch(`/api/dashboard/trace/export?trace_id=${encodeURIComponent(value)}`);
-  if (!response.ok) throw new Error(await response.text());
-  const text = await response.text();
-  downloadTextFile(text, `${value}.txt`);
-}
+const dashboardLibraryAliasController = DashboardLibraryAliasModule?.createLibraryAliasController?.({
+  modalApi: DashboardSharedModal,
+  apiGet,
+  apiPost,
+  refreshDashboard,
+  showAppErrorModal,
+  showToast,
+  escapeHtml,
+  formatNum,
+  formatDateTimeLabel,
+  getState: () => ({
+    currentLibraryAliasItems,
+    currentLibraryAliasPage,
+    currentLibraryAliasTotalPages,
+    currentLibraryAliasSummary,
+    activeLibraryAliasEditProposalId,
+    activeLibraryAliasSaveProposalId,
+    currentLibraryAliasEditDraft,
+  }),
+  setState: (patch) => {
+    if (!patch || typeof patch !== "object") return;
+    if (Object.prototype.hasOwnProperty.call(patch, "currentLibraryAliasItems")) currentLibraryAliasItems = Array.isArray(patch.currentLibraryAliasItems) ? patch.currentLibraryAliasItems : [];
+    if (Object.prototype.hasOwnProperty.call(patch, "currentLibraryAliasPage")) currentLibraryAliasPage = Math.max(1, Number(patch.currentLibraryAliasPage || 1));
+    if (Object.prototype.hasOwnProperty.call(patch, "currentLibraryAliasTotalPages")) currentLibraryAliasTotalPages = Math.max(1, Number(patch.currentLibraryAliasTotalPages || 1));
+    if (Object.prototype.hasOwnProperty.call(patch, "currentLibraryAliasSummary")) currentLibraryAliasSummary = patch.currentLibraryAliasSummary && typeof patch.currentLibraryAliasSummary === "object" ? patch.currentLibraryAliasSummary : {};
+    if (Object.prototype.hasOwnProperty.call(patch, "activeLibraryAliasEditProposalId")) activeLibraryAliasEditProposalId = String(patch.activeLibraryAliasEditProposalId || "");
+    if (Object.prototype.hasOwnProperty.call(patch, "activeLibraryAliasSaveProposalId")) activeLibraryAliasSaveProposalId = String(patch.activeLibraryAliasSaveProposalId || "");
+    if (Object.prototype.hasOwnProperty.call(patch, "currentLibraryAliasEditDraft")) currentLibraryAliasEditDraft = patch.currentLibraryAliasEditDraft && typeof patch.currentLibraryAliasEditDraft === "object" ? patch.currentLibraryAliasEditDraft : { aliasesText: "" };
+  },
+  getElements: () => ({
+    libraryAliasModal,
+    libraryAliasModalController,
+    libraryAliasModalMeta,
+    libraryAliasReviewList,
+    libraryAliasPageInfo,
+    libraryAliasPagePrevBtn,
+    libraryAliasPageNextBtn,
+    libraryAliasCloseBtn,
+  }),
+}) || createMissingController(
+  "NavDashboardLibraryAlias",
+  ["closeLibraryAliasModal", "renderLibraryAliasProposalModal", "renderCurrentLibraryAliasModal", "bindEvents"],
+  ["loadLibraryAliasProposalPage", "openLibraryAliasModal", "submitLibraryAliasReview"],
+  { isOpen: () => false }
+);
 
 function parseTicketTraceList(value) {
-  if (Array.isArray(value)) {
-    return value.map((item) => String(item || "").trim()).filter(Boolean);
-  }
-  return String(value || "")
-    .replace(/\r/g, "\n")
-    .replace(/,/g, "\n")
-    .split("\n")
-    .map((item) => item.trim())
-    .filter(Boolean)
-    .filter((item, index, arr) => arr.indexOf(item) === index);
+  return DashboardTicketsModule?.parseTicketTraceList?.(value) || [];
+}
+
+function closeLibraryAliasModal() {
+  return dashboardLibraryAliasController.closeLibraryAliasModal();
+}
+
+function renderLibraryAliasProposalModal(payload) {
+  return dashboardLibraryAliasController.renderLibraryAliasProposalModal(payload);
+}
+
+function renderCurrentLibraryAliasModal() {
+  return dashboardLibraryAliasController.renderCurrentLibraryAliasModal();
+}
+
+async function loadLibraryAliasProposalPage(page = 1) {
+  return dashboardLibraryAliasController.loadLibraryAliasProposalPage(page);
+}
+
+async function openLibraryAliasModal() {
+  return dashboardLibraryAliasController.openLibraryAliasModal();
+}
+
+async function submitLibraryAliasReview(proposalId, aliases) {
+  return dashboardLibraryAliasController.submitLibraryAliasReview(proposalId, aliases);
 }
 
 function ensureSelectValue(select, value, { allowAll = false } = {}) {
@@ -2430,8 +3684,17 @@ function ensureSelectValue(select, value, { allowAll = false } = {}) {
 function populateTicketFilterSelect(select, values, currentValue) {
   if (!select) return;
   const fallbackValue = select === ticketsStatusFilter ? (currentTicketStatusFilter || "non_closed") : "all";
-  const selectedValue = String(currentValue || select.value || fallbackValue).trim() || fallbackValue;
-  const dynamic = Array.isArray(values) ? values.map((item) => String(item || "").trim()).filter(Boolean) : [];
+  const normalizePriority = (value) => DashboardTicketsModule?.normalizeTicketPriority?.(value) || String(value || "").trim();
+  const rawSelectedValue = String(currentValue || select.value || fallbackValue).trim() || fallbackValue;
+  const selectedValue = select === ticketsPriorityFilter && rawSelectedValue !== "all"
+    ? normalizePriority(rawSelectedValue)
+    : rawSelectedValue;
+  const dynamic = Array.isArray(values)
+    ? values
+      .map((item) => select === ticketsPriorityFilter ? normalizePriority(item) : String(item || "").trim())
+      .filter(Boolean)
+      .filter((item, index, list) => list.indexOf(item) === index)
+    : [];
   const staticOptions = select === ticketsStatusFilter
     ? ['<option value="non_closed">非关闭</option>', '<option value="all">全部</option>']
     : ['<option value="all">全部</option>'];
@@ -2440,50 +3703,19 @@ function populateTicketFilterSelect(select, values, currentValue) {
 }
 
 function ticketBadgeClass(prefix, value) {
-  const suffix = String(value || "").trim().toLowerCase().replace(/[^a-z0-9_-]+/g, "-");
-  return suffix ? `${prefix}-${suffix}` : "";
+  return DashboardTicketsModule?.ticketBadgeClass?.(prefix, value) || "";
 }
 
 function renderTicketTraceLinks(traces) {
-  if (!ticketRelatedTracesLinks) return;
-  const items = parseTicketTraceList(traces);
-  ticketRelatedTracesLinks.innerHTML = items.length
-    ? items.map((traceId) => `<button class="ticket-trace-link-btn" type="button" data-ticket-trace-open="${escapeHtml(traceId)}">${escapeHtml(traceId)}</button>`).join("")
-    : '<span class="ticket-empty-state">暂无关联 trace</span>';
+  DashboardTicketsModule?.renderTicketTraceLinks?.(ticketRelatedTracesLinks, traces, escapeHtml);
 }
 
 function buildEmptyTicket() {
-  return {
-    ticket_id: "",
-    title: "",
-    status: "open",
-    priority: "medium",
-    domain: "",
-    category: "",
-    summary: "",
-    related_traces: [],
-    repro_query: "",
-    expected_behavior: "",
-    actual_behavior: "",
-    root_cause: "",
-    fix_notes: "",
-    additional_notes: "",
-    created_at: "",
-    updated_at: "",
-  };
+  return DashboardTicketsModule?.buildEmptyTicket?.() || {};
 }
 
 function mergeTicketDraft(currentTicket, draftTicket) {
-  const base = currentTicket && typeof currentTicket === "object" ? currentTicket : buildEmptyTicket();
-  const draft = draftTicket && typeof draftTicket === "object" ? draftTicket : {};
-  return {
-    ...base,
-    ...draft,
-    ticket_id: String(base.ticket_id || ""),
-    created_at: String(base.created_at || draft.created_at || ""),
-    updated_at: String(base.updated_at || draft.updated_at || ""),
-    related_traces: parseTicketTraceList(draft.related_traces ?? base.related_traces ?? []),
-  };
+  return DashboardTicketsModule?.mergeTicketDraft?.(currentTicket, draftTicket) || { ...(currentTicket || {}), ...(draftTicket || {}) };
 }
 
 function syncTicketsPaneHeights() {
@@ -2522,60 +3754,15 @@ function setupTicketsPaneHeightSync() {
 }
 
 function applyTicketToForm(ticket) {
-  const value = ticket && typeof ticket === "object" ? ticket : buildEmptyTicket();
-  currentTicketId = String(value.ticket_id || "").trim();
-  if (ticketIdInput) ticketIdInput.value = currentTicketId;
-  if (ticketTraceIdInput) ticketTraceIdInput.value = parseTicketTraceList(value.related_traces)[0] || "";
-  if (ticketTitleInput) ticketTitleInput.value = String(value.title || "");
-  if (ticketStatusInput) ensureSelectValue(ticketStatusInput, value.status || "open");
-  if (ticketPriorityInput) ensureSelectValue(ticketPriorityInput, value.priority || "medium");
-  if (ticketDomainInput) ticketDomainInput.value = String(value.domain || "");
-  if (ticketCategoryInput) ticketCategoryInput.value = String(value.category || "");
-  if (ticketCreatedAtInput) ticketCreatedAtInput.value = String(value.created_at || "");
-  if (ticketUpdatedAtInput) ticketUpdatedAtInput.value = String(value.updated_at || "");
-  if (ticketRelatedTracesInput) ticketRelatedTracesInput.value = parseTicketTraceList(value.related_traces).join("\n");
-  if (ticketReproQueryInput) ticketReproQueryInput.value = String(value.repro_query || "");
-  if (ticketSummaryInput) ticketSummaryInput.value = String(value.summary || "");
-  if (ticketExpectedBehaviorInput) ticketExpectedBehaviorInput.value = String(value.expected_behavior || "");
-  if (ticketActualBehaviorInput) ticketActualBehaviorInput.value = String(value.actual_behavior || "");
-  if (ticketRootCauseInput) ticketRootCauseInput.value = String(value.root_cause || "");
-  if (ticketFixNotesInput) ticketFixNotesInput.value = String(value.fix_notes || "");
-  if (ticketAdditionalNotesInput) ticketAdditionalNotesInput.value = String(value.additional_notes || "");
-  renderTicketTraceLinks(value.related_traces || []);
-  if (ticketsDetailMeta) {
-    ticketsDetailMeta.textContent = currentTicketId
-      ? `${currentTicketId} | ${String(value.status || "open")} | ${String(value.priority || "medium")}`
-      : "可先用 trace_id 生成草稿，再人工编辑更新字段";
-  }
-  if (ticketsDeleteBtn) ticketsDeleteBtn.disabled = !currentTicketId;
-  syncTicketsPaneHeights();
+  dashboardTicketsBootstrap.applyTicketToForm(ticket);
 }
 
 function closeTicketDeleteModal() {
-  if (!ticketDeleteModal) return;
-  ticketDeleteModal.classList.add("hidden");
-  ticketDeleteModal.setAttribute("aria-hidden", "true");
-  if (ticketDeleteConfirmSelect) ticketDeleteConfirmSelect.value = "";
-  if (ticketDeleteConfirmBtn) ticketDeleteConfirmBtn.disabled = true;
-  pendingDeleteTicketId = "";
+  dashboardTicketsBootstrap.closeTicketDeleteModal();
 }
 
 function openTicketDeleteModal() {
-  if (!currentTicketId) {
-    showAppErrorModal("删除 Ticket 失败", "当前没有可删除的 Ticket");
-    return;
-  }
-  pendingDeleteTicketId = currentTicketId;
-  const current = currentTickets.find((item) => String(item.ticket_id || "") === currentTicketId);
-  if (ticketDeleteMeta) {
-    ticketDeleteMeta.textContent = current
-      ? `${currentTicketId} | ${String(current.title || "未命名 Ticket")}`
-      : currentTicketId;
-  }
-  if (ticketDeleteConfirmSelect) ticketDeleteConfirmSelect.value = "";
-  if (ticketDeleteConfirmBtn) ticketDeleteConfirmBtn.disabled = true;
-  ticketDeleteModal?.classList.remove("hidden");
-  ticketDeleteModal?.setAttribute("aria-hidden", "false");
+  dashboardTicketsBootstrap.openTicketDeleteModal();
 }
 
 async function confirmDeleteCurrentTicket() {
@@ -2627,16 +3814,28 @@ function collectTicketFilterParams() {
   };
 }
 
+function applyTicketDateFilters(appliedFilters, fallbackFilters = null) {
+  const source = appliedFilters && typeof appliedFilters === "object"
+    ? appliedFilters
+    : (fallbackFilters && typeof fallbackFilters === "object" ? fallbackFilters : {});
+  if (ticketsCreatedFrom) ticketsCreatedFrom.value = String(source.created_from || "");
+  if (ticketsCreatedTo) ticketsCreatedTo.value = String(source.created_to || "");
+}
+
 function renderTicketSortButton() {
   if (!ticketsSortToggleBtn) return;
   ticketsSortToggleBtn.textContent = currentTicketSort === "updated_asc" ? "最早优先" : "最新优先";
 }
 
 function isCompactTicketsLayout() {
-  return typeof window !== "undefined" && window.matchMedia("(max-width: 980px)").matches;
+  return ticketsShellController?.isCompactLayout?.() || (typeof window !== "undefined" && window.matchMedia("(max-width: 980px)").matches);
 }
 
 function renderTicketsListCollapseButton() {
+  if (ticketsShellController?.syncToggle) {
+    ticketsShellController.syncToggle();
+    return;
+  }
   if (!ticketsListCollapseBtn) return;
   ticketsListCollapseBtn.textContent = ticketsListCollapsed
     ? (isCompactTicketsLayout() ? "向下展开" : ">")
@@ -2646,6 +3845,10 @@ function renderTicketsListCollapseButton() {
 }
 
 function applyTicketsListLayoutState() {
+  if (ticketsShellController?.syncLayout) {
+    ticketsShellController.syncLayout();
+    return;
+  }
   ticketsMainGrid?.classList.toggle("is-list-collapsed", ticketsListCollapsed);
   ticketsListShell?.classList.toggle("is-collapsed", ticketsListCollapsed);
   renderTicketsListCollapseButton();
@@ -2653,6 +3856,11 @@ function applyTicketsListLayoutState() {
 }
 
 function setTicketsListCollapsed(nextValue) {
+  if (ticketsShellController?.setCollapsed) {
+    ticketsShellController.setCollapsed(nextValue);
+    ticketsListCollapsed = ticketsShellController.isCollapsed();
+    return;
+  }
   ticketsListCollapsed = Boolean(nextValue);
   try {
     window.localStorage.setItem(TICKETS_LIST_COLLAPSED_STORAGE_KEY, ticketsListCollapsed ? "1" : "0");
@@ -2663,7 +3871,7 @@ function setTicketsListCollapsed(nextValue) {
 }
 
 try {
-  ticketsListCollapsed = window.localStorage.getItem(TICKETS_LIST_COLLAPSED_STORAGE_KEY) === "1";
+  ticketsListCollapsed = ticketsShellController?.isCollapsed?.() || window.localStorage.getItem(TICKETS_LIST_COLLAPSED_STORAGE_KEY) === "1";
 } catch (_) {
   ticketsListCollapsed = false;
 }
@@ -2672,34 +3880,7 @@ applyTicketsListLayoutState();
 
 function renderTicketsList() {
   if (!ticketsList) return;
-  ticketsList.innerHTML = currentTickets.length
-    ? currentTickets.map((ticket) => {
-        const ticketId = String(ticket.ticket_id || "");
-        const title = escapeHtml(String(ticket.title || "未命名 Ticket"));
-        const status = String(ticket.status || "open");
-        const priority = String(ticket.priority || "medium");
-        const domain = String(ticket.domain || "—");
-        const category = String(ticket.category || "—");
-        const activeClass = ticketId && ticketId === currentTicketId ? " is-active" : "";
-        return `
-          <article class="ticket-list-item${activeClass}" data-ticket-id="${escapeHtml(ticketId)}">
-            <div class="ticket-list-top">
-              <div>
-                <div class="ticket-list-title">${title}</div>
-                <div class="ticket-list-id">${escapeHtml(ticketId || "未保存")}</div>
-              </div>
-              <div class="dashboard-meta">${escapeHtml(String(ticket.updated_at || ticket.created_at || ""))}</div>
-            </div>
-            <div class="ticket-badge-row">
-              <span class="ticket-badge ${ticketBadgeClass("status", status)}">${escapeHtml(status)}</span>
-              <span class="ticket-badge ${ticketBadgeClass("priority", priority)}">${escapeHtml(priority)}</span>
-              <span class="ticket-badge">${escapeHtml(domain)}</span>
-              <span class="ticket-badge">${escapeHtml(category)}</span>
-            </div>
-          </article>
-        `;
-      }).join("")
-    : '<div class="ticket-empty-state">当前筛选下暂无 ticket</div>';
+  ticketsList.innerHTML = DashboardTicketsModule?.renderTicketsListMarkup?.(currentTickets, currentTicketId, escapeHtml) || "";
   syncTicketsPaneHeights();
 }
 
@@ -2731,6 +3912,7 @@ async function refreshTickets({ keepSelection = true, selectTicketId = "" } = {}
   const query = new URLSearchParams(params).toString();
   const data = await apiGet(`/api/dashboard/tickets?${query}`);
   currentTickets = Array.isArray(data?.items) ? data.items : [];
+  applyTicketDateFilters(data?.applied_filters, params);
   populateTicketFilterSelect(ticketsStatusFilter, data?.filters?.statuses, params.status);
   populateTicketFilterSelect(ticketsPriorityFilter, data?.filters?.priorities, params.priority);
   populateTicketFilterSelect(ticketsDomainFilter, data?.filters?.domains, params.domain);
@@ -2741,7 +3923,7 @@ async function refreshTickets({ keepSelection = true, selectTicketId = "" } = {}
   const nextTicket = preferredId ? currentTickets.find((ticket) => String(ticket.ticket_id || "") === preferredId) : null;
   if (nextTicket) {
     applyTicketToForm(nextTicket);
-  } else if (!keepSelection || !currentTicketId) {
+  } else if (!keepSelection || !preferredId || (preferredId && !nextTicket)) {
     applyTicketToForm(buildEmptyTicket());
   }
   renderTicketsList();
@@ -2750,15 +3932,18 @@ async function refreshTickets({ keepSelection = true, selectTicketId = "" } = {}
 async function bootstrapTicketsTab() {
   if (ticketsState.loaded || ticketsState.loading) return;
   ticketsState.loading = true;
+  const defaultDateRange = getDefaultTicketDateRange();
 
   // Paint from SSR prefill immediately — no network request needed.
   const prefill = loadTicketsPrefill();
   if (prefill) {
     currentTickets = Array.isArray(prefill.items) ? prefill.items : [];
-    populateTicketFilterSelect(ticketsStatusFilter, prefill.filters?.statuses, "non_closed");
+    currentTicketStatusFilter = String(prefill.applied_filters?.status || currentTicketStatusFilter || "non_closed").trim() || "non_closed";
+    populateTicketFilterSelect(ticketsStatusFilter, prefill.filters?.statuses, currentTicketStatusFilter);
     populateTicketFilterSelect(ticketsPriorityFilter, prefill.filters?.priorities, "all");
     populateTicketFilterSelect(ticketsDomainFilter, prefill.filters?.domains, "all");
     populateTicketFilterSelect(ticketsCategoryFilter, prefill.filters?.categories, "all");
+    applyTicketDateFilters(prefill.applied_filters, defaultDateRange);
     if (ticketsMeta) ticketsMeta.textContent = `当前 ${formatNum(prefill.count || currentTickets.length)} 条 ticket`;
     renderTicketsList();
     setupTicketsPaneHeightSync();
@@ -2774,6 +3959,8 @@ async function bootstrapTicketsTab() {
 
   // No SSR prefill: blocking fetch (fallback for cold/missing data).
   try {
+    if (ticketsCreatedFrom && !ticketsCreatedFrom.value) ticketsCreatedFrom.value = defaultDateRange.created_from;
+    if (ticketsCreatedTo && !ticketsCreatedTo.value) ticketsCreatedTo.value = defaultDateRange.created_to;
     await refreshTickets({ keepSelection: false });
     setupTicketsPaneHeightSync();
     ticketsState.loaded = true;
@@ -2857,419 +4044,526 @@ async function openTicketFromCurrentTrace() {
 }
 
 function getBenchmarkModuleLabel(module) {
-  return ({ rag: "RAG", agent: "LLM Agent", hybrid: "Hybrid" }[String(module || "").trim()] || String(module || "").toUpperCase());
+  return dashboardBenchmarkBootstrap.getBenchmarkModuleLabel(module);
 }
 
+const dashboardBenchmarkBootstrap = DashboardBenchmarkBootstrapModule?.createBenchmarkBootstrap?.({
+  module: DashboardBenchmarkModule,
+  createMissingController,
+  controllerDeps: {
+  apiPost,
+  apiGet,
+  apiDelete,
+  pollJsonJob,
+  normalizeBenchmarkHistoryResponse,
+  normalizeBenchmarkCaseSetsResponse,
+  normalizeBenchmarkCaseSet,
+  normalizeBenchmarkJobResponse,
+  normalizeRouterClassificationCasesResponse,
+  normalizeRouterClassificationRunResponse,
+  loadBenchmarkPrefill,
+  historyColumns: BENCHMARK_HISTORY_COLUMNS,
+  renderBenchmarkCaseSetOptions,
+  renderBenchmarkQualityPanels,
+  syncBenchmarkCountOptions,
+  fetchTrace,
+  renderTraceSummary,
+  syncBenchmarkLogBox,
+  escapeHtml,
+  showAppErrorModal,
+  getCurrentBenchmarkTestSet: () => currentBmTestSet,
+  getBenchmarkLatestCase: (results, liveLatestCase) => DashboardBenchmarkModule.getLatestBenchmarkCase(results, liveLatestCase),
+  summarizeAssertionScope,
+  summarizeAssertionFailures,
+  summarizeBenchmarkContractFailures,
+  renderBenchmarkContractFailureSummary,
+  modalApi: DashboardSharedModal,
+  debugUiEvent,
+  setCurrentBenchmarkTestSet: (value) => {
+    currentBmTestSet = String(value || currentBmTestSet || "rag/short");
+  },
+  getState: () => ({
+    history: benchmarkHistory,
+    liveLatestCase: benchmarkLiveLatestCase,
+    liveLatestCaseKey: benchmarkLiveLatestCaseKey,
+    latestTraceRenderSeq: benchmarkLatestTraceRenderSeq,
+    latestTraceCacheKey: benchmarkLatestTraceCacheKey,
+    activeBenchmarkJobId,
+    lastBenchmarkLogCount,
+    lastBenchmarkLogMarker,
+    caseSets: benchmarkCaseSets,
+    routerClassificationCases,
+    routerClassificationLastResults,
+    editingRouterClassificationCaseId,
+    benchmarkState,
+  }),
+  setState: (patch) => {
+    if (!patch || typeof patch !== "object") return;
+    if (Object.prototype.hasOwnProperty.call(patch, "history")) benchmarkHistory = Array.isArray(patch.history) ? patch.history : [];
+    if (Object.prototype.hasOwnProperty.call(patch, "liveLatestCase")) benchmarkLiveLatestCase = patch.liveLatestCase || null;
+    if (Object.prototype.hasOwnProperty.call(patch, "liveLatestCaseKey")) benchmarkLiveLatestCaseKey = String(patch.liveLatestCaseKey || "");
+    if (Object.prototype.hasOwnProperty.call(patch, "latestTraceRenderSeq")) benchmarkLatestTraceRenderSeq = Number(patch.latestTraceRenderSeq || 0);
+    if (Object.prototype.hasOwnProperty.call(patch, "latestTraceCacheKey")) benchmarkLatestTraceCacheKey = String(patch.latestTraceCacheKey || "");
+    if (Object.prototype.hasOwnProperty.call(patch, "activeBenchmarkJobId")) activeBenchmarkJobId = String(patch.activeBenchmarkJobId || "");
+    if (Object.prototype.hasOwnProperty.call(patch, "lastBenchmarkLogCount")) lastBenchmarkLogCount = Number(patch.lastBenchmarkLogCount || 0);
+    if (Object.prototype.hasOwnProperty.call(patch, "lastBenchmarkLogMarker")) lastBenchmarkLogMarker = String(patch.lastBenchmarkLogMarker || "");
+    if (Object.prototype.hasOwnProperty.call(patch, "caseSets")) benchmarkCaseSets = Array.isArray(patch.caseSets) ? patch.caseSets : [];
+    if (Object.prototype.hasOwnProperty.call(patch, "routerClassificationCases")) routerClassificationCases = Array.isArray(patch.routerClassificationCases) ? patch.routerClassificationCases : [];
+    if (Object.prototype.hasOwnProperty.call(patch, "routerClassificationLastResults")) routerClassificationLastResults = Array.isArray(patch.routerClassificationLastResults) ? patch.routerClassificationLastResults : [];
+    if (Object.prototype.hasOwnProperty.call(patch, "editingRouterClassificationCaseId")) editingRouterClassificationCaseId = String(patch.editingRouterClassificationCaseId || "");
+  },
+  getElements: () => ({
+    testSetSelect: document.getElementById("bm-testset-select"),
+    lastRun: document.getElementById("benchmark-last-run"),
+    caseTraceContainer: document.getElementById("bm-case-trace-list"),
+    caseTraceMeta: document.getElementById("bm-case-trace-meta"),
+    historyTable: document.getElementById("bm-history-table"),
+    caseSetSelect: document.getElementById("bm-case-set-select"),
+    benchmarkRagInput: document.getElementById("bm-rag"),
+    benchmarkAgentInput: document.getElementById("bm-agent"),
+    benchmarkHybridInput: document.getElementById("bm-hybrid"),
+    benchmarkCountInputs: Array.from(document.querySelectorAll("input[name='bm-count']")),
+    qualitySummary: document.getElementById("bm-quality-summary"),
+    qualityTable: document.getElementById("bm-taxonomy-table"),
+    qualityMeta: document.getElementById("bm-quality-meta"),
+    qualityContract: document.getElementById("bm-quality-contract"),
+    routerClsRunBtn: document.getElementById("bm-router-cls-run"),
+    routerClsMeta: document.getElementById("bm-router-cls-meta"),
+    routerClsSummary: document.getElementById("bm-router-cls-summary"),
+    routerClsTableWrap: document.getElementById("bm-router-cls-table-wrap"),
+    routerClsTbody: document.getElementById("bm-router-cls-tbody"),
+    routerClsAddBtn: benchmarkRouterClsAddBtn,
+    routerClsModal: benchmarkRouterClsModal,
+    routerClsModalController: benchmarkRouterClsModalController,
+    routerClsModalTitle: benchmarkRouterClsModalTitle,
+    routerClsModalMeta: benchmarkRouterClsModalMeta,
+    routerClsTraceIdInput: benchmarkRouterClsTraceIdInput,
+    routerClsImportBtn: benchmarkRouterClsImportBtn,
+    routerClsQueryInput: benchmarkRouterClsQueryInput,
+    routerClsExpectedDomainInput: benchmarkRouterClsExpectedDomainInput,
+    routerClsExpectedArbitrationInput: benchmarkRouterClsExpectedArbitrationInput,
+    routerClsNoteInput: benchmarkRouterClsNoteInput,
+    routerClsMockLabelInput: benchmarkRouterClsMockLabelInput,
+    routerClsMockDomainInput: benchmarkRouterClsMockDomainInput,
+    routerClsMockLookupModeInput: benchmarkRouterClsMockLookupModeInput,
+    routerClsMockEntitiesInput: benchmarkRouterClsMockEntitiesInput,
+    routerClsLastRunBox: benchmarkRouterClsLastRunBox,
+    routerClsSaveBtn: benchmarkRouterClsSaveBtn,
+    routerClsDeleteBtn: benchmarkRouterClsDeleteBtn,
+    routerClsCancelBtn: benchmarkRouterClsCancelBtn,
+  }),
+  },
+  runButton: document.getElementById("bm-run-btn"),
+  abortButton: document.getElementById("bm-abort-btn"),
+  unitTestsButton: document.getElementById("bm-unit-tests-run"),
+  caseTraceRefreshButton: benchmarkCaseTraceRefreshBtn,
+  caseTraceList: document.getElementById("bm-case-trace-list"),
+  onTraceStageClick: _traceStageClickHandler,
+  onTraceStageHover: _traceStageHoverHandler,
+  closeAllTraceStageTooltips,
+  openTraceModal,
+  showAppErrorModal,
+  debugUiEvent,
+  runBenchmark,
+  runUnitTests,
+  getActiveBenchmarkJobId: () => activeBenchmarkJobId,
+  resumeSharedBenchmarkJobUi,
+}) || (() => {
+  const controller = createMissingController(
+    "NavDashboardBenchmark",
+    [
+      "renderBenchmarkCaseSetOptions",
+      "renderBenchmarkQualityPanels",
+      "getBenchmarkLatestCaseKey",
+      "renderBenchmarkLatestCaseFallback",
+      "renderBenchmarkTable",
+      "syncBenchmarkCountOptions",
+      "clearHistoryState",
+      "bindBenchmarkConfigEvents",
+      "bindRouterClassificationEvents",
+    ],
+    [
+      "loadBenchmarkHistory",
+      "renderBenchmarkCaseTraceList",
+      "updateBenchmarkLiveStateFromJob",
+      "refreshBenchmarkLatestCase",
+      "bootstrapBenchmarkTab",
+      "resumeSharedBenchmarkJob",
+      "loadRouterClassificationCases",
+      "importRouterClassificationTrace",
+      "openRouterClassificationEditor",
+      "closeRouterClassificationEditor",
+      "saveRouterClassificationCase",
+      "deleteRouterClassificationCase",
+      "runRouterClassification",
+      "resetLiveCaseState",
+      "runBenchmarkAction",
+      "cancelBenchmarkRun",
+    ],
+    {
+      getBenchmarkLatestCaseKey: () => "",
+      renderBenchmarkLatestCaseFallback: () => '<div class="trace-result-empty">Benchmark 模块未加载</div>',
+    },
+  );
+  return {
+    controller,
+    bindEvents() {},
+    getBenchmarkModuleLabel: (module) => DashboardBenchmarkModule?.getBenchmarkModuleLabel?.(module) || String(module || "").toUpperCase(),
+    renderBenchmarkQualityPanels: (...args) => controller.renderBenchmarkQualityPanels(...args),
+    loadBenchmarkHistory: (...args) => controller.loadBenchmarkHistory(...args),
+    getBenchmarkLatestCaseKey: (...args) => controller.getBenchmarkLatestCaseKey(...args),
+    renderBenchmarkLatestCaseFallback: (...args) => controller.renderBenchmarkLatestCaseFallback(...args),
+    renderBenchmarkCaseTraceList: (...args) => controller.renderBenchmarkCaseTraceList(...args),
+    updateBenchmarkLiveStateFromJob: (...args) => controller.updateBenchmarkLiveStateFromJob(...args),
+    refreshBenchmarkLatestCase: (...args) => controller.refreshBenchmarkLatestCase(...args),
+    renderBenchmarkTable: (...args) => controller.renderBenchmarkTable(...args),
+    bootstrapBenchmarkTab: (...args) => controller.bootstrapBenchmarkTab(...args),
+    resumeSharedBenchmarkJob: (...args) => controller.resumeSharedBenchmarkJob(...args),
+    syncBenchmarkCountOptions: (...args) => controller.syncBenchmarkCountOptions(...args),
+    loadRouterClassificationCases: (...args) => controller.loadRouterClassificationCases(...args),
+    importRouterClassificationTrace: (...args) => controller.importRouterClassificationTrace(...args),
+    openRouterClassificationEditor: (...args) => controller.openRouterClassificationEditor(...args),
+    closeRouterClassificationEditor: (...args) => controller.closeRouterClassificationEditor(...args),
+    saveRouterClassificationCase: (...args) => controller.saveRouterClassificationCase(...args),
+    deleteRouterClassificationCase: (...args) => controller.deleteRouterClassificationCase(...args),
+    runRouterClassification: (...args) => controller.runRouterClassification(...args),
+    resetLiveCaseState: (...args) => controller.resetLiveCaseState(...args),
+    runBenchmarkAction: (...args) => controller.runBenchmarkAction(...args),
+    clearHistoryState: (...args) => controller.clearHistoryState(...args),
+  };
+})();
+const dashboardBenchmarkController = dashboardBenchmarkBootstrap.controller;
+
 function getLatestBenchmarkCaseFromRun(run) {
-  if (!run || typeof run !== "object") return null;
-  const modules = Array.isArray(run?.config?.modules) ? run.config.modules.map((item) => String(item || "").trim()).filter(Boolean) : [];
-  const orderedModules = [];
-  if (modules.includes("rag")) orderedModules.push("rag");
-  modules.forEach((module) => {
-    if ((module === "agent" || module === "hybrid") && !orderedModules.includes(module)) orderedModules.push(module);
-  });
-  let latest = null;
-  ["short", "medium", "long"].forEach((length) => {
-    orderedModules.forEach((module) => {
-      const records = Array.isArray(run?.[module]?.records_by_length?.[length]) ? run[module].records_by_length[length] : [];
-      if (!records.length) return;
-      latest = {
-        module,
-        length,
-        case_index: records.length,
-        case_total: records.length,
-        timestamp: String(run.timestamp || "").trim(),
-        record: records[records.length - 1],
-      };
-    });
-  });
-  return latest;
+  return DashboardBenchmarkModule?.getLatestBenchmarkCaseFromRun?.(run) || null;
 }
 
 function getLatestBenchmarkCase(results) {
-  if (benchmarkLiveLatestCase?.record) return benchmarkLiveLatestCase;
-  if (!Array.isArray(results) || !results.length) return null;
-  return getLatestBenchmarkCaseFromRun(results[results.length - 1]);
+  return DashboardBenchmarkModule?.getLatestBenchmarkCase?.(results, benchmarkLiveLatestCase) || null;
+}
+
+function getLatestBenchmarkRunForModule(results, module) {
+  return DashboardBenchmarkModule?.getLatestBenchmarkRunForModule?.(results, module) || null;
+}
+
+function renderBenchmarkRateBadge(rate, count, label) {
+  return DashboardBenchmarkModule?.renderBenchmarkRateBadge?.(rate, count, label, escapeHtml)
+    || `<article class="bm-quality-card is-muted"><strong>${escapeHtml(String(label || ""))}</strong><span>—</span><small>模块未加载</small></article>`;
+}
+
+function renderBenchmarkQualityPanels(results) {
+  return dashboardBenchmarkBootstrap.renderBenchmarkQualityPanels(results);
 }
 
 async function loadBenchmarkHistory() {
-  const data = await apiGet("/api/benchmark/history");
-  benchmarkHistory = Array.isArray(data?.results) ? data.results : [];
-  renderBenchmarkTable(benchmarkHistory);
-  const last = benchmarkHistory.length ? benchmarkHistory[benchmarkHistory.length - 1] : null;
-  const lastRun = document.getElementById("benchmark-last-run");
-  if (lastRun) {
-    if (!last) {
-      lastRun.textContent = "从未运行";
-    } else {
-      const summary = last?.assertion_summary;
-      const assertionText = summary ? ` | 断言 ${summary.passed}/${summary.passed + summary.failed}` : "";
-      lastRun.textContent = `上次运行: ${last.timestamp || ""}${assertionText}`;
-    }
-  }
-  return benchmarkHistory;
+  return dashboardBenchmarkBootstrap.loadBenchmarkHistory();
 }
 
 function getBenchmarkLatestCaseKey(latestCase, mode = benchmarkLiveLatestCase?.record ? "live" : "history") {
-  if (!latestCase?.record || typeof latestCase.record !== "object") return "";
-  return [
-    mode,
-    String(latestCase.module || "").trim(),
-    String(latestCase.length || "").trim(),
-    Number(latestCase.case_index || 0),
-    Number(latestCase.case_total || 0),
-    String(latestCase.timestamp || "").trim(),
-    String(latestCase.record?.trace_id || "").trim(),
-  ].join("|");
+  return dashboardBenchmarkBootstrap.getBenchmarkLatestCaseKey(latestCase, mode);
 }
 
 function renderBenchmarkLatestCaseFallback(latestCase, { missingTrace = false } = {}) {
-  const record = latestCase?.record && typeof latestCase.record === "object" ? latestCase.record : {};
-  const traceId = String(record.trace_id || "");
-  const plannedTools = Array.isArray(record.planned_tools) ? record.planned_tools : [];
-  const noContext = Number(record.no_context || 0) > 0;
-  const notice = missingTrace
-    ? '<div class="dashboard-meta">未找到对应的共享 trace 记录，当前展示的是 benchmark 结果里的精简摘要。点击“刷新当前最新”会重新从服务端拉取最新历史。</div>'
-    : "";
-  return `<article class="bm-case-card">
-    <div class="trace-kv"><span>Trace ID</span><strong>${escapeHtml(traceId || "—")}</strong></div>
-    <div class="trace-kv"><span>Query</span><strong>${escapeHtml(String(record.query || "—"))}</strong></div>
-    <div class="trace-kv"><span>Query Type</span><strong>${escapeHtml(String(record.query_type || "—"))}</strong></div>
-    <div class="trace-kv"><span>No Context</span><strong>${noContext ? `true / ${escapeHtml(String(record.no_context_reason || ""))}` : "false"}</strong></div>
-    ${notice}
-    <div class="trace-chip-list">${plannedTools.length ? plannedTools.map((tool) => `<span class="trace-chip">${escapeHtml(String(tool))}</span>`).join("") : '<span class="trace-chip">none</span>'}</div>
-    <div class="card-modal-actions">
-      <button class="ghost" data-trace-open="${escapeHtml(traceId)}"${traceId ? "" : " disabled"}>查看 Trace</button>
-    </div>
-  </article>`;
+  return dashboardBenchmarkBootstrap.renderBenchmarkLatestCaseFallback(latestCase, { missingTrace });
 }
 
 async function renderBenchmarkCaseTraceList(results, latestCase = benchmarkLiveLatestCase, { force = false } = {}) {
-  const container = document.getElementById("bm-case-trace-list");
-  const meta = document.getElementById("bm-case-trace-meta");
-  if (!container) return;
-  const resolved = latestCase?.record ? latestCase : getLatestBenchmarkCase(results);
-  if (!resolved?.record) {
-    benchmarkLatestTraceCacheKey = "";
-    if (meta) meta.textContent = "显示正在运行或最近一次 Benchmark 的最新 trace 详情";
-    container.innerHTML = '<div class="trace-result-empty">暂无 case trace 数据</div>';
-    return;
-  }
-  const traceId = String(resolved.record?.trace_id || "").trim();
-  if (meta) {
-    meta.textContent = `${benchmarkLiveLatestCase?.record ? "运行中最新" : "最近完成"}: ${String(resolved.timestamp || "")} | ${getBenchmarkModuleLabel(resolved.module)} / ${resolved.length || ""} | case ${resolved.case_index || "-"}/${resolved.case_total || "-"}`;
-  }
-  if (!traceId) {
-    benchmarkLatestTraceCacheKey = "";
-    container.innerHTML = renderBenchmarkLatestCaseFallback(resolved);
-    return;
-  }
-  const cacheKey = `${traceId}|${benchmarkLiveLatestCase?.record ? "live" : "history"}`;
-  if (!force && benchmarkLatestTraceCacheKey === cacheKey) return;
-  benchmarkLatestTraceCacheKey = cacheKey;
-  const renderSeq = ++benchmarkLatestTraceRenderSeq;
-  if (!container.children.length) {
-    container.innerHTML = '<div class="trace-result-empty">正在加载最新 case trace...</div>';
-  }
-  try {
-    const { trace } = await fetchTrace(traceId);
-    if (renderSeq !== benchmarkLatestTraceRenderSeq) return;
-    if (!trace) {
-      container.innerHTML = renderBenchmarkLatestCaseFallback(resolved, { missingTrace: true });
-      return;
-    }
-    container.innerHTML = `${renderTraceSummary(trace)}<div class="card-modal-actions"><button class="ghost" data-trace-open="${escapeHtml(traceId)}">弹窗查看</button></div>`;
-  } catch (_err) {
-    if (renderSeq !== benchmarkLatestTraceRenderSeq) return;
-    container.innerHTML = renderBenchmarkLatestCaseFallback(resolved, { missingTrace: true });
-  }
+  return dashboardBenchmarkBootstrap.renderBenchmarkCaseTraceList(results, latestCase, { force });
 }
 
 function updateBenchmarkLiveStateFromJob(job, { render = true } = {}) {
-  const meta = job?.metadata && typeof job.metadata === "object" ? job.metadata : {};
-  const latestCase = meta.latest_case && typeof meta.latest_case === "object" ? meta.latest_case : null;
-  let changed = false;
-  if (latestCase && latestCase.record && typeof latestCase.record === "object") {
-    const nextLatestCase = {
-      module: String(latestCase.module || "").trim(),
-      length: String(latestCase.length || "").trim(),
-      case_index: Number(latestCase.case_index || 0),
-      case_total: Number(latestCase.case_total || 0),
-      timestamp: String(latestCase.timestamp || "").trim(),
-      record: latestCase.record,
-    };
-    const nextKey = getBenchmarkLatestCaseKey(nextLatestCase, "live");
-    changed = nextKey !== benchmarkLiveLatestCaseKey;
-    benchmarkLiveLatestCase = nextLatestCase;
-    benchmarkLiveLatestCaseKey = nextKey;
-  } else if (benchmarkLiveLatestCase || benchmarkLiveLatestCaseKey) {
-    benchmarkLiveLatestCase = null;
-    benchmarkLiveLatestCaseKey = "";
-    changed = true;
-  }
-  if (render && changed) renderBenchmarkCaseTraceList(benchmarkHistory, benchmarkLiveLatestCase, { force: true }).catch(() => {});
-  return changed;
+  return dashboardBenchmarkBootstrap.updateBenchmarkLiveStateFromJob(job, { render });
 }
 
 async function refreshBenchmarkLatestCase() {
-  if (!activeBenchmarkJobId) {
-    benchmarkLiveLatestCase = null;
-    benchmarkLiveLatestCaseKey = "";
-    await loadBenchmarkHistory();
-    return;
-  }
-  const job = await apiGet(`/api/benchmark/jobs/${encodeURIComponent(activeBenchmarkJobId)}`);
-  updateBenchmarkLiveStateFromJob(job, { render: false });
-  await renderBenchmarkCaseTraceList(benchmarkHistory, benchmarkLiveLatestCase, { force: true });
+  return dashboardBenchmarkBootstrap.refreshBenchmarkLatestCase();
 }
 
 function renderBenchmarkTable(results) {
-  const table = document.getElementById("bm-history-table");
-  if (!table) return;
-
-  const testSet = currentBmTestSet;
-  const [module, length] = testSet.split("/");
-  const emptyColspan = 1 + BENCHMARK_HISTORY_COLUMNS;
-
-  if (!results.length) {
-    table.innerHTML = `<tbody><tr><td colspan="${emptyColspan}" style="text-align:center;color:#7a7f6f">运行测试后查看历史对比数据</td></tr></tbody>`;
-    renderBenchmarkCaseTraceList([], benchmarkLiveLatestCase, { force: true }).catch(() => {});
-    return;
-  }
-
-  // Only keep runs that contain data for the selected module+length
-  const relevant = results.filter((r) => r?.[module]?.by_length?.[length]);
-  if (!relevant.length) {
-    const mod = ({ rag: "RAG", agent: "AGENT", hybrid: "HYBRID" }[module] || module.toUpperCase());
-    const lenLabel = { short: "短", medium: "中", long: "长" }[length] || length;
-    table.innerHTML = `<tbody><tr><td colspan="${emptyColspan}" style="text-align:center;color:#7a7f6f">当前测试集（${mod} / ${lenLabel}查询）暂无数据，请先运行包含该模块的测试</td></tr></tbody>`;
-    renderBenchmarkCaseTraceList(results, benchmarkLiveLatestCase, { force: true }).catch(() => {});
-    return;
-  }
-
-  // Up to 4 most-recent matching runs, newest first (→ leftmost column)
-  const recent = relevant.slice(-BENCHMARK_HISTORY_COLUMNS).reverse();
-
-  const thead = `<thead><tr>
-    <th style="min-width:120px">指标</th>
-    ${recent.map((r, i) => {
-      const ts = String(r.timestamp || "").replace("T", " ").slice(5, 16);
-      const mods = (r.config?.modules || []).map((m) => ({ rag: "RAG", agent: "AGENT", hybrid: "HYBRID" }[m] || String(m).toUpperCase())).join("+");
-      return `<th${i === 0 ? ' class="bm-latest"' : ""}>${escapeHtml(ts)}<br><small style="font-weight:normal;color:#9a9f8f">${escapeHtml(mods)}</small></th>`;
-    }).join("")}
-  </tr></thead>`;
-
-  const fmt = (v) => {
-    const n = Number(v);
-    if (v == null || !Number.isFinite(n) || n <= 0) return `<span style='color:#5a5f50'>—</span>`;
-    let s;
-    if (n >= 1) s = n.toFixed(2) + "s";
-    else if (n >= 0.001) s = (n * 1000).toFixed(1) + "ms";
-    else s = Math.round(n * 1_000_000) + "µs";
-    return `<span style="font-variant-numeric:tabular-nums">${s}</span>`;
-  };
-  const fmtZeroable = (v) => {
-    if (v == null) return `<span style='color:#5a5f50'>—</span>`;
-    const n = Number(v);
-    if (!Number.isFinite(n)) return `<span style='color:#5a5f50'>—</span>`;
-    if (n === 0) return `<span style="font-variant-numeric:tabular-nums">0ms</span>`;
-    return fmt(n);
-  };
-  const fmtPct = (v) =>
-    v != null && Number.isFinite(Number(v))
-      ? `${(Number(v) * 100).toFixed(1)}%`
-      : `<span style='color:#5a5f50'>—</span>`;
-  const fmtN = (d) =>
-    d?.count != null ? `${d.count - (d.errors || 0)} / ${d.count}` : "—";
-
-  // Row definitions differ slightly per module
-  const ragRows = [
-    ["总时长均值",     (d) => fmt(d?.avg_wall_clock_s)],
-    ["总时长 p95",      (d) => fmt(d?.p95_wall_clock_s)],
-    ["端到端均值",   (d) => fmt(d?.avg_elapsed_s)],
-    ["向量召回均值",   (d) => fmt(d?.avg_total_s)],
-    ["向量召回 p95",    (d) => fmt(d?.p95_total_s)],
-    ["模型重排均值",   (d) => fmt(d?.avg_rerank_seconds_s)],
-    ["模型重排 p95",    (d) => fmt(d?.p95_rerank_seconds_s)],
-  ];
-  const agentRows = [
-    ["总时长均值",   (d) => fmt(d?.avg_wall_clock_s)],
-    ["总时长 p95",    (d) => fmt(d?.p95_wall_clock_s)],
-    ["端到端均值",   (d) => fmt(d?.avg_elapsed_s ?? d?.avg_wall_clock_s)],
-    ["端到端 p95",    (d) => fmt(d?.p95_elapsed_s ?? d?.p95_wall_clock_s)],
-    ["向量召回均值", (d) => fmt(d?.avg_vector_recall_seconds_s)],
-    ["向量召回 p95",  (d) => fmt(d?.p95_vector_recall_seconds_s)],
-    ["融合排序均值", (d) => fmtZeroable(d?.avg_rerank_seconds_s)],
-    ["融合排序 p95",  (d) => fmtZeroable(d?.p95_rerank_seconds_s)],
-  ];
-  const assertionRows = [
-    ["当前集断言", (_d, run) => summarizeAssertionScope(run?.assertions?.[module]?.by_length?.[length])],
-    ["全局断言", (_d, run) => summarizeAssertionScope(run?.assertions?.[module]?.global)],
-    ["当前集失败项", (_d, run) => summarizeAssertionFailures(run?.assertions?.[module]?.by_length?.[length])],
-  ];
-  const rowDefs = (module === "rag" ? ragRows : agentRows).concat(assertionRows);
-
-  const rows = rowDefs.map(([label, getter]) => {
-    const cellClass = /断言|失败项/.test(String(label)) ? "benchmark-assert-cell" : "benchmark-metric-cell";
-    return `<tr><td style="white-space:nowrap;color:#b0b89a;font-size:0.82em">${escapeHtml(label)}</td>${recent
-      .map((r) => `<td class="${cellClass}">${getter(r?.[module]?.by_length?.[length], r)}</td>`)
-      .join("")}</tr>`;
-  });
-  table.innerHTML = `${thead}<tbody>${rows.join("")}</tbody>`;
-  renderBenchmarkCaseTraceList(results, benchmarkLiveLatestCase, { force: true }).catch(() => {});
+  return dashboardBenchmarkBootstrap.renderBenchmarkTable(results);
 }
 
 async function bootstrapBenchmarkTab() {
-  if (benchmarkState.loaded || benchmarkState.loading) return;
-  benchmarkState.loading = true;
-  try {
-    const prefill = loadBenchmarkPrefill();
-    const caseSel = document.getElementById("bm-case-set-select");
+  return dashboardBenchmarkBootstrap.bootstrapBenchmarkTab();
+}
 
-    const prefillHistory = Array.isArray(prefill?.history?.results) ? prefill.history.results : [];
-    if (prefillHistory.length) {
-      benchmarkHistory = prefillHistory;
-      renderBenchmarkTable(benchmarkHistory);
-      const last = benchmarkHistory[benchmarkHistory.length - 1];
-      const lastRunEl = document.getElementById("benchmark-last-run");
-      const summary = last?.assertion_summary;
-      const assertionText = summary ? ` | 断言 ${summary.passed}/${summary.passed + summary.failed}` : "";
-      if (lastRunEl) lastRunEl.textContent = `上次运行: ${last.timestamp || ""}${assertionText}`;
-    } else {
-      const data = await apiGet("/api/benchmark/history");
-      benchmarkHistory = Array.isArray(data.results) ? data.results : [];
-      renderBenchmarkTable(benchmarkHistory);
-      if (benchmarkHistory.length) {
-        const last = benchmarkHistory[benchmarkHistory.length - 1];
-        const lastRunEl = document.getElementById("benchmark-last-run");
-        const summary = last?.assertion_summary;
-        const assertionText = summary ? ` | 断言 ${summary.passed}/${summary.passed + summary.failed}` : "";
-        if (lastRunEl) lastRunEl.textContent = `上次运行: ${last.timestamp || ""}${assertionText}`;
-      }
+function _setBenchmarkRunUiState(running, startedAt = "") {
+  const runBtn = document.getElementById("bm-run-btn");
+  const abortBtn = document.getElementById("bm-abort-btn");
+  const progressWrap = document.getElementById("bm-progress-wrap");
+  const timerEl = document.getElementById("bm-timer");
+  if (runBtn) runBtn.disabled = !!running;
+  if (abortBtn) abortBtn.disabled = !running;
+  if (progressWrap) progressWrap.classList.toggle("hidden", !running);
+  if (!running) {
+    if (benchmarkTimerInterval) {
+      clearInterval(benchmarkTimerInterval);
+      benchmarkTimerInterval = null;
     }
-
-    const prefillCaseSets = Array.isArray(prefill?.cases?.case_sets) ? prefill.cases.case_sets : [];
-    if (prefillCaseSets.length) {
-      benchmarkCaseSets = prefillCaseSets;
-      if (caseSel) {
-        caseSel.innerHTML = prefillCaseSets.map((item) => {
-          const id = String(item?.id || "");
-          const label = String(item?.label || id);
-          return `<option value="${escapeHtml(id)}"${id === "regression_v1" ? " selected" : ""}>${escapeHtml(`${id} / ${label}`)}</option>`;
-        }).join("");
-      }
-      syncBenchmarkCountOptions();
-    } else {
-      const casesPayload = await apiGet("/api/benchmark/cases");
-      benchmarkCaseSets = Array.isArray(casesPayload?.case_sets) ? casesPayload.case_sets : [];
-      if (caseSel && benchmarkCaseSets.length) {
-        caseSel.innerHTML = benchmarkCaseSets.map((item) => {
-          const id = String(item?.id || "");
-          const label = String(item?.label || id);
-          return `<option value="${escapeHtml(id)}"${id === "regression_v1" ? " selected" : ""}>${escapeHtml(`${id} / ${label}`)}</option>`;
-        }).join("");
-      }
-      syncBenchmarkCountOptions();
-    }
-
-    benchmarkState.loaded = true;
-    benchmarkState.error = null;
-  } catch (e) {
-    benchmarkState.error = e;
-    benchmarkState.loaded = false;
-    const message = `Benchmark 初始化失败: ${e?.message || String(e)}`;
-    console.error("[benchmark] bootstrap failed:", e);
-    const table = document.getElementById("bm-history-table");
-    if (table && !benchmarkHistory.length) {
-      table.innerHTML = `<tbody><tr><td colspan="6" style="color:#c97">${escapeHtml(message)}</td></tr></tbody>`;
-    }
-    const caseSel = document.getElementById("bm-case-set-select");
-    if (caseSel && !benchmarkCaseSets.length) {
-      caseSel.innerHTML = `<option value="">初始化失败，请重试</option>`;
-    }
-    showAppErrorModal("Benchmark 初始化失败", message);
-    throw e;
-  } finally {
-    benchmarkState.loading = false;
+    return;
   }
+  const parsedStartedAt = Date.parse(String(startedAt || ""));
+  const baseTime = Number.isFinite(parsedStartedAt) ? parsedStartedAt : Date.now();
+  if (benchmarkTimerInterval) clearInterval(benchmarkTimerInterval);
+  if (timerEl) timerEl.textContent = "00:00";
+  benchmarkTimerInterval = setInterval(() => {
+    const elapsed = Math.max(0, Math.floor((Date.now() - baseTime) / 1000));
+    const mm = String(Math.floor(elapsed / 60)).padStart(2, "0");
+    const ss = String(elapsed % 60).padStart(2, "0");
+    if (timerEl) timerEl.textContent = `${mm}:${ss}`;
+  }, 1000);
+}
+
+async function resumeSharedBenchmarkJobUi() {
+  const progressFill = document.getElementById("bm-progress-fill");
+  const progressText = document.getElementById("bm-progress-text");
+  const logBox = document.getElementById("bm-log-box");
+  const payload = await apiGet("/api/dashboard/jobs?job_type=benchmark&only_active=true");
+  const jobs = Array.isArray(payload?.jobs) ? payload.jobs : [];
+  const job = jobs.find((item) => item && (item.status === "queued" || item.status === "running")) || null;
+  if (!job?.id) {
+    benchmarkWatchingJobId = "";
+    if (!activeBenchmarkJobId) _setBenchmarkRunUiState(false);
+    return null;
+  }
+  const jobId = String(job.id || "");
+  if (benchmarkWatchingJobId === jobId) return job;
+  benchmarkWatchingJobId = jobId;
+  _setBenchmarkRunUiState(true, String(job.started_at || ""));
+  if (logBox) logBox.classList.remove("hidden");
+  return dashboardBenchmarkController.resumeSharedBenchmarkJob({
+    logBox,
+    setProgressText: (message) => {
+      if (progressText) progressText.textContent = message;
+    },
+    setProgressPercent: (percent) => {
+      if (progressFill) progressFill.style.width = `${percent}%`;
+    },
+  }).finally(() => {
+    if (benchmarkWatchingJobId === jobId) benchmarkWatchingJobId = "";
+    _setBenchmarkRunUiState(false);
+  });
 }
 
 function syncBenchmarkCountOptions() {
-  const caseSetSelect = document.getElementById("bm-case-set-select");
-  const selectedCaseSetId = String(caseSetSelect?.value || "regression_v1");
-  const selectedCaseSet = benchmarkCaseSets.find((item) => String(item?.id || "") === selectedCaseSetId) || null;
-  const maxCount = Number(selectedCaseSet?.max_query_count_per_type || 0);
-  const radios = Array.from(document.querySelectorAll("input[name='bm-count']"));
-  let fallbackRadio = null;
-  let checkedRadio = null;
-  radios.forEach((radio) => {
-    const value = parseInt(String(radio.value || "0"), 10);
-    const enabled = !maxCount || value <= maxCount;
-    radio.disabled = !enabled;
-    if (enabled && !fallbackRadio) fallbackRadio = radio;
-    if (radio.checked) checkedRadio = radio;
-    const label = radio.closest("label");
-    if (label) label.style.opacity = enabled ? "1" : "0.45";
-  });
-  if (checkedRadio?.disabled && fallbackRadio) {
-    fallbackRadio.checked = true;
+  return dashboardBenchmarkBootstrap.syncBenchmarkCountOptions();
+}
+
+function normalizeRouterClassificationArbitration(value) {
+  if (Array.isArray(value)) {
+    return value.map((item) => String(item || "").trim()).filter(Boolean);
   }
+  return String(value || "")
+    .replace(/\r/g, "\n")
+    .split(/[|,\n]/)
+    .map((item) => item.trim())
+    .filter(Boolean);
+}
+
+function formatRouterClassificationArbitration(value) {
+  const items = normalizeRouterClassificationArbitration(value);
+  return items.join(" | ");
+}
+
+function setRouterClassificationMeta(text) {
+  const meta = document.getElementById("bm-router-cls-meta");
+  if (meta) meta.textContent = text;
+}
+
+function getRouterClassificationResultForCase(caseItem) {
+  const caseId = String(caseItem?.id || "").trim();
+  if (caseId) {
+    const exact = routerClassificationLastResults.find((item) => String(item?.id || "").trim() === caseId);
+    if (exact) return exact;
+  }
+  const query = String(caseItem?.query || "").trim();
+  return routerClassificationLastResults.find((item) => String(item?.query || "").trim() === query) || null;
+}
+
+function renderRouterClassificationTable() {
+  const tbody = document.getElementById("bm-router-cls-tbody");
+  const tableWrap = document.getElementById("bm-router-cls-table-wrap");
+  const summary = document.getElementById("bm-router-cls-summary");
+  if (!tbody) return;
+
+  if (!routerClassificationCases.length) {
+    tbody.innerHTML = '<tr><td colspan="8"><div class="bm-router-cls-empty">当前没有 Router 分类回归用例，点击右上角“增加用例”开始维护。</div></td></tr>';
+    if (tableWrap) tableWrap.classList.remove("hidden");
+    if (summary) summary.classList.add("hidden");
+    setRouterClassificationMeta("暂无用例，支持手动新增/编辑/删除");
+    return;
+  }
+
+  tbody.innerHTML = routerClassificationCases.map((caseItem) => {
+    const result = getRouterClassificationResultForCase(caseItem);
+    const expectedArbitration = formatRouterClassificationArbitration(caseItem.expected_arbitration);
+    const actualArbitration = result ? formatRouterClassificationArbitration(result.actual_arbitration) : "";
+    const pass = result?.pass;
+    const domainOk = !result || !result.actual_domain || result.actual_domain === caseItem.expected_domain;
+    const arbitrationOk = !result || !actualArbitration || normalizeRouterClassificationArbitration(caseItem.expected_arbitration).includes(actualArbitration);
+    const resultText = pass == null ? "—" : pass ? "✓" : "✗";
+    const resultClass = pass == null ? "" : pass ? "" : " bm-cls-row-fail";
+    return `<tr class="${resultClass}">
+      <td class="bm-cls-query" title="${escapeHtml(caseItem.query || "")}">${escapeHtml((caseItem.query || "").slice(0, 42))}</td>
+      <td>${escapeHtml(caseItem.expected_domain || "")}</td>
+      <td>${escapeHtml(expectedArbitration)}</td>
+      <td class="${domainOk ? "" : "bm-cls-cell-fail"}">${escapeHtml(result?.actual_domain || "")}</td>
+      <td class="${arbitrationOk ? "" : "bm-cls-cell-fail"}">${escapeHtml(actualArbitration)}</td>
+      <td>${resultText}</td>
+      <td class="bm-cls-note">${escapeHtml(result?.note || result?.error || caseItem.note || "")}</td>
+      <td class="bm-cls-actions">
+        <button type="button" class="ghost bm-cls-action-btn" data-bm-router-action="edit" data-bm-router-id="${escapeHtml(caseItem.id || "")}">编辑</button>
+        <button type="button" class="ghost bm-cls-action-btn" data-bm-router-action="delete" data-bm-router-id="${escapeHtml(caseItem.id || "")}">删除</button>
+      </td>
+    </tr>`;
+  }).join("");
+
+  if (tableWrap) tableWrap.classList.remove("hidden");
+  if (summary && !routerClassificationLastResults.length) summary.classList.add("hidden");
+  if (!routerClassificationLastResults.length) {
+    setRouterClassificationMeta(`已配置 ${routerClassificationCases.length} 条用例，可直接手动维护后再运行回归`);
+  }
+}
+
+async function loadRouterClassificationCases() {
+  return dashboardBenchmarkBootstrap.loadRouterClassificationCases();
+}
+
+function resetRouterClassificationEditor() {
+  editingRouterClassificationCaseId = "";
+  if (benchmarkRouterClsTraceIdInput) benchmarkRouterClsTraceIdInput.value = "";
+  if (benchmarkRouterClsQueryInput) benchmarkRouterClsQueryInput.value = "";
+  if (benchmarkRouterClsExpectedDomainInput) benchmarkRouterClsExpectedDomainInput.value = "tech";
+  if (benchmarkRouterClsExpectedArbitrationInput) benchmarkRouterClsExpectedArbitrationInput.value = "";
+  if (benchmarkRouterClsNoteInput) benchmarkRouterClsNoteInput.value = "";
+  if (benchmarkRouterClsMockLabelInput) benchmarkRouterClsMockLabelInput.value = "";
+  if (benchmarkRouterClsMockDomainInput) benchmarkRouterClsMockDomainInput.value = "";
+  if (benchmarkRouterClsMockLookupModeInput) benchmarkRouterClsMockLookupModeInput.value = "";
+  if (benchmarkRouterClsMockEntitiesInput) benchmarkRouterClsMockEntitiesInput.value = "";
+  benchmarkRouterClsDeleteBtn?.classList.add("hidden");
+  if (benchmarkRouterClsLastRunBox) {
+    benchmarkRouterClsLastRunBox.innerHTML = "";
+    benchmarkRouterClsLastRunBox.classList.add("hidden");
+  }
+}
+
+function normalizeRouterClassificationDomainValue(value, fallback = "tech") {
+  const normalized = String(value || "").trim().toLowerCase();
+  return ["tech", "media", "general"].includes(normalized) ? normalized : fallback;
+}
+
+function deriveRouterClassificationMockLabel(domain, fallback = "") {
+  const normalized = normalizeRouterClassificationDomainValue(domain, "");
+  if (normalized === "media") return "MEDIA";
+  if (normalized === "tech") return "TECH";
+  if (normalized === "general") return "OTHER";
+  return fallback;
+}
+
+function deriveRouterClassificationPayloadFromTrace(trace) {
+  const record = trace && typeof trace === "object" ? trace : {};
+  const conversationStateAfter = record.conversation_state_after && typeof record.conversation_state_after === "object" ? record.conversation_state_after : {};
+  const queryUnderstanding = record.query_understanding && typeof record.query_understanding === "object" ? record.query_understanding : {};
+  const plannerSnapshot = record.planner_snapshot && typeof record.planner_snapshot === "object" ? record.planner_snapshot : {};
+  const workingSet = record.working_set && typeof record.working_set === "object" ? record.working_set : {};
+  const router = record.router && typeof record.router === "object" ? record.router : {};
+  const result = record.result && typeof record.result === "object" ? record.result : {};
+  const query = String(
+    record.query
+      || record.user_query
+      || record.original_query
+      || record.prompt
+      || plannerSnapshot.query_text
+      || workingSet.query
+      || queryUnderstanding.original_question
+      || queryUnderstanding.resolved_question
+      || conversationStateAfter.question
+      || result.query
+      || "",
+  ).trim();
+  if (!query) throw new Error("这个 trace 里没有可导入的 query");
+  const mockEntities = Array.isArray(queryUnderstanding.entities)
+    ? queryUnderstanding.entities
+    : Array.isArray(conversationStateAfter.entities)
+      ? conversationStateAfter.entities
+      : Array.isArray(router.entities)
+        ? router.entities
+        : Array.isArray(router.entity_hits)
+          ? router.entity_hits
+          : [conversationStateAfter.entity, queryUnderstanding.followup_target].filter(Boolean);
+  const expectedDomain = normalizeRouterClassificationDomainValue(
+    queryUnderstanding.domain || router.domain || router.selected_domain || "tech",
+  );
+  const expectedArbitration = String(
+    queryUnderstanding.arbitration
+      || router.arbitration
+      || router.decision_reason
+      || router.decision_intent
+      || "",
+  ).trim();
+  const mockDomain = normalizeRouterClassificationDomainValue(
+    router.domain || queryUnderstanding.domain || router.selected_domain || "",
+    "",
+  );
+  const mockLabel = String(router.classifier_label || "").trim().toUpperCase() || deriveRouterClassificationMockLabel(mockDomain || expectedDomain, "");
+  return {
+    query,
+    expectedDomain,
+    expectedArbitration,
+    mockLabel,
+    mockDomain,
+    mockLookupMode: String(queryUnderstanding.lookup_mode || conversationStateAfter.lookup_mode || router.lookup_mode || router.lookup_strategy || "").trim().toLowerCase(),
+    mockEntities: mockEntities
+      .map((item) => {
+        if (typeof item === "string") return item.trim();
+        if (item && typeof item === "object") return String(item.name || item.entity || item.title || "").trim();
+        return "";
+      })
+      .filter(Boolean),
+  };
+}
+
+async function importRouterClassificationTrace() {
+  return dashboardBenchmarkBootstrap.importRouterClassificationTrace();
+}
+
+function openRouterClassificationEditor(caseItem = null) {
+  return dashboardBenchmarkBootstrap.openRouterClassificationEditor(caseItem);
+}
+
+function closeRouterClassificationEditor() {
+  return dashboardBenchmarkBootstrap.closeRouterClassificationEditor();
+}
+
+function buildRouterClassificationPayloadFromEditor() {
+  const query = String(benchmarkRouterClsQueryInput?.value || "").trim();
+  const expectedDomain = String(benchmarkRouterClsExpectedDomainInput?.value || "").trim();
+  const expectedArbitration = normalizeRouterClassificationArbitration(benchmarkRouterClsExpectedArbitrationInput?.value || "");
+  if (!query) throw new Error("请填写 query");
+  if (!expectedArbitration.length) throw new Error("请至少填写一个期望 arbitration");
+  return {
+    query,
+    expected_domain: expectedDomain,
+    expected_arbitration: expectedArbitration.length === 1 ? expectedArbitration[0] : expectedArbitration,
+    note: String(benchmarkRouterClsNoteInput?.value || "").trim(),
+    mock_label: String(benchmarkRouterClsMockLabelInput?.value || "").trim() || null,
+    mock_domain: String(benchmarkRouterClsMockDomainInput?.value || "").trim() || null,
+    mock_lookup_mode: String(benchmarkRouterClsMockLookupModeInput?.value || "").trim() || null,
+    mock_entities: normalizeRouterClassificationArbitration(benchmarkRouterClsMockEntitiesInput?.value || ""),
+  };
+}
+
+async function saveRouterClassificationCase() {
+  return dashboardBenchmarkBootstrap.saveRouterClassificationCase();
+}
+
+async function deleteRouterClassificationCase(caseId = editingRouterClassificationCaseId) {
+  return dashboardBenchmarkBootstrap.deleteRouterClassificationCase(caseId);
 }
 
 // ─── Router classification benchmark ─────────────────────────────────────────
 async function runRouterClassification() {
-  const btn = document.getElementById("bm-router-cls-run");
-  const meta = document.getElementById("bm-router-cls-meta");
-  const summary = document.getElementById("bm-router-cls-summary");
-  const tableWrap = document.getElementById("bm-router-cls-table-wrap");
-  const tbody = document.getElementById("bm-router-cls-tbody");
-  if (btn) btn.disabled = true;
-  if (meta) meta.textContent = "运行中...";
-  try {
-    const result = await apiPost("/api/benchmark/router-classification", {});
-    const { total = 0, passed = 0, failed = 0, pass_rate = 0, cases = [] } = result;
-    const pct = Math.round(pass_rate * 100);
-    const statusCls = failed === 0 ? "bm-cls-pass" : "bm-cls-fail";
-    if (summary) {
-      summary.className = `bm-router-cls-summary ${statusCls}`;
-      summary.textContent = `${passed} / ${total} 通过 (${pct}%)${failed > 0 ? ` — ${failed} 项不符合预期` : " ✓ 全部通过"}`;
-      summary.classList.remove("hidden");
-    }
-    if (meta) meta.textContent = `${new Date().toLocaleTimeString()} 运行完成`;
-    if (tbody) {
-      tbody.innerHTML = cases.map((c) => {
-        const pass = c.pass !== false;
-        const exp_arb = Array.isArray(c.expected_arbitration) ? c.expected_arbitration.join(" | ") : (c.expected_arbitration || "");
-        const actual_arb = c.actual_arbitration || "";
-        const dom_ok = c.actual_domain === c.expected_domain;
-        const arb_ok = Array.isArray(c.expected_arbitration)
-          ? c.expected_arbitration.includes(actual_arb)
-          : actual_arb === exp_arb;
-        return `<tr class="${pass ? "" : "bm-cls-row-fail"}">
-          <td class="bm-cls-query" title="${escapeHtml(c.query)}">${escapeHtml(c.query?.slice(0, 28) || "")}</td>
-          <td>${escapeHtml(c.expected_domain || "")}</td>
-          <td>${escapeHtml(exp_arb)}</td>
-          <td class="${dom_ok ? "" : "bm-cls-cell-fail"}">${escapeHtml(c.actual_domain || "")}</td>
-          <td class="${arb_ok ? "" : "bm-cls-cell-fail"}">${escapeHtml(actual_arb)}</td>
-          <td>${pass ? "✓" : "✗"}</td>
-          <td class="bm-cls-note">${escapeHtml(c.note || c.error || "")}</td>
-        </tr>`;
-      }).join("");
-    }
-    if (tableWrap) tableWrap.classList.remove("hidden");
-  } catch (err) {
-    const message = `运行失败: ${String(err)}`;
-    if (meta) meta.textContent = message;
-    if (summary) {
-      summary.className = "bm-router-cls-summary bm-cls-fail";
-      summary.textContent = message;
-      summary.classList.remove("hidden");
-    }
-    if (tableWrap) tableWrap.classList.add("hidden");
-    showAppErrorModal("Router 分类回归失败", String(err), "请检查 benchmark 相关接口或查看控制台日志");
-  } finally {
-    if (btn) btn.disabled = false;
-  }
+  return dashboardBenchmarkBootstrap.runRouterClassification();
 }
 
 async function runUnitTests() {
@@ -3287,7 +4581,7 @@ async function runUnitTests() {
   if (resultsEl) { resultsEl.classList.add("hidden"); resultsEl.innerHTML = ""; }
 
   try {
-    const result = await apiPost("/api/benchmark/unit-tests", { suites });
+    const result = await apiPost("/api/benchmark/unit-tests", { suites }, "POST", undefined, 120000);
     const { timestamp = "", total_passed = 0, total_failed = 0, total_errors = 0, suites: suiteResults = [] } = result;
     const allOk = total_failed === 0 && total_errors === 0;
     const total = total_passed + total_failed + total_errors;
@@ -3344,7 +4638,7 @@ async function runUnitTests() {
   }
 }
 
-function runBenchmark() {
+async function runBenchmark() {
   const ragCheck = document.getElementById("bm-rag");
   const agentCheck = document.getElementById("bm-agent");
   const hybridCheck = document.getElementById("bm-hybrid");
@@ -3360,153 +4654,393 @@ function runBenchmark() {
 
   const runBtn = document.getElementById("bm-run-btn");
   const abortBtn = document.getElementById("bm-abort-btn");
-  const progressWrap = document.getElementById("bm-progress-wrap");
   const progressFill = document.getElementById("bm-progress-fill");
   const progressText = document.getElementById("bm-progress-text");
   const logBox = document.getElementById("bm-log-box");
-  const timerEl = document.getElementById("bm-timer");
-  const lastRun = document.getElementById("benchmark-last-run");
 
-  if (runBtn) runBtn.disabled = true;
-  if (abortBtn) abortBtn.disabled = false;
-  if (progressWrap) progressWrap.classList.remove("hidden");
+  _setBenchmarkRunUiState(true);
   if (logBox) { logBox.textContent = ""; logBox.classList.remove("hidden"); }
-  benchmarkLiveLatestCase = null;
-  benchmarkLiveLatestCaseKey = "";
-  benchmarkLatestTraceCacheKey = "";
-  renderBenchmarkCaseTraceList(benchmarkHistory, null, { force: true }).catch(() => {});
+  dashboardBenchmarkBootstrap.resetLiveCaseState({ render: true, latestCase: null }).catch(() => {});
   if (progressFill) progressFill.style.width = "0%";
   if (progressText) progressText.textContent = "连接中...";
 
-  // Start elapsed timer
-  const startTime = Date.now();
-  if (benchmarkTimerInterval) clearInterval(benchmarkTimerInterval);
-  if (timerEl) timerEl.textContent = "00:00";
-  benchmarkTimerInterval = setInterval(() => {
-    const elapsed = Math.floor((Date.now() - startTime) / 1000);
-    const mm = String(Math.floor(elapsed / 60)).padStart(2, "0");
-    const ss = String(elapsed % 60).padStart(2, "0");
-    if (timerEl) timerEl.textContent = `${mm}:${ss}`;
-  }, 1000);
-
-  apiPost("/api/benchmark/jobs", { modules, query_count_per_type: queryCount, case_set_id: caseSetId })
-    .then(async (resp) => {
-      activeBenchmarkJobId = String(resp?.job?.id || "");
-      lastBenchmarkLogCount = 0;
-      lastBenchmarkLogMarker = "";
-      const job = await pollJsonJob(`/api/benchmark/jobs/${encodeURIComponent(activeBenchmarkJobId)}`, {
-        onUpdate: (runningJob) => {
-          updateBenchmarkLiveStateFromJob(runningJob, { render: true });
-          const msg = String(runningJob?.message || "等待中...");
-          if (progressText) progressText.textContent = msg;
-          const total = Number(runningJob?.total || 0);
-          const current = Number(runningJob?.current || 0);
-          if (progressFill && total > 0) {
-            progressFill.style.width = `${Math.round((current / total) * 100)}%`;
-          }
-          const logs = Array.isArray(runningJob?.logs) ? runningJob.logs : [];
-          syncBenchmarkLogBox(logBox, logs);
-        },
-      });
-      if (job?.status === "completed") {
-        const result = job?.result;
-        if (result) {
-          benchmarkLiveLatestCase = null;
-          benchmarkLiveLatestCaseKey = "";
-          benchmarkLatestTraceCacheKey = "";
-          benchmarkHistory.push(result);
-          renderBenchmarkTable(benchmarkHistory);
-          if (lastRun) {
-            const summary = result?.assertion_summary;
-            const assertionText = summary ? ` | 断言 ${summary.passed}/${summary.passed + summary.failed}` : "";
-            lastRun.textContent = `上次运行: ${result.timestamp || ""}${assertionText}`;
-          }
-        }
-        if (progressFill) progressFill.style.width = "100%";
-        if (progressText) progressText.textContent = "测试完成";
-        if (logBox) {
-          const summary = job?.result?.assertion_summary;
-          if (summary) logBox.textContent += `✓ 断言通过 ${summary.passed}，失败 ${summary.failed}\n`;
-          logBox.textContent += "✓ 测试完成\n";
-          logBox.scrollTop = logBox.scrollHeight;
-        }
-      } else if (job?.status === "cancelled") {
-        benchmarkLiveLatestCase = null;
-        benchmarkLiveLatestCaseKey = "";
-        benchmarkLatestTraceCacheKey = "";
-        renderBenchmarkCaseTraceList(benchmarkHistory, null, { force: true }).catch(() => {});
-        if (progressText) progressText.textContent = "已中止";
-        if (logBox) {
-          logBox.textContent += "⏸ 用户中止测试\n";
-          logBox.scrollTop = logBox.scrollHeight;
-        }
-      } else {
-        throw new Error(job?.error || job?.message || "Benchmark 失败");
-      }
-    })
-    .catch((err) => {
-      const message = `连接失败: ${String(err)}`;
-      if (progressText) progressText.textContent = message;
-      if (logBox) {
-        logBox.textContent += `${message}\n`;
-        logBox.scrollTop = logBox.scrollHeight;
-      }
-      showAppErrorModal("Benchmark 运行失败", String(err), "请检查 benchmark job 创建/轮询链路");
-    })
-    .finally(() => {
-    if (runBtn) runBtn.disabled = false;
-    if (abortBtn) abortBtn.disabled = true;
-    if (benchmarkTimerInterval) { clearInterval(benchmarkTimerInterval); benchmarkTimerInterval = null; }
-    benchmarkAbortController = null;
-    activeBenchmarkJobId = "";
-  });
+  try {
+    const sharedJobsPayload = await apiGet("/api/dashboard/jobs?job_type=benchmark&only_active=true");
+    const sharedJobs = Array.isArray(sharedJobsPayload?.jobs) ? sharedJobsPayload.jobs : [];
+    const activeJob = sharedJobs.find((item) => item && (item.status === "queued" || item.status === "running")) || null;
+    if (activeJob?.id) {
+      benchmarkWatchingJobId = String(activeJob.id || "");
+      _setBenchmarkRunUiState(true, String(activeJob.started_at || ""));
+    }
+    await dashboardBenchmarkBootstrap.runBenchmarkAction({
+      modules,
+      queryCount,
+      caseSetId,
+      existingJob: activeJob,
+      logBox,
+      setProgressText: (message) => {
+        if (progressText) progressText.textContent = message;
+      },
+      setProgressPercent: (percent) => {
+        if (progressFill) progressFill.style.width = `${percent}%`;
+      },
+    });
+  } finally {
+    benchmarkWatchingJobId = "";
+    _setBenchmarkRunUiState(false);
+  }
 }
 
 async function clearBenchmarkHistory() {
   if (!window.confirm("确定清除所有 Benchmark 历史记录？")) return;
   await apiDelete("/api/benchmark/history");
-  benchmarkHistory = [];
-  benchmarkLiveLatestCase = null;
-  benchmarkLiveLatestCaseKey = "";
-  benchmarkLatestTraceCacheKey = "";
-  renderBenchmarkTable([]);
-  const lastRun = document.getElementById("benchmark-last-run");
-  if (lastRun) lastRun.textContent = "从未运行";
+  dashboardBenchmarkBootstrap.clearHistoryState();
 }
 
+function authorizationHeaders() {
+  return authorizationState.token ? { "x-admin-reauth": authorizationState.token } : undefined;
+}
 
+function setAuthorizationMessage(message) {
+  if (authorizationMeta) authorizationMeta.textContent = message;
+}
 
-function toggleSidebar(id) {
-  const el = document.getElementById(id);
-  if (!el) return;
-  el.classList.toggle("collapsed");
-  const workspace = el.closest(".workspace");
-  if (workspace) {
-    workspace.classList.toggle("sidebar-collapsed", el.classList.contains("collapsed"));
+function showAuthorizationError(node, message) {
+  if (!(node instanceof HTMLElement)) return;
+  const text = String(message || "").trim();
+  node.textContent = text;
+  node.classList.toggle("hidden", !text);
+}
+
+function renderAuthorizationAppChecks(container, apps, selectedApps, { disabled = false } = {}) {
+  if (!(container instanceof HTMLElement)) return;
+  const chosen = new Set(Array.isArray(selectedApps) ? selectedApps.map((item) => String(item || "")) : []);
+  container.innerHTML = (apps || []).map((app) => {
+    const appId = String(app?.app_id || "").trim();
+    const label = String(app?.label || appId).trim();
+    return `
+      <label class="authorization-check">
+        <input type="checkbox" value="${escapeHtml(appId)}" ${chosen.has(appId) ? "checked" : ""} ${disabled ? "disabled" : ""} />
+        <span>${escapeHtml(label)}</span>
+      </label>
+    `;
+  }).join("");
+}
+
+function collectAuthorizationApps(container) {
+  if (!(container instanceof HTMLElement)) return [];
+  return Array.from(container.querySelectorAll("input[type='checkbox']:checked"))
+    .map((input) => String(input.value || "").trim())
+    .filter(Boolean);
+}
+
+function renderAuthorizationUsers() {
+  if (!(authorizationUsersList instanceof HTMLElement)) return;
+  const users = Array.isArray(authorizationState.data?.users) ? authorizationState.data.users : [];
+  const apps = Array.isArray(authorizationState.data?.available_apps) ? authorizationState.data.available_apps : [];
+  if (!users.length) {
+    authorizationUsersList.innerHTML = '<div class="authorization-empty">当前没有可管理账号。</div>';
+    return;
   }
-  updateSidebarToggleButton(el);
+  authorizationUsersList.innerHTML = users.map((user) => {
+    const userId = String(user.user_id || "").trim();
+    const username = String(user.username || "").trim();
+    const role = String(user.role || "user").trim();
+    const activeSessions = Number(user.active_session_count || 0);
+    const authVersion = Number(user.auth_version || 1);
+    const allowedApps = Array.isArray(user.allowed_apps) ? user.allowed_apps : [];
+    const appChecks = apps.map((app) => {
+      const appId = String(app?.app_id || "").trim();
+      const label = String(app?.label || appId).trim();
+      return `
+        <label class="authorization-check">
+          <input type="checkbox" data-role="allowed-app" value="${escapeHtml(appId)}" ${allowedApps.includes(appId) || role === "admin" ? "checked" : ""} ${role === "admin" ? "disabled" : ""} />
+          <span>${escapeHtml(label)}</span>
+        </label>
+      `;
+    }).join("");
+    return `
+      <section class="authorization-user-card" data-user-id="${escapeHtml(userId)}">
+        <div class="authorization-user-head">
+          <div>
+            <div class="authorization-user-name">${escapeHtml(username)}</div>
+            <div class="authorization-user-meta">role=${escapeHtml(role)} · auth_version=${authVersion} · active_sessions=${activeSessions}</div>
+          </div>
+        </div>
+        <div class="authorization-form-grid">
+          <label class="authorization-field">
+            <span>Role</span>
+            <select data-role="role-select">
+              <option value="user" ${role === "user" ? "selected" : ""}>user</option>
+              <option value="admin" ${role === "admin" ? "selected" : ""}>admin</option>
+            </select>
+          </label>
+          <label class="authorization-field">
+            <span>New Password</span>
+            <input data-role="password-input" type="password" autocomplete="new-password" placeholder="留空则不改" />
+          </label>
+          <label class="authorization-check inline">
+            <input data-role="active-input" type="checkbox" ${user.is_active ? "checked" : ""} />
+            <span>启用账号</span>
+          </label>
+        </div>
+        <div class="authorization-apps-block">
+          <div class="authorization-section-label">应用权限</div>
+          <div class="authorization-apps-grid" data-role="apps-grid">${appChecks}</div>
+        </div>
+        <div class="authorization-user-actions">
+          <button type="button" data-role="save-user">保存</button>
+        </div>
+      </section>
+    `;
+  }).join("");
+
+  authorizationUsersList.querySelectorAll("[data-role='role-select']").forEach((select) => {
+    select.addEventListener("change", () => {
+      const card = select.closest("[data-user-id]");
+      const appsGrid = card?.querySelector("[data-role='apps-grid']");
+      const isAdmin = select.value === "admin";
+      appsGrid?.querySelectorAll("input[type='checkbox']").forEach((input) => {
+        input.checked = isAdmin || input.checked;
+        input.disabled = isAdmin;
+      });
+    });
+  });
+
+  authorizationUsersList.querySelectorAll("[data-role='save-user']").forEach((button) => {
+    button.addEventListener("click", async () => {
+      const card = button.closest("[data-user-id]");
+      const userId = String(card?.getAttribute("data-user-id") || "").trim();
+      if (!userId) return;
+      const role = String(card?.querySelector("[data-role='role-select']")?.value || "user").trim();
+      const isActive = Boolean(card?.querySelector("[data-role='active-input']")?.checked);
+      const newPassword = String(card?.querySelector("[data-role='password-input']")?.value || "");
+      const appsGrid = card?.querySelector("[data-role='apps-grid']");
+      const allowedApps = role === "admin" ? (authorizationState.data?.available_apps || []).map((item) => String(item.app_id || "")).filter(Boolean) : collectAuthorizationApps(appsGrid);
+      try {
+        button.disabled = true;
+        const payload = await apiPost(`/_auth/api/admin/users/${encodeURIComponent(userId)}`, {
+          role,
+          is_active: isActive,
+          new_password: newPassword,
+          allowed_apps: allowedApps,
+        }, "PATCH", authorizationHeaders());
+        authorizationState.data = { ...(authorizationState.data || {}), users: payload.users || [] };
+        renderAuthorizationUsers();
+        showToast("账号权限已更新");
+      } catch (error) {
+        showAppErrorModal("Authorization 更新失败", String(error));
+      } finally {
+        button.disabled = false;
+      }
+    });
+  });
 }
 
-function updateSidebarToggleButton(sidebar) {
-  const el = sidebar instanceof Element ? sidebar : document.getElementById(String(sidebar || ""));
-  if (!el) return;
-  const btn = el.querySelector(".sidebar-toggle");
-  if (!btn) return;
-  const isMobile = window.matchMedia("(max-width: 820px), (hover: none) and (pointer: coarse)").matches;
-  const isCollapsed = el.classList.contains("collapsed");
-  btn.textContent = isMobile ? (isCollapsed ? "v" : "^") : (isCollapsed ? ">" : "<");
-  btn.title = isMobile ? (isCollapsed ? "向下展开" : "向上折叠") : (isCollapsed ? "向右展开" : "向左折叠");
+function renderAuthorizationAdmin() {
+  const allAppIds = (authorizationState.data?.available_apps || []).map((item) => String(item.app_id || "")).filter(Boolean);
+  const createRole = String(authorizationCreateRole?.value || "user");
+  renderAuthorizationAppChecks(
+    authorizationCreateApps,
+    authorizationState.data?.available_apps || [],
+    createRole === "admin" ? allAppIds : [],
+    { disabled: createRole === "admin" },
+  );
+  renderAuthorizationUsers();
+  if (authorizationSessionMeta) {
+    const until = String(authorizationState.expiresAt || "").trim();
+    authorizationSessionMeta.textContent = until ? `已解锁，二次确认有效期至 ${until.replace("T", " ").slice(0, 16)}` : "已解锁";
+  }
 }
+
+function showAuthorizationSection(name) {
+  authorizationReauthShell?.classList.toggle("hidden", name !== "reauth");
+  authorizationBootstrapShell?.classList.toggle("hidden", name !== "bootstrap");
+  authorizationAdminShell?.classList.toggle("hidden", name !== "admin");
+}
+
+async function loadAuthorizationState() {
+  const payload = await apiGet("/_auth/api/admin/state", authorizationHeaders());
+  authorizationState.data = payload;
+  authorizationState.loaded = true;
+  authorizationState.error = null;
+  if (!payload?.users_exist) {
+    setAuthorizationMessage("当前还没有管理员账号。请先初始化。" );
+    showAuthorizationSection("bootstrap");
+    return payload;
+  }
+  setAuthorizationMessage("Authorization 页面已解锁，可直接管理远端访问账号和应用权限。");
+  showAuthorizationSection("admin");
+  renderAuthorizationAdmin();
+  return payload;
+}
+
+function resetAuthorizationReauth() {
+  authorizationState.token = "";
+  authorizationState.expiresAt = "";
+  authorizationState.loaded = false;
+  authorizationState.error = null;
+  authorizationState.data = null;
+  showAuthorizationError(authorizationReauthError, "");
+  showAuthorizationError(authorizationBootstrapError, "");
+}
+
+async function bootstrapAuthorizationTab({ forcePrompt = false } = {}) {
+  if (authorizationState.loading) return;
+  if (forcePrompt) {
+    resetAuthorizationReauth();
+  }
+  authorizationState.loading = true;
+  try {
+    const payload = await apiGet("/_auth/api/admin/state", authorizationHeaders());
+    authorizationState.data = payload;
+    if (!payload?.users_exist) {
+      authorizationState.loaded = true;
+      authorizationState.error = null;
+      showAuthorizationSection("bootstrap");
+      setAuthorizationMessage("当前还没有管理员账号。请先初始化。" );
+      return;
+    }
+    if (!authorizationState.token) {
+      showAuthorizationSection("reauth");
+      setAuthorizationMessage("进入此页需要重新输入管理员密码。" );
+      authorizationPasswordInput?.focus();
+      return;
+    }
+    await loadAuthorizationState();
+  } catch (error) {
+    const raw = String(error || "");
+    if (raw.includes("admin_reauth_required")) {
+      showAuthorizationSection("reauth");
+      setAuthorizationMessage("进入此页需要重新输入管理员密码。" );
+      authorizationPasswordInput?.focus();
+    } else {
+      authorizationState.error = error;
+      showAuthorizationSection("reauth");
+      showAuthorizationError(authorizationReauthError, raw.includes("forbidden") ? "当前访问方没有管理员权限。" : raw);
+      setAuthorizationMessage("Authorization 页面加载失败。" );
+    }
+  } finally {
+    authorizationState.loading = false;
+  }
+}
+
+async function unlockAuthorizationPanel() {
+  const password = String(authorizationPasswordInput?.value || "").trim();
+  if (!password) {
+    showAuthorizationError(authorizationReauthError, "请输入管理员密码。");
+    authorizationPasswordInput?.focus();
+    return;
+  }
+  showAuthorizationError(authorizationReauthError, "");
+  authorizationUnlockBtn && (authorizationUnlockBtn.disabled = true);
+  try {
+    const payload = await apiPost("/_auth/api/admin/reauth", { password });
+    authorizationState.token = String(payload?.token || "").trim();
+    authorizationState.expiresAt = String(payload?.expires_at || "").trim();
+    if (authorizationPasswordInput) authorizationPasswordInput.value = "";
+    await loadAuthorizationState();
+  } catch (error) {
+    const raw = String(error || "");
+    showAuthorizationError(authorizationReauthError, raw.includes("invalid_admin_password") ? "管理员密码错误。" : raw);
+  } finally {
+    authorizationUnlockBtn && (authorizationUnlockBtn.disabled = false);
+  }
+}
+
+async function createAuthorizationBootstrapAdmin() {
+  const username = String(authorizationBootstrapUsername?.value || "").trim();
+  const password = String(authorizationBootstrapPassword?.value || "").trim();
+  if (!username || !password) {
+    showAuthorizationError(authorizationBootstrapError, "请填写管理员用户名和密码。");
+    return;
+  }
+  showAuthorizationError(authorizationBootstrapError, "");
+  authorizationBootstrapBtn && (authorizationBootstrapBtn.disabled = true);
+  try {
+    await apiPost("/_auth/api/admin/bootstrap", { username, password });
+    if (authorizationBootstrapPassword) authorizationBootstrapPassword.value = "";
+    setAuthorizationMessage("管理员已创建，请重新输入管理员密码解锁此页。" );
+    resetAuthorizationReauth();
+    await bootstrapAuthorizationTab({ forcePrompt: false });
+  } catch (error) {
+    showAuthorizationError(authorizationBootstrapError, String(error));
+  } finally {
+    authorizationBootstrapBtn && (authorizationBootstrapBtn.disabled = false);
+  }
+}
+
+async function createAuthorizationUser() {
+  const username = String(authorizationCreateUsername?.value || "").trim();
+  const password = String(authorizationCreatePassword?.value || "").trim();
+  const role = String(authorizationCreateRole?.value || "user").trim();
+  if (!username || !password) {
+    showAppErrorModal("Authorization 创建失败", "请填写用户名和密码");
+    return;
+  }
+  const allowedApps = role === "admin"
+    ? (authorizationState.data?.available_apps || []).map((item) => String(item.app_id || "")).filter(Boolean)
+    : collectAuthorizationApps(authorizationCreateApps);
+  authorizationCreateBtn && (authorizationCreateBtn.disabled = true);
+  try {
+    const payload = await apiPost("/_auth/api/admin/users", {
+      username,
+      password,
+      role,
+      is_active: Boolean(authorizationCreateActive?.checked),
+      allowed_apps: allowedApps,
+    }, "POST", authorizationHeaders());
+    authorizationState.data = { ...(authorizationState.data || {}), users: payload.users || [] };
+    if (authorizationCreateUsername) authorizationCreateUsername.value = "";
+    if (authorizationCreatePassword) authorizationCreatePassword.value = "";
+    if (authorizationCreateRole) authorizationCreateRole.value = "user";
+    if (authorizationCreateActive) authorizationCreateActive.checked = true;
+    renderAuthorizationAdmin();
+    showToast("账号已创建");
+  } catch (error) {
+    showAppErrorModal("Authorization 创建失败", String(error));
+  } finally {
+    authorizationCreateBtn && (authorizationCreateBtn.disabled = false);
+  }
+}
+
+
+
+function mountAgentSidebarController() {
+  if (!AppShell?.mountSidebarController) return null;
+  const registry = window.__navDashboardSidebarControllers || (window.__navDashboardSidebarControllers = new Map());
+  if (registry.has("agent-sidebar")) return registry.get("agent-sidebar");
+  const sidebar = document.getElementById("agent-sidebar");
+  const button = document.getElementById("agent-toggle-sidebar");
+  const workspace = document.getElementById("agent-workspace") || sidebar?.closest(".workspace") || null;
+  if (!sidebar || !button || !workspace) return null;
+  const controller = AppShell.mountSidebarController({
+    appId: "nav_dashboard",
+    scope: "agent",
+    shell: workspace,
+    sidebar,
+    toggleButton: button,
+    defaultMobileExpanded: true,
+    storageKeyAliases: ["sidebar:nav_dashboard:agent:v3"],
+  });
+  registry.set("agent-sidebar", controller);
+  return controller;
+}
+
+window.__navDashboardMountAgentSidebarController = mountAgentSidebarController;
 
 function setModel() {
   if (qaModel) qaModel.textContent = `当前模型：${pageLocalModel}`;
 }
 
-async function apiGet(url) {
+async function apiGet(url, headers = undefined, timeoutMs = 20000) {
+  if (DashboardSharedApi && typeof DashboardSharedApi.apiGet === "function") {
+    return DashboardSharedApi.apiGet(url, headers, timeoutMs);
+  }
   const ctrl = new AbortController();
-  const t = setTimeout(() => ctrl.abort(), 20000);
+  const t = setTimeout(() => ctrl.abort(), Math.max(1, Number(timeoutMs || 20000)));
   try {
-    const r = await fetch(url, { signal: ctrl.signal });
+    const r = await fetch(url, { signal: ctrl.signal, headers });
     if (!r.ok) throw new Error(await r.text());
     return r.json();
   } finally {
@@ -3514,13 +5048,16 @@ async function apiGet(url) {
   }
 }
 
-async function apiPost(url, payload, method = "POST") {
+async function apiPost(url, payload, method = "POST", extraHeaders = undefined, timeoutMs = 20000) {
+  if (DashboardSharedApi && typeof DashboardSharedApi.apiPost === "function") {
+    return DashboardSharedApi.apiPost(url, payload, method, extraHeaders, timeoutMs);
+  }
   const ctrl = new AbortController();
-  const t = setTimeout(() => ctrl.abort(), 20000);
+  const t = setTimeout(() => ctrl.abort(), Math.max(1, Number(timeoutMs || 20000)));
   try {
     const r = await fetch(url, {
       method,
-      headers: { "Content-Type": "application/json" },
+      headers: { "Content-Type": "application/json", ...(extraHeaders || {}) },
       body: JSON.stringify(payload),
       signal: ctrl.signal,
     });
@@ -3532,6 +5069,9 @@ async function apiPost(url, payload, method = "POST") {
 }
 
 async function apiDelete(url) {
+  if (DashboardSharedApi && typeof DashboardSharedApi.apiDelete === "function") {
+    return DashboardSharedApi.apiDelete(url);
+  }
   const ctrl = new AbortController();
   const t = setTimeout(() => ctrl.abort(), 20000);
   try {
@@ -3543,9 +5083,13 @@ async function apiDelete(url) {
   }
 }
 
-async function apiPostForm(url, formData) {
+async function apiPostForm(url, formData, extraHeaders = undefined) {
+  if (DashboardSharedApi && typeof DashboardSharedApi.apiPostForm === "function") {
+    return DashboardSharedApi.apiPostForm(url, formData, extraHeaders);
+  }
   const r = await fetch(url, {
     method: "POST",
+    headers: extraHeaders,
     body: formData,
   });
   if (!r.ok) {
@@ -3564,313 +5108,183 @@ async function apiPostForm(url, formData) {
   return r.json();
 }
 
-async function apiUploadImage(url, file) {
-  const name = encodeURIComponent(String(file?.name || "card.png"));
-  const target = `${url}?filename=${name}`;
-  const r = await fetch(target, {
-    method: "POST",
-    headers: {
-      "Content-Type": String(file?.type || "application/octet-stream"),
-    },
-    body: file,
-  });
-  if (!r.ok) {
-    let detail = "上传失败";
-    const raw = await r.text();
-    if (raw) {
-      try {
-        const payload = JSON.parse(raw);
-        detail = String(payload?.detail || payload?.message || raw || detail);
-      } catch (_err) {
-        detail = raw;
-      }
-    }
-    throw new Error(detail);
-  }
-  return r.json();
+function loadInitialAgentSessions() {
+  return dashboardAgentSessionsBootstrap.loadInitialAgentSessions();
 }
 
-function normalizeCard(item) {
-  return {
-    title: String(item?.title || "").trim(),
-    url: String(item?.url || "").trim(),
-    image: String(item?.image || "").trim(),
-  };
-}
+const dashboardCustomCardsBootstrap = DashboardCustomCardsBootstrapModule?.createCustomCardsBootstrap?.({
+  escapeHtml,
+  apiPost,
+  consumePendingCardEditIndex,
+  getElements: () => ({
+    customCardModal,
+    customCardModalTitle,
+    customCardNameInput,
+    customCardUrlInput,
+    customCardImageInput,
+    customCardPreview,
+    customCardUploadBtn,
+    customCardUploadInput,
+    customCardSaveBtn,
+    customCardCancelBtn,
+  }),
+}) || {
+  bindEvents() {},
+  loadInitialCards() {},
+  hydratePendingCardEdit() {},
+  openCustomCardModal() {},
+  closeCustomCardModal() {},
+};
 
-function loadInitialCards() {
-  try {
-    const raw = document.getElementById("custom-cards-data")?.textContent || "[]";
-    const parsed = JSON.parse(raw);
-    if (Array.isArray(parsed)) {
-      customCards = parsed.map(normalizeCard);
-      bindCustomCardGridInteractions();
-      return;
-    }
-  } catch (_err) {
-    // Keep fallback below.
-  }
-  customCards = [];
-  bindCustomCardGridInteractions();
-}
+const dashboardAgentSessionsBootstrap = DashboardAgentSessionsBootstrapModule?.createAgentSessionsBootstrap?.({
+  agentSessionsDataElement: document.getElementById("agent-sessions-data"),
+  sessionListElement: document.getElementById("agent-session-list"),
+  document,
+  escapeHtml,
+  apiGet,
+  apiPost,
+  apiDelete,
+  getSessionsCache: () => sessionsCache,
+  setSessionsCache: (value) => {
+    sessionsCache = Array.isArray(value) ? value : [];
+  },
+  getCurrentSessionId: () => currentSessionId,
+  setCurrentSessionId: (value) => {
+    currentSessionId = String(value || "").trim();
+  },
+  getPreferredSessionId: () => String(NavBootstrap?.getPreferredSessionId?.() || "").trim(),
+  setPreferredSessionId: (value) => {
+    NavBootstrap?.setPreferredSessionId?.(String(value || "").trim());
+  },
+  getSuppressSessionClickUntil: () => suppressSessionClickUntil,
+  setSuppressSessionClickUntil: (value) => {
+    suppressSessionClickUntil = Number(value || 0);
+  },
+  sessionRenameModal,
+  sessionRenameMeta,
+  sessionRenameInput,
+  renderChat,
+  renderActiveAgentStreamPreview,
+  debugUiEvent,
+}) || createMissingController(
+  "NavDashboardAgentSessionsBootstrap",
+  [],
+  [],
+  {
+    loadInitialAgentSessions: () => false,
+    getCurrentSession: () => null,
+    getSessionById: () => null,
+    ensureAgentSessionCache: () => null,
+    appendMessageToAgentSessionCache() {},
+    renderCurrentAgentSessionView() {},
+    renderSessions() {},
+    getSessionSummary: () => null,
+    closeSessionRenameModal() {},
+    openSessionRenameModal() {},
+    saveSessionRename: async () => {},
+    openSessionRenameModalFromTarget() {},
+    refreshSessions: async () => {},
+    createSessionAction: async () => {},
+    deleteCurrentSessionAction: async () => {},
+  },
+);
 
-function getCardAt(index) {
-  return normalizeCard(customCards[index] || {});
-}
-
-function setCardPreview(imageUrl) {
-  const clean = String(imageUrl || "").trim();
-  if (!customCardPreview) return;
-  if (!clean) {
-    customCardPreview.textContent = "无预览";
-    showCropWrap(false);
-    return;
-  }
-  customCardPreview.innerHTML = `<img src="${escapeHtml(clean)}" alt="card-preview" />`;
-  initCropper(clean);
-}
-
-function closeCustomCardModal() {
-  if (!customCardModal) return;
-  customCardModal.classList.add("hidden");
-  customCardModal.setAttribute("aria-hidden", "true");
-  editingCardIndex = -1;
-  cropState = null;
-  showCropWrap(false);
-}
-
-function openCustomCardModal(index) {
-  if (!customCardModal || !Number.isInteger(index) || index < 0 || index >= 8) return;
-  editingCardIndex = index;
-  const card = getCardAt(index);
-  if (customCardModalTitle) customCardModalTitle.textContent = `配置快捷卡片 ${index + 1}`;
-  if (customCardNameInput) customCardNameInput.value = card.title;
-  if (customCardUrlInput) customCardUrlInput.value = card.url;
-  if (customCardImageInput) customCardImageInput.value = card.image;
-  setCardPreview(card.image);
-  customCardModal.classList.remove("hidden");
-  customCardModal.setAttribute("aria-hidden", "false");
-  customCardNameInput?.focus();
-}
-
-async function uploadCustomCardImage() {
-  const file = customCardUploadInput?.files?.[0];
-  if (!file) return;
-  try {
-    const payload = await apiUploadImage("/api/custom_cards/upload", file);
-    const image = String(payload?.image || "").trim();
-    if (!image) throw new Error("图片上传失败，未返回路径");
-    if (customCardImageInput) customCardImageInput.value = image;
-    initCropper(image);
-  } finally {
-    if (customCardUploadInput) customCardUploadInput.value = "";
-  }
-}
-
-async function saveCustomCardFromModal() {
-  if (editingCardIndex < 0 || editingCardIndex >= 8) return;
-  const title = String(customCardNameInput?.value || "").trim();
-  const url = String(customCardUrlInput?.value || "").trim();
-  const image = String(customCardImageInput?.value || "").trim();
-
-  if (!title || !url) {
-    window.alert("请至少填写名称和 URL。");
-    return;
-  }
-
-  const payload = await apiPost(`/api/custom_cards/slot/${editingCardIndex}`, { title, url, image });
-  const cards = Array.isArray(payload?.cards) ? payload.cards.map(normalizeCard) : [];
-  if (cards.length) {
-    customCards = cards;
-  } else {
-    customCards[editingCardIndex] = normalizeCard({ title, url, image });
-  }
-  renderCustomCards({ force: true });
-  closeCustomCardModal();
-}
-
-function bindCardLongPressEdit(target, index) {
-  if (!(target instanceof HTMLElement)) return;
-  if (target.dataset.longPressBound === "1") return;
-  target.dataset.longPressBound = "1";
-  let timer = null;
-  let longPressed = false;
-
-  const clearPress = () => {
-    if (timer) {
-      window.clearTimeout(timer);
-      timer = null;
-    }
-  };
-
-  const startPress = (event) => {
-    if (event instanceof PointerEvent && event.pointerType === "mouse" && event.button !== 0) return;
-    longPressed = false;
-    clearPress();
-    timer = window.setTimeout(() => {
-      longPressed = true;
-      openCustomCardModal(index);
-    }, CARD_LONG_PRESS_MS);
-  };
-
-  const cancelPress = () => {
-    clearPress();
-  };
-
-  target.addEventListener("pointerdown", startPress);
-  target.addEventListener("pointerup", cancelPress);
-  target.addEventListener("pointerleave", cancelPress);
-  target.addEventListener("pointercancel", cancelPress);
-
-  target.addEventListener("click", (event) => {
-    if (longPressed) {
-      event.preventDefault();
-      event.stopPropagation();
-      longPressed = false;
-    }
-  });
-}
-
-function bindCustomCardGridInteractions() {
-  const host = document.getElementById("custom-card-grid");
-  if (!(host instanceof HTMLElement)) return;
-  Array.from(host.children).forEach((node, index) => {
-    if (!(node instanceof HTMLElement) || index < 0 || index >= 8) return;
-    if (node.classList.contains("placeholder")) {
-      if (node.dataset.cardClickBound === "1") return;
-      node.dataset.cardClickBound = "1";
-      node.addEventListener("click", () => openCustomCardModal(index));
-      return;
-    }
-    bindCardLongPressEdit(node, index);
-  });
-}
+const dashboardAgentSessionUiBootstrap = DashboardAgentSessionUiBootstrapModule?.createAgentSessionUiBootstrap?.({
+  sessionRenameModal,
+  sessionRenameInput,
+  sessionRenameSaveBtn,
+  sessionRenameCancelBtn,
+  sessionList: document.getElementById("agent-session-list"),
+  newSessionBtn: document.getElementById("agent-new-session"),
+  deleteSessionBtn: document.getElementById("agent-delete-session"),
+  qaAsk,
+  qaAskLocal,
+  qaAbort,
+  qaInput,
+  bindLongPress,
+  debugUiEvent,
+  appendChatRow,
+  ask,
+  abortAsk,
+  getCurrentSessionId: () => currentSessionId,
+  createSessionAction: () => createSessionAction(),
+  deleteCurrentSessionAction: () => deleteCurrentSessionAction(),
+  saveSessionRename: () => saveSessionRename(),
+  closeSessionRenameModal,
+  openSessionRenameModalFromTarget,
+}) || createMissingController(
+  "NavDashboardAgentSessionUiBootstrap",
+  [],
+  [],
+  {
+    bindEvents() {},
+  },
+);
 
 function getCurrentSession() {
-  return sessionsCache.find((s) => s.id === currentSessionId);
+  return dashboardAgentSessionsBootstrap.getCurrentSession();
 }
 
 function getSessionById(sessionId) {
-  return sessionsCache.find((session) => String(session.id || "") === String(sessionId || "").trim()) || null;
+  return dashboardAgentSessionsBootstrap.getSessionById(sessionId);
 }
 
 function ensureAgentSessionCache(sessionId) {
-  const sid = String(sessionId || "").trim();
-  if (!sid) return null;
-  let session = getSessionById(sid);
-  if (session) {
-    if (!Array.isArray(session.messages)) session.messages = [];
-    return session;
-  }
-  session = {
-    id: sid,
-    title: "新会话",
-    updated_at: new Date().toISOString().slice(0, 19),
-    messages: [],
-  };
-  sessionsCache.unshift(session);
-  return session;
+  return dashboardAgentSessionsBootstrap.ensureAgentSessionCache(sessionId);
 }
 
 function appendMessageToAgentSessionCache(sessionId, role, text, traceId = "") {
-  const session = ensureAgentSessionCache(sessionId);
-  if (!session) return;
-  const message = { role, text };
-  const normalizedTrace = String(traceId || "").trim();
-  if (normalizedTrace) message.trace_id = normalizedTrace;
-  session.messages.push(message);
-  session.updated_at = new Date().toISOString().slice(0, 19);
+  dashboardAgentSessionsBootstrap.appendMessageToAgentSessionCache(sessionId, role, text, traceId);
 }
 
-function renderActiveAgentStreamPreview() {
+function renderActiveAgentStreamPreview({ keepBottom = true, replaceExisting = false } = {}) {
   if (!activeAgentStreamState || String(activeAgentStreamState.sessionId || "") !== String(currentSessionId || "")) return;
+  if (replaceExisting) clearActiveStreamPreviewRows();
   const progressLines = Array.isArray(activeAgentStreamState.progressLines) ? activeAgentStreamState.progressLines : [];
   const toolDoneLines = Array.isArray(activeAgentStreamState.toolDoneLines) ? activeAgentStreamState.toolDoneLines : [];
   const progress = progressLines.length ? progressLines[progressLines.length - 1] : "正在规划工具并调用...";
   const toolsText = toolDoneLines.length ? `\n${toolDoneLines.join("\n")}` : "";
-  appendChatRow("system", `${progress}${toolsText}`, false, "processing");
+  const startedAt = Number(activeAgentStreamState.startedAt || 0);
+  const elapsed = startedAt > 0 ? `\n\n耗时: ${formatElapsed((Date.now() - startedAt) / 1000)}` : "";
+  const progressRow = appendChatRow("system", `${progress}${toolsText}${elapsed}`, false, "processing");
+  progressRow.dataset.streamPreview = "1";
   const answerText = String(activeAgentStreamState.answerText || "").trim();
   if (answerText) {
     const parsed = splitThinkBlocks(answerText);
     const assistantRow = appendChatRow("assistant", parsed.answer || answerText, false);
-    insertSystemRowsBefore(assistantRow, parsed.thoughts);
-    upsertTraceMetaRowBefore(assistantRow, formatTraceMeta(activeAgentStreamState.traceId));
+    assistantRow.dataset.streamPreview = "1";
+    insertSystemRowsBefore(assistantRow, parsed.thoughts, { streamPreview: true });
+    upsertTraceMetaRowBefore(assistantRow, formatTraceMeta(activeAgentStreamState.traceId), { streamPreview: true });
   }
+  if (keepBottom) qaMessages.scrollTop = qaMessages.scrollHeight;
 }
 
 function renderCurrentAgentSessionView() {
-  renderChat(getCurrentSession()?.messages || []);
-  renderActiveAgentStreamPreview();
+  dashboardAgentSessionsBootstrap.renderCurrentAgentSessionView();
 }
 
 function renderSessions() {
-  const ul = document.getElementById("agent-session-list");
-  if (!ul) return;  // guard: element might not exist during unit tests
-  ul.innerHTML = "";
-  if (!sessionsCache.length) {
-    ul.innerHTML = '<li class="list-loading">暂无会话</li>';
-    return;
-  }
-  for (const session of sessionsCache) {
-    const li = document.createElement("li");
-    li.dataset.sessionId = String(session.id || "");
-    li.title = String(session.title || "新会话");
-    if (session.id === currentSessionId) li.classList.add("active");
-    li.innerHTML = `<div class=\"title\">${escapeHtml(session.title || "新会话")}</div><div class=\"meta\">${escapeHtml(session.updated_at || "")}</div>`;
-    li.onclick = () => {
-      if (Date.now() < suppressSessionClickUntil) return;
-      debugUiEvent("session click received", String(session.id || ""));
-      currentSessionId = session.id;
-      renderSessions();
-      renderCurrentAgentSessionView();
-    };
-    ul.appendChild(li);
-  }
+  dashboardAgentSessionsBootstrap.renderSessions();
 }
 
 function getSessionSummary(sessionId) {
-  return sessionsCache.find((session) => String(session.id || "") === String(sessionId || "").trim()) || null;
+  return dashboardAgentSessionsBootstrap.getSessionSummary(sessionId);
 }
 
 function closeSessionRenameModal() {
-  currentRenameSessionId = "";
-  if (!sessionRenameModal) return;
-  sessionRenameModal.classList.add("hidden");
-  sessionRenameModal.setAttribute("aria-hidden", "true");
+  dashboardAgentSessionsBootstrap.closeSessionRenameModal();
 }
 
 function openSessionRenameModal(sessionId) {
-  const session = getSessionSummary(sessionId);
-  if (!session || !sessionRenameModal || !sessionRenameInput) return;
-  currentRenameSessionId = String(session.id || "").trim();
-  sessionRenameInput.value = String(session.title || "新会话");
-  if (sessionRenameMeta) sessionRenameMeta.textContent = `会话 ID: ${currentRenameSessionId}`;
-  sessionRenameModal.classList.remove("hidden");
-  sessionRenameModal.setAttribute("aria-hidden", "false");
-  const shouldAutoFocus = !!(window.matchMedia && window.matchMedia("(pointer: fine)").matches);
-  if (shouldAutoFocus) {
-    window.setTimeout(() => {
-      sessionRenameInput.focus();
-      sessionRenameInput.select();
-    }, 20);
-  }
+  dashboardAgentSessionsBootstrap.openSessionRenameModal(sessionId);
 }
 
 async function saveSessionRename() {
-  const sessionId = String(currentRenameSessionId || "").trim();
-  const title = String(sessionRenameInput?.value || "").trim();
-  if (!sessionId || !title) return;
-  await apiPost(`/api/agent/sessions/${encodeURIComponent(sessionId)}`, { title, lock: true }, "PATCH");
-  closeSessionRenameModal();
-  await refreshSessions(sessionId);
+  await dashboardAgentSessionsBootstrap.saveSessionRename();
 }
 
 function openSessionRenameModalFromTarget(target) {
-  const item = target instanceof Element ? target.closest("[data-session-id]") : null;
-  const sessionId = String(item?.getAttribute("data-session-id") || "").trim();
-  if (!sessionId) return;
-  suppressSessionClickUntil = Date.now() + 650;
-  openSessionRenameModal(sessionId);
+  dashboardAgentSessionsBootstrap.openSessionRenameModalFromTarget(target);
 }
 
 function formatTraceMeta(traceId) {
@@ -3884,12 +5298,24 @@ function appendChatRow(role, text, keepBottom = true, extraClass = "", metaText 
   const roleLabel = role === "user" ? "用户" : role === "assistant" ? "助手" : "系统";
   const metaHtml = metaText ? `<div class="msg-meta">${escapeHtml(metaText)}</div>` : "";
   row.innerHTML = `<div class="role">${roleLabel}</div>${metaHtml}<div class="content markdown-body">${markdownToHtml(text)}</div>`;
+  rewriteLoopbackLinksInContainer(row);
   qaMessages.appendChild(row);
   if (keepBottom) qaMessages.scrollTop = qaMessages.scrollHeight;
   return row;
 }
 
-function upsertTraceMetaRowBefore(targetRow, metaText) {
+function isQaMessagesNearBottom(threshold = 64) {
+  if (!(qaMessages instanceof HTMLElement)) return true;
+  const distance = qaMessages.scrollHeight - qaMessages.clientHeight - qaMessages.scrollTop;
+  return distance <= threshold;
+}
+
+function clearActiveStreamPreviewRows() {
+  if (!(qaMessages instanceof HTMLElement)) return;
+  qaMessages.querySelectorAll('[data-stream-preview="1"]').forEach((node) => node.remove());
+}
+
+function upsertTraceMetaRowBefore(targetRow, metaText, options = {}) {
   if (!targetRow || !targetRow.parentElement) return null;
   const chat = targetRow.parentElement;
   let anchor = targetRow;
@@ -3908,12 +5334,14 @@ function upsertTraceMetaRowBefore(targetRow, metaText) {
 
   const row = existingMetaRow || document.createElement("div");
   row.className = "msg system trace-meta";
+  if (options.streamPreview) row.dataset.streamPreview = "1";
   row.innerHTML = `<div class="role">系统</div><div class="content trace-meta-content markdown-body">${markdownToHtml(normalizedMeta)}</div>`;
+  rewriteLoopbackLinksInContainer(row);
   if (!existingMetaRow) chat.insertBefore(row, anchor);
   return row;
 }
 
-function insertSystemRowsBefore(targetRow, blocks) {
+function insertSystemRowsBefore(targetRow, blocks, options = {}) {
   if (!targetRow || !targetRow.parentElement || !Array.isArray(blocks)) return;
   const chat = targetRow.parentElement;
   for (const textRaw of blocks) {
@@ -3921,7 +5349,9 @@ function insertSystemRowsBefore(targetRow, blocks) {
     if (!text) continue;
     const row = document.createElement("div");
     row.className = "msg system think collapsed";
+    if (options.streamPreview) row.dataset.streamPreview = "1";
     row.innerHTML = `<div class="role">系统</div><div class="content markdown-body">${markdownToHtml(text)}</div>`;
+    rewriteLoopbackLinksInContainer(row);
     row.addEventListener("click", () => row.classList.toggle("collapsed"));
     chat.insertBefore(row, targetRow);
   }
@@ -3948,20 +5378,7 @@ function renderChat(messages) {
 }
 
 async function refreshSessions(preferSessionId = "") {
-  const data = await apiGet("/api/agent/sessions");
-  sessionsCache = Array.isArray(data.sessions) ? data.sessions : [];
-  if (!sessionsCache.length) {
-    const created = await apiPost("/api/agent/sessions", { title: "新会话" });
-    sessionsCache = [created];
-  }
-  const candidate = preferSessionId || currentSessionId;
-  if (!candidate || !sessionsCache.some((x) => x.id === candidate)) {
-    currentSessionId = sessionsCache[0].id;
-  } else {
-    currentSessionId = candidate;
-  }
-  renderSessions();
-  renderCurrentAgentSessionView();
+  await dashboardAgentSessionsBootstrap.refreshSessions(preferSessionId);
 }
 
 function extractErrorDetail(text) {
@@ -4001,14 +5418,59 @@ function buildExternalSourceSummary(toolResults) {
   return `\n\n---\n*外部补充来源：${parts.join("，")}*`;
 }
 
+function formatToolResultLabel(tool) {
+  const labels = {
+    query_media_record: "查询媒体记录",
+    search_by_creator: "按创作者检索",
+    search_tmdb_media: "查询 TMDB",
+    search_bangumi_subject: "查询 Bangumi",
+    search_mediawiki_action: "查询 Wiki",
+    parse_mediawiki_page: "解析 Wiki 页面",
+    expand_mediawiki_concept: "扩展 Wiki 概念",
+    search_web: "网页检索",
+    query_document_rag: "查询 RAG 文档",
+  };
+  return labels[String(tool || "").trim()] || String(tool || "").trim() || "工具";
+}
+
 function buildReferencesMarkdown(toolResults) {
   if (!Array.isArray(toolResults)) return "";
   const docRefs = [];
   const mediaRefs = [];
   const externalRefs = [];
+  const hasLocalMediaResults = toolResults.some((item) => {
+    if (!item || typeof item !== "object" || String(item.tool || "").trim() !== "query_media_record") return false;
+    if (Array.isArray(item.data?.main_results) && item.data.main_results.length) return true;
+    return Array.isArray(item.data?.results) && item.data.results.length;
+  });
+  const hasPerItemExternalRefs = toolResults.some((item) => {
+    if (!item || typeof item !== "object") return false;
+    if (!item.data?.per_item_fanout) return false;
+    return Array.isArray(item.data?.results) && item.data.results.length > 0;
+  });
 
   function pushRef(bucket, score, line) {
-    bucket.push({ score: Number.isFinite(score) ? score : 0, line });
+    bucket.push({ score: Number.isFinite(score) ? score : 0, ...line });
+  }
+
+  function formatReferenceLink(label, url) {
+    return url ? `[${label}](${url})` : label;
+  }
+
+  function renderReferenceSection(title, refs, startIndex) {
+    const lines = [];
+    const inlineLinks = [];
+    let nextIndex = startIndex;
+    refs.forEach((ref) => {
+      lines.push(`[${nextIndex}] ${formatReferenceLink(ref.label, ref.url)}`);
+      inlineLinks.push(ref.url ? `[${nextIndex}](${ref.url})` : `[${nextIndex}]`);
+      nextIndex += 1;
+    });
+    return {
+      nextIndex,
+      section: `### ${title}\n${lines.join("\n")}`,
+      inlineLinks,
+    };
   }
 
   function scoreOf(row) {
@@ -4039,14 +5501,19 @@ function buildReferencesMarkdown(toolResults) {
       if (tool === "query_document_rag") {
         const path = String(row?.path || "").trim();
         if (!path || !Number.isFinite(score)) continue;
-        pushRef(docRefs, score, `- [本地文档: ${path} (${score.toFixed(4)})](doc://${encodeURIComponent(path)})`);
+        pushRef(docRefs, score, {
+          label: `本地文档: ${path} (${score.toFixed(4)})`,
+          url: `doc://${encodeURIComponent(path)}`,
+        });
       } else if (tool === "search_web") {
         const title = String(row?.title || row?.url || "网页").trim() || "网页";
         const url = String(row?.url || "").trim();
         if (!url) continue;
-        const label = Number.isFinite(score) ? `- [外部网页: ${title} (${score.toFixed(4)})](${url})` : `- [外部网页: ${title}](${url})`;
-        pushRef(externalRefs, score, label);
-      } else if (tool === "query_media_record") {
+        pushRef(externalRefs, score, {
+          label: Number.isFinite(score) ? `外部网页: ${title} (${score.toFixed(4)})` : `外部网页: ${title}`,
+          url,
+        });
+      } else if (tool === "query_media_record" || tool === "search_by_creator") {
         const title = String(row?.title || "").trim();
         const mediaType = String(row?.media_type || "").trim();
         const itemId = String(row?.id || "").trim();
@@ -4054,30 +5521,35 @@ function buildReferencesMarkdown(toolResults) {
         const label = `本地媒体库: ${title}${mediaType ? ` (${mediaType})` : ""} (${score.toFixed(4)})`;
         if (itemId) {
           const previewLink = `${pageLibraryUrl.replace(/\/$/, "")}/?item=${encodeURIComponent(itemId)}`;
-          pushRef(mediaRefs, score, `- [${label}](${previewLink})`);
+          pushRef(mediaRefs, score, { label, url: previewLink });
         } else {
-          pushRef(mediaRefs, score, `- ${label}`);
+          pushRef(mediaRefs, score, { label, url: "" });
         }
       } else if (["search_tmdb_media", "search_bangumi_subject", "search_mediawiki_action", "parse_mediawiki_page", "expand_mediawiki_concept"].includes(tool)) {
+        if (hasLocalMediaResults && hasPerItemExternalRefs && !item.data?.per_item_fanout) continue;
         const title = String(row?.external_title || row?.display_title || row?.title || row?.name_cn || row?.name || "").trim();
         const mediaType = String(row?.media_type || "").trim();
         const url = String(row?.url || "").trim();
         if (!title || !url) continue;
         const sourceLabel = externalSourceLabel(tool, row);
         const suffix = mediaType ? ` (${mediaType})` : "";
-        const line = Number.isFinite(score)
-          ? `- [${sourceLabel}: ${title}${suffix} (${score.toFixed(4)})](${url})`
-          : `- [${sourceLabel}: ${title}${suffix}](${url})`;
-        pushRef(externalRefs, score, line);
+        pushRef(externalRefs, score, {
+          label: Number.isFinite(score)
+            ? `${sourceLabel}: ${title}${suffix} (${score.toFixed(4)})`
+            : `${sourceLabel}: ${title}${suffix}`,
+          url,
+        });
       } else if (String(row?.external_source || "").trim()) {
         const title = String(row?.external_title || row?.title || "").trim();
         const url = String(row?.url || "").trim();
         if (!title || !url) continue;
         const sourceLabel = externalSourceLabel(tool, row);
-        const line = Number.isFinite(score)
-          ? `- [${sourceLabel}: ${title} (${score.toFixed(4)})](${url})`
-          : `- [${sourceLabel}: ${title}](${url})`;
-        pushRef(externalRefs, score, line);
+        pushRef(externalRefs, score, {
+          label: Number.isFinite(score)
+            ? `${sourceLabel}: ${title} (${score.toFixed(4)})`
+            : `${sourceLabel}: ${title}`,
+          url,
+        });
       }
     }
   }
@@ -4085,19 +5557,27 @@ function buildReferencesMarkdown(toolResults) {
   if (!docRefs.length && !mediaRefs.length && !externalRefs.length) return "";
 
   const sections = [];
+  const inlineCitations = [];
+  let nextIndex = 1;
   if (mediaRefs.length) {
-    const lines = mediaRefs.sort((a, b) => b.score - a.score).slice(0, MAX_REFERENCE_ITEMS).map((x) => x.line);
-    sections.push(`### 本地媒体库参考\n${lines.join("\n")}`);
+    const rendered = renderReferenceSection("本地媒体库参考", mediaRefs.sort((a, b) => b.score - a.score).slice(0, MAX_REFERENCE_ITEMS), nextIndex);
+    sections.push(rendered.section);
+    inlineCitations.push(...rendered.inlineLinks);
+    nextIndex = rendered.nextIndex;
   }
   if (docRefs.length) {
-    const lines = docRefs.sort((a, b) => b.score - a.score).slice(0, MAX_REFERENCE_ITEMS).map((x) => x.line);
-    sections.push(`### 本地文档参考\n${lines.join("\n")}`);
+    const rendered = renderReferenceSection("本地文档参考", docRefs.sort((a, b) => b.score - a.score).slice(0, MAX_REFERENCE_ITEMS), nextIndex);
+    sections.push(rendered.section);
+    inlineCitations.push(...rendered.inlineLinks);
+    nextIndex = rendered.nextIndex;
   }
   if (externalRefs.length) {
-    const lines = externalRefs.sort((a, b) => b.score - a.score).slice(0, Math.max(1, Math.min(3, MAX_REFERENCE_ITEMS))).map((x) => x.line);
-    sections.push(`### 外部参考\n${lines.join("\n")}`);
+    const rendered = renderReferenceSection("外部参考", externalRefs.sort((a, b) => b.score - a.score).slice(0, Math.max(1, Math.min(3, MAX_REFERENCE_ITEMS))), nextIndex);
+    sections.push(rendered.section);
+    inlineCitations.push(...rendered.inlineLinks);
   }
-  return `\n\n${sections.join("\n\n")}`;
+  const citationLine = "";
+  return `\n\n${citationLine ? `${citationLine}\n\n` : ""}${sections.join("\n\n")}`;
 }
 
 function hasReferenceSections(text) {
@@ -4110,6 +5590,7 @@ function setRowContent(row, markdownText) {
   const content = row.querySelector(".content");
   if (!(content instanceof HTMLElement)) return;
   content.innerHTML = markdownToHtml(markdownText || "");
+  rewriteLoopbackLinksInContainer(content);
 }
 
 function formatElapsed(seconds) {
@@ -4151,6 +5632,14 @@ function buildPlanDetailsMarkdown(result, elapsedSeconds) {
   return lines.join("\n");
 }
 
+function refreshActiveStreamView(sessionId = "") {
+  if (!activeAgentStreamState) return;
+  const targetSessionId = String(sessionId || activeAgentStreamState.sessionId || "").trim();
+  if (!targetSessionId || String(currentSessionId || "") !== targetSessionId) return;
+  const keepBottom = isQaMessagesNearBottom() || !qaMessages.querySelector('[data-stream-preview="1"]');
+  renderActiveAgentStreamPreview({ keepBottom, replaceExisting: true });
+}
+
 async function callAgent(question, searchMode, opts = {}) {
   const payload = {
     question,
@@ -4174,65 +5663,6 @@ async function callAgent(question, searchMode, opts = {}) {
     throw new Error(extractErrorDetail(raw));
   }
   return resp.json();
-}
-
-function renderCustomCards({ force = false } = {}) {
-  const host = document.getElementById("custom-card-grid");
-  if (!host) return;
-  // If the server already rendered the grid (SSR), skip the first JS repaint
-  // to avoid a flash. JS will call renderCustomCards({force:true}) whenever
-  // the card data changes (save, upload, etc.).
-  if (!force && host.children.length > 0) return;
-  host.innerHTML = "";
-
-  const maxCards = 8;
-  for (let i = 0; i < maxCards; i += 1) {
-    const item = getCardAt(i);
-    const title = String(item.title || "").trim();
-    const url = String(item.url || "").trim();
-    const image = String(item.image || "").trim();
-
-    if (!title || !url) {
-      const placeholder = document.createElement("button");
-      placeholder.type = "button";
-      placeholder.className = "custom-square-card placeholder";
-      placeholder.innerHTML = `<div class="card-text plus">+</div>`;
-      placeholder.title = `配置快捷卡片 ${i + 1}`;
-      placeholder.addEventListener("click", () => openCustomCardModal(i));
-      host.appendChild(placeholder);
-      continue;
-    }
-
-    const card = document.createElement("a");
-    card.className = "custom-square-card";
-    card.href = url;
-    card.target = "_blank";
-    card.rel = "noopener noreferrer";
-    card.title = `点击打开，长按编辑（卡片 ${i + 1}）`;
-    bindCardLongPressEdit(card, i);
-
-    const bg = document.createElement("div");
-    bg.className = "card-bg";
-    if (image) {
-      bg.style.backgroundImage = `url('${image.replace(/'/g, "\\'")}')`;
-    } else {
-      bg.style.background = "linear-gradient(135deg, #3a3f34, #262821)";
-    }
-
-    const overlay = document.createElement("div");
-    overlay.className = "card-overlay";
-
-    const text = document.createElement("div");
-    text.className = "card-text";
-    text.textContent = title;
-
-    card.appendChild(bg);
-    card.appendChild(overlay);
-    card.appendChild(text);
-    host.appendChild(card);
-  }
-
-  bindCustomCardGridInteractions();
 }
 
 function wireChatLinks() {
@@ -4307,8 +5737,6 @@ async function ask(searchMode) {
   appendLocalMessage(requestSessionId, "user", question);
 
   const pendingStart = Date.now();
-  const pending = appendChatRow("system", "正在规划工具并调用... (00:00)", true, "processing");
-  const pendingContent = pending.querySelector(".content");
   let progressLines = [];
   let toolDoneLines = [];
   let streamFinalized = false;
@@ -4322,16 +5750,13 @@ async function ask(searchMode) {
     toolDoneLines: [],
     answerText: "",
     traceId: "",
+    startedAt: pendingStart,
   };
+  refreshActiveStreamView(requestSessionId);
 
   const pendingTimer = window.setInterval(() => {
     if (streamFinalized) return;
-    const elapsed = formatElapsed((Date.now() - pendingStart) / 1000);
-    const progress = progressLines.length ? progressLines[progressLines.length - 1] : "正在规划工具并调用...";
-    const toolsText = toolDoneLines.length ? "\n" + toolDoneLines.join("\n") : "";
-    const answerText = String(activeAgentStreamState?.answerText || "").trim();
-    const answerBlock = answerText ? `\n\n---\n\n${answerText}` : "";
-    if (pendingContent) pendingContent.innerHTML = markdownToHtml(`${progress}${toolsText}${answerBlock}\n\n耗时: ${elapsed}`);
+    refreshActiveStreamView(requestSessionId);
   }, 500);
 
   askInFlight = true;
@@ -4391,17 +5816,20 @@ async function ask(searchMode) {
               activeAgentStreamState.progressLines = [...progressLines];
               activeAgentStreamState.traceId = activeTraceId;
             }
+            refreshActiveStreamView(requestSessionId);
           } else if (event.type === "tool_done") {
             if (event.trace_id) activeTraceId = String(event.trace_id || "").trim();
             const tool = String(event.tool || "");
-            const status = String(event.status || "");
+            const status = String(event.status || "").trim().toLowerCase();
+            if (status === "skipped") continue;
             const summary = String(event.summary || "");
-            const statusIcon = status === "ok" ? "✓" : status === "error" ? "✗" : "•";
-            toolDoneLines.push(`${statusIcon} **${tool}** [${status}]${summary ? `: ${summary}` : ""}`);
+            const toolLabel = formatToolResultLabel(tool);
+            toolDoneLines.push(summary ? `- ${toolLabel}：${summary}` : `- ${toolLabel}`);
             if (activeAgentStreamState && activeAgentStreamState.sessionId === requestSessionId) {
               activeAgentStreamState.toolDoneLines = [...toolDoneLines];
               activeAgentStreamState.traceId = activeTraceId;
             }
+            refreshActiveStreamView(requestSessionId);
           } else if (event.type === "answer_delta") {
             if (event.trace_id) activeTraceId = String(event.trace_id || "").trim();
             const delta = String(event.delta || "");
@@ -4409,6 +5837,7 @@ async function ask(searchMode) {
               activeAgentStreamState.answerText = String(activeAgentStreamState.answerText || "") + delta;
               activeAgentStreamState.traceId = activeTraceId;
             }
+            refreshActiveStreamView(requestSessionId);
           } else if (event.type === "quota_exceeded") {
             if (event.trace_id) activeTraceId = String(event.trace_id || "").trim();
             streamFinalized = true;
@@ -4416,7 +5845,6 @@ async function ask(searchMode) {
             if (activeAgentStreamState && activeAgentStreamState.sessionId === requestSessionId) {
               activeAgentStreamState.traceId = activeTraceId;
             }
-            pending.classList.remove("processing");
             return { quotaExceeded: true, event };
           } else if (event.type === "error") {
             streamFinalized = true;
@@ -4424,7 +5852,7 @@ async function ask(searchMode) {
           } else if (event.type === "done") {
             if (event.trace_id) activeTraceId = String(event.trace_id || "").trim();
             streamFinalized = true;
-            return { done: true, payload: event.payload };
+            return { done: true, payload: normalizeAgentResponse(event.payload) };
           }
         }
       }
@@ -4439,9 +5867,9 @@ async function ask(searchMode) {
           let event;
           try { event = JSON.parse(jsonText); } catch (_e) { continue; }
           if (event.trace_id) activeTraceId = String(event.trace_id || "").trim();
-          if (event.type === "done") { streamFinalized = true; return { done: true, payload: event.payload }; }
+          if (event.type === "done") { streamFinalized = true; return { done: true, payload: normalizeAgentResponse(event.payload) }; }
           if (event.type === "error") { streamFinalized = true; throw new Error(String(event.message || "Agent 服务出错")); }
-          if (event.type === "quota_exceeded") { streamFinalized = true; quotaExceededEvent = event; pending.classList.remove("processing"); return { quotaExceeded: true, event }; }
+          if (event.type === "quota_exceeded") { streamFinalized = true; quotaExceededEvent = event; return { quotaExceeded: true, event }; }
         }
       }
     }
@@ -4466,8 +5894,12 @@ async function ask(searchMode) {
         : await tryStream({ deny: true });
       if (streamResult?.quotaExceeded) {
         window.clearInterval(pendingTimer);
-        pending.classList.remove("processing");
-        if (pendingContent) pendingContent.innerHTML = markdownToHtml("已拒绝超配额操作。");
+        if (activeAgentStreamState && activeAgentStreamState.sessionId === requestSessionId) {
+          activeAgentStreamState.progressLines = ["已拒绝超配额操作。"]; 
+          activeAgentStreamState.toolDoneLines = [];
+          activeAgentStreamState.answerText = "";
+        }
+        refreshActiveStreamView(requestSessionId);
         return;
       }
     }
@@ -4477,21 +5909,9 @@ async function ask(searchMode) {
     if (!result.trace_id && activeTraceId) result.trace_id = activeTraceId;
     const resolvedSessionId = String(result.session_id || requestSessionId || "").trim();
     if (currentSessionId === requestSessionId) currentSessionId = resolvedSessionId;
-
-    // Show final tool summary in the pending row before removing it
-    const finalDetail = buildPlanDetailsMarkdown(result, (Date.now() - pendingStart) / 1000);
-    setRowContent(pending, finalDetail);
-    pending.classList.remove("processing");
     window.clearInterval(pendingTimer);
-    pending.remove();
 
-    let finalText = String(result.answer || "").trim() || "未返回回答。";
-    if (!hasReferenceSections(finalText)) {
-      const sourceSummary = buildExternalSourceSummary(result.tool_results);
-      const refs = buildReferencesMarkdown(result.tool_results);
-      if (sourceSummary) finalText += sourceSummary;
-      if (refs) finalText += refs;
-    }
+    const finalText = String(result.answer || "").trim() || "未返回回答。";
     appendLocalMessage(resolvedSessionId, "assistant", finalText, result.trace_id);
     activeAgentStreamState = null;
     if (currentSessionId === resolvedSessionId) {
@@ -4500,8 +5920,9 @@ async function ask(searchMode) {
   } catch (err) {
     streamFinalized = true;
     window.clearInterval(pendingTimer);
-    pending.classList.remove("processing");
-    pending.remove();
+    if (activeAgentStreamState && activeAgentStreamState.sessionId === requestSessionId) {
+      activeAgentStreamState = null;
+    }
     if (err && err.name === "AbortError") {
       appendChatRow("assistant", "已中止当前请求。");
     } else {
@@ -4514,6 +5935,9 @@ async function ask(searchMode) {
     window.clearInterval(pendingTimer);
     if (activeAgentStreamState && activeAgentStreamState.sessionId === requestSessionId) {
       activeAgentStreamState = null;
+    }
+    if (String(currentSessionId || "") === String(requestSessionId || "")) {
+      renderCurrentAgentSessionView();
     }
     askInFlight = false;
     activeController = null;
@@ -4528,325 +5952,325 @@ function abortAsk() {
 }
 
 async function createSessionAction() {
-  const created = await apiPost("/api/agent/sessions", { title: "新会话" });
-  await refreshSessions(String(created.id || "").trim());
+  await dashboardAgentSessionsBootstrap.createSessionAction();
 }
 
 async function deleteCurrentSessionAction() {
-  if (!currentSessionId) return;
-  await apiDelete(`/api/agent/sessions/${encodeURIComponent(currentSessionId)}`);
-  await refreshSessions("");
+  await dashboardAgentSessionsBootstrap.deleteCurrentSessionAction();
+}
+
+function findTraceStageNode(scope, attributeName, key) {
+  return Array.from(scope.querySelectorAll(`[${attributeName}]`)).find((node) => String(node.getAttribute(attributeName) || "") === key) || null;
+}
+
+function buildTraceStageTooltipData(scope, key) {
+  if (!(scope instanceof Element) || !key) return null;
+  const row = findTraceStageNode(scope, "data-trace-stage-row", key);
+  const segment = findTraceStageNode(scope, "data-trace-stage-key", key);
+  const label = row?.querySelector(".trace-stage-label")?.textContent?.trim() || formatTraceStageLabel(key);
+  const duration = row?.children?.[1]?.textContent?.trim() || "";
+  const ratio = row?.children?.[2]?.textContent?.trim() || "";
+  const color = row?.querySelector(".trace-stage-label i")?.style.background || segment?.style.background || TRACE_STAGE_COLORS[0];
+  return { key, label, duration, ratio, color };
+}
+
+let traceStageTooltipPortal = null;
+let traceStageTooltipScopeCounter = 0;
+
+function ensureTraceStageTooltipPortal() {
+  if (traceStageTooltipPortal instanceof HTMLElement && document.body.contains(traceStageTooltipPortal)) {
+    return traceStageTooltipPortal;
+  }
+  const tooltip = document.createElement("div");
+  tooltip.className = "trace-stage-tooltip trace-stage-tooltip-floating hidden";
+  tooltip.setAttribute("aria-hidden", "true");
+  document.body.appendChild(tooltip);
+  traceStageTooltipPortal = tooltip;
+  return tooltip;
+}
+
+function getTraceStageScopeId(scope) {
+  if (!(scope instanceof HTMLElement)) return "";
+  if (!scope.dataset.traceStageScopeId) {
+    traceStageTooltipScopeCounter += 1;
+    scope.dataset.traceStageScopeId = `trace-stage-scope-${traceStageTooltipScopeCounter}`;
+  }
+  return scope.dataset.traceStageScopeId;
+}
+
+function hideTraceStageTooltipPortal(scopeId = "") {
+  const tooltip = ensureTraceStageTooltipPortal();
+  if (scopeId && tooltip.dataset.scopeId && tooltip.dataset.scopeId !== scopeId) return;
+  tooltip.innerHTML = "";
+  tooltip.classList.add("hidden");
+  tooltip.setAttribute("aria-hidden", "true");
+  tooltip.style.left = "0px";
+  tooltip.style.top = "0px";
+  delete tooltip.dataset.scopeId;
+  delete tooltip.dataset.activeKey;
+  delete tooltip.dataset.pinned;
+}
+
+function positionTraceStageTooltip(scope, tooltip, key) {
+  if (!(scope instanceof HTMLElement) || !(tooltip instanceof HTMLElement) || !key) return;
+  const anchor = findTraceStageNode(scope, "data-trace-stage-key", key) || findTraceStageNode(scope, "data-trace-stage-row", key);
+  if (!(anchor instanceof HTMLElement)) return;
+  const anchorRect = anchor.getBoundingClientRect();
+  const spacing = 10;
+  const tooltipRect = tooltip.getBoundingClientRect();
+  const viewportWidth = window.innerWidth || document.documentElement.clientWidth || 0;
+  const viewportHeight = window.innerHeight || document.documentElement.clientHeight || 0;
+  let left = anchorRect.left + (anchorRect.width - tooltipRect.width) / 2;
+  left = Math.min(Math.max(12, left), Math.max(12, viewportWidth - tooltipRect.width - 12));
+  let top = anchorRect.top - tooltipRect.height - spacing;
+  if (top < 12) {
+    top = anchorRect.bottom + spacing;
+  }
+  top = Math.min(Math.max(12, top), Math.max(12, viewportHeight - tooltipRect.height - 12));
+  tooltip.style.left = `${left}px`;
+  tooltip.style.top = `${top}px`;
+}
+
+function setTraceStageTooltip(scope, key, { pinned = false } = {}) {
+  if (!(scope instanceof Element)) return;
+  const tooltip = ensureTraceStageTooltipPortal();
+  const scopeId = getTraceStageScopeId(scope);
+  const data = buildTraceStageTooltipData(scope, key);
+  if (!data) {
+    hideTraceStageTooltipPortal(scopeId);
+    scope.querySelectorAll("[data-trace-stage-key], [data-trace-stage-row]").forEach((node) => {
+      node.classList.remove("is-active");
+    });
+    return;
+  }
+  scope.querySelectorAll("[data-trace-stage-key], [data-trace-stage-row]").forEach((node) => {
+    node.classList.toggle("is-active", String(node.getAttribute("data-trace-stage-key") || node.getAttribute("data-trace-stage-row") || "") === key);
+  });
+  const meta = [data.duration, data.ratio].filter(Boolean).join(" / ");
+  tooltip.innerHTML = `<div class="trace-stage-tooltip-title"><i style="background:${data.color}"></i>${escapeHtml(data.label)}</div>
+    <div class="trace-stage-tooltip-body">${escapeHtml(getTraceStageDescription(key))}</div>
+    <div class="trace-stage-tooltip-meta">${escapeHtml(meta)}</div>`;
+  tooltip.classList.remove("hidden");
+  tooltip.setAttribute("aria-hidden", "false");
+  tooltip.dataset.scopeId = scopeId;
+  tooltip.dataset.activeKey = key;
+  tooltip.dataset.pinned = pinned ? "1" : "0";
+  positionTraceStageTooltip(scope, tooltip, key);
+}
+
+function clearTraceStageTooltip(scope, { force = false } = {}) {
+  if (!(scope instanceof Element)) return;
+  const tooltip = ensureTraceStageTooltipPortal();
+  const scopeId = getTraceStageScopeId(scope);
+  if (tooltip.dataset.scopeId !== scopeId) return;
+  if (!force && tooltip.dataset.pinned === "1") return;
+  scope.querySelectorAll("[data-trace-stage-key], [data-trace-stage-row]").forEach((node) => {
+    node.classList.remove("is-active");
+  });
+  setTraceStageTooltip(scope, "");
+}
+
+function closeAllTraceStageTooltips() {
+  document.querySelectorAll(".trace-stage-composite-wrap").forEach((scope) => {
+    scope.querySelectorAll("[data-trace-stage-key], [data-trace-stage-row]").forEach((node) => {
+      node.classList.remove("is-active");
+    });
+  });
+  hideTraceStageTooltipPortal();
+}
+
+function _traceStageHoverHandler(event) {
+  const target = event.target;
+  const node = target instanceof Element ? target.closest("[data-trace-stage-key], [data-trace-stage-row]") : null;
+  if (!node) return;
+  const scope = node.closest(".trace-stage-composite-wrap");
+  const key = String(node.getAttribute("data-trace-stage-key") || node.getAttribute("data-trace-stage-row") || "").trim();
+  if (!scope || !key) return;
+  const tooltip = scope.querySelector(".trace-stage-tooltip");
+  if (tooltip instanceof HTMLElement && tooltip.dataset.pinned === "1") return;
+  setTraceStageTooltip(scope, key);
 }
 
 // ── Module-level trace stage click handler (shared across tabs) ──
 function _traceStageClickHandler(event) {
   const target = event.target;
+  const toggle = target instanceof Element ? target.closest("[data-trace-stage-toggle]") : null;
+  if (toggle) {
+    const parentKey = String(toggle.getAttribute("data-trace-stage-toggle") || "").trim();
+    const scope = toggle.closest(".trace-stage-composite-wrap");
+    if (!scope || !parentKey) return;
+    const expanded = toggle.getAttribute("aria-expanded") === "true";
+    toggle.setAttribute("aria-expanded", expanded ? "false" : "true");
+    scope.querySelectorAll(`[data-trace-stage-parent="${CSS.escape(parentKey)}"]`).forEach((row) => {
+      row.classList.toggle("hidden", expanded);
+    });
+    const parentRow = toggle.closest("tr");
+    parentRow?.classList.toggle("is-expanded", !expanded);
+    return;
+  }
   const segment = target instanceof Element ? target.closest("[data-trace-stage-key]") : null;
   const row = target instanceof Element ? target.closest("[data-trace-stage-row]") : null;
   const key = String(segment?.getAttribute("data-trace-stage-key") || row?.getAttribute("data-trace-stage-row") || "").trim();
   if (!key) return;
   const scope = target instanceof Element ? target.closest(".trace-stage-composite-wrap") : null;
   if (!scope) return;
-  scope.querySelectorAll("[data-trace-stage-key], [data-trace-stage-row]").forEach((node) => {
-    node.classList.toggle("is-active", String(node.getAttribute("data-trace-stage-key") || node.getAttribute("data-trace-stage-row") || "") === key);
-  });
+  const tooltip = scope.querySelector(".trace-stage-tooltip");
+  const alreadyPinned = tooltip instanceof HTMLElement && tooltip.dataset.pinned === "1" && tooltip.dataset.activeKey === key;
+  if (alreadyPinned) {
+    clearTraceStageTooltip(scope, { force: true });
+    return;
+  }
+  closeAllTraceStageTooltips();
+  setTraceStageTooltip(scope, key, { pinned: true });
 }
 
 // ── Event-handler registration — called once at init, independent of data loading ──
 let _dashboardHandlersRegistered = false;
+const dashboardHandlersBootstrap = DashboardHandlersBootstrapModule?.createHandlersBootstrap?.({
+  dashboardRefreshBtn,
+  refreshDashboard,
+  renderDashboardError,
+  usageSaveBtn: document.getElementById("usage-save-btn"),
+  saveUsage,
+  usageExportBtn,
+  exportUsageTracesCsv,
+  usageClearBtn,
+  clearUsageTraces,
+  usageProviderSelect,
+  loadUsageTraces,
+  renderUsageModal,
+  usageCancelBtn: document.getElementById("usage-cancel-btn"),
+  closeUsageModal,
+  usageEditModal: document.getElementById("usage-edit-modal"),
+  warningsClearBtn,
+  clearWarnings,
+  warningsCloseBtn,
+  closeWarningsModal,
+  missingQueriesClearBtn,
+  clearMissingQueries,
+  missingQueriesExportBtn,
+  exportMissingQueriesCsv,
+  missingQueriesSourceSelect,
+  openMissingQueriesModal,
+  missingQueriesCloseBtn,
+  closeMissingQueriesModal,
+  runtimeDataRefreshBtn,
+  openRuntimeDataModal,
+  runtimeDataClearBtn,
+  clearRuntimeDataSelection,
+  runtimeDataCloseBtn,
+  closeRuntimeDataModal,
+  warningsModal,
+  missingQueriesModal,
+  runtimeDataModal,
+  dashboardJobsClearBtn,
+  openTaskHistoryClearModal,
+  dashboardJobsRefreshBtn,
+  refreshTaskCenter,
+  dashboardTicketTrendModeSelect,
+  setDashboardTicketTrendMode: (value) => {
+    dashboardTicketTrendMode = normalizeDashboardTicketTrendMode(value);
+  },
+  getDashboardTicketTrendMode: () => dashboardTicketTrendMode,
+  getCurrentDashboardTicketTrendStats: () => currentDashboardTicketTrendStats,
+  renderDashboardTicketTrend,
+  dashboardJobsList,
+  apiPost,
+  setSelectedTaskJobId: (value) => {
+    selectedTaskJobId = String(value || "").trim();
+  },
+  renderTaskCenter,
+  getTaskJobIdFromTarget,
+  openTaskJobContextMenu,
+  bindLongPress,
+  dashboardJobContextDeleteBtn,
+  getCurrentTaskContextJobId: () => currentTaskContextJobId,
+  openTaskDeleteModal,
+  taskDeleteConfirmBtn,
+  confirmTaskDeleteAction,
+  taskDeleteCancelBtn,
+  closeTaskDeleteModal,
+  dashboardJobContextMenuController,
+  dashboardGrid,
+  debugUiEvent,
+  openWarningsModal,
+  openFeedbackModal,
+  triggerLibraryGraphRebuild,
+  openLibraryAliasModal,
+  showAppErrorModal,
+  openUsageModal,
+  triggerRagSync,
+  feedbackSourceSelect,
+  feedbackExportBtn,
+  exportFeedbackJson,
+  feedbackClearBtn,
+  clearFeedback,
+  feedbackCloseBtn,
+  closeFeedbackModal,
+  feedbackDetailCloseBtn,
+  closeFeedbackDetailModal,
+  feedbackDetailOpenTraceBtn,
+  getCurrentFeedbackDetailTraceId: () => String(currentFeedbackDetailItem?.trace_id || "").trim(),
+  openTraceModal,
+  feedbackModal,
+  feedbackDetailModal,
+  feedbackModalList,
+  findFeedbackItemById: (feedbackId) => currentFeedbackItems.find((entry) => String(entry.id || "") === String(feedbackId || "").trim()) || null,
+  showFeedbackDetail,
+  usageBootstrapModule: DashboardUsageBootstrapModule,
+  modalBootstrapModule: DashboardModalBootstrapModule,
+  taskCenterBootstrapModule: DashboardTaskCenterBootstrapModule,
+  dashboardTraceBootstrap,
+  dashboardLibraryAliasController,
+}) || { bindEvents() {} };
+
 function _registerDashboardHandlers() {
   if (_dashboardHandlersRegistered) return;
   _dashboardHandlersRegistered = true;
-
-  dashboardRefreshBtn?.addEventListener("click", () => {
-    refreshDashboard({ force: true }).catch((err) => { renderDashboardError(err); });
-  });
-  document.getElementById("usage-save-btn")?.addEventListener("click", () => {
-    saveUsage().catch((e) => window.alert(`保存失败: ${String(e)}`));
-  });
-  document.getElementById("usage-cancel-btn")?.addEventListener("click", closeUsageModal);
-  document.getElementById("usage-edit-modal")?.addEventListener("click", (event) => {
-    const target = event.target;
-    if (target instanceof Element && target.getAttribute("data-role") === "usage-edit-backdrop") closeUsageModal();
-  });
-  warningsClearBtn?.addEventListener("click", clearWarnings);
-  warningsCloseBtn?.addEventListener("click", closeWarningsModal);
-  missingQueriesClearBtn?.addEventListener("click", () => {
-    clearMissingQueries().catch((e) => window.alert(`清除失败: ${String(e)}`));
-  });
-  missingQueriesExportBtn?.addEventListener("click", () => {
-    exportMissingQueriesCsv().catch((e) => window.alert(`导出失败: ${String(e)}`));
-  });
-  missingQueriesSourceSelect?.addEventListener("change", () => {
-    loadMissingQueries(missingQueriesSourceSelect.value)
-      .then(() => {
-        if (missingQueriesModalMeta) {
-          missingQueriesModalMeta.textContent = `最近30天: ${formatNum(currentMissingQueries.length)} 条 | 来源: ${displaySourceLabel(currentMissingQueriesSource)}`;
-        }
-        if (missingQueriesModalList) {
-          missingQueriesModalList.innerHTML = currentMissingQueries.length
-            ? currentMissingQueries.map((row) => {
-                const ts = escapeHtml(String(row?.ts || ""));
-                const source = escapeHtml(String(row?.source_label || displaySourceLabel(row?.source || "unknown")));
-                const query = escapeHtml(String(row?.query || ""));
-                const top1 = row?.top1_score != null ? Number(row.top1_score).toFixed(4) : "—";
-                const th = row?.threshold != null ? Number(row.threshold).toFixed(4) : "—";
-                return `<li><strong>${ts}</strong> [${source}]<br/>${query}<br/><span class="dashboard-meta">top1=${top1}, threshold=${th}</span></li>`;
-              }).join("")
-            : "<li>最近30天暂无未命中 query</li>";
-        }
-      })
-      .catch((e) => window.alert(`筛选失败: ${String(e)}`));
-  });
-  missingQueriesCloseBtn?.addEventListener("click", closeMissingQueriesModal);
-  runtimeDataRefreshBtn?.addEventListener("click", () => {
-    openRuntimeDataModal().catch((e) => window.alert(`刷新失败: ${String(e)}`));
-  });
-  runtimeDataClearBtn?.addEventListener("click", () => {
-    clearRuntimeDataSelection().catch((e) => window.alert(`清除失败: ${String(e)}`));
-  });
-  runtimeDataCloseBtn?.addEventListener("click", closeRuntimeDataModal);
-  dashboardTraceQueryBtn?.addEventListener("click", () => {
-    lookupDashboardTrace().catch((e) => showAppErrorModal("Trace 查询失败", String(e)));
-  });
-  dashboardTraceOpenBtn?.addEventListener("click", () => {
-    openTraceModal().catch((e) => showAppErrorModal("Trace 加载失败", String(e)));
-  });
-  dashboardTraceTicketBtn?.addEventListener("click", () => {
-    openTicketFromCurrentTrace().catch((e) => showAppErrorModal("Ticket 生成失败", String(e)));
-  });
-  dashboardTraceInput?.addEventListener("keydown", (event) => {
-    if (event.key === "Enter") {
-      event.preventDefault();
-      lookupDashboardTrace().catch((e) => showAppErrorModal("Trace 查询失败", String(e)));
-    }
-  });
-  dashboardTraceResult?.addEventListener("click", _traceStageClickHandler);
-  warningsModal?.addEventListener("click", (event) => {
-    const target = event.target;
-    if (target instanceof Element && target.getAttribute("data-role") === "warnings-backdrop") closeWarningsModal();
-  });
-  missingQueriesModal?.addEventListener("click", (event) => {
-    const target = event.target;
-    if (target instanceof Element && target.getAttribute("data-role") === "missing-queries-backdrop") closeMissingQueriesModal();
-  });
-  runtimeDataModal?.addEventListener("click", (event) => {
-    const target = event.target;
-    if (target instanceof Element && target.getAttribute("data-role") === "runtime-data-backdrop") closeRuntimeDataModal();
-  });
-  dashboardJobsRefreshBtn?.addEventListener("click", () => {
-    refreshTaskCenter().catch((e) => window.alert(`任务刷新失败: ${String(e)}`));
-  });
-  dashboardJobsFilter?.addEventListener("change", () => {
-    dashboardJobsView = String(dashboardJobsFilter.value || "active");
-    refreshTaskCenter().catch((e) => window.alert(`任务筛选失败: ${String(e)}`));
-  });
-  dashboardJobsList?.addEventListener("click", async (event) => {
-    const target = event.target;
-    const cancelBtn = target instanceof Element ? target.closest("[data-job-cancel-id]") : null;
-    if (cancelBtn) {
-      const jobId = String(cancelBtn.getAttribute("data-job-cancel-id") || "").trim();
-      if (!jobId) return;
-      try {
-        await apiPost(`/api/dashboard/jobs/${encodeURIComponent(jobId)}/cancel`, {});
-        await refreshTaskCenter();
-      } catch (e) {
-        window.alert(`取消任务失败: ${String(e)}`);
-      }
-      return;
-    }
-    const card = target instanceof Element ? target.closest("[data-job-id]") : null;
-    if (!card) return;
-    selectedTaskJobId = String(card.getAttribute("data-job-id") || "");
-    renderTaskCenter();
-  });
-  if (dashboardGrid) bindLongPress(dashboardGrid, (target) => {
-    const role = target instanceof Element ? String(target.getAttribute("data-role") || target.tagName || "") : "";
-    debugUiEvent("dashboard longpress start", role);
-    const warningsCard = target.closest("[data-role='warnings-summary']");
-    if (warningsCard) { openWarningsModal(); return; }
-    const missingQueriesCard = target.closest("[data-role='missing-queries-summary']");
-    if (missingQueriesCard) { openMissingQueriesModal().catch((e) => window.alert(`加载失败: ${String(e)}`)); return; }
-    const feedbackCard = target.closest("[data-role='feedback-summary']");
-    if (feedbackCard) { openFeedbackModal().catch((e) => window.alert(`加载失败: ${String(e)}`)); return; }
-    const runtimeDataCard = target.closest("[data-role='runtime-data-summary']");
-    if (runtimeDataCard) { openRuntimeDataModal().catch((e) => window.alert(`加载失败: ${String(e)}`)); return; }
-    const libraryGraphCard = target.closest("[data-role='library-graph-summary']");
-    if (libraryGraphCard) { triggerLibraryGraphRebuild().catch((e) => window.alert(`触发失败: ${String(e)}`)); return; }
-    const usageCard = target.closest("[data-role='web-search-usage'],[data-role='deepseek-usage']");
-    if (usageCard) openUsageModal();
-    const ragPendingCard = target.closest("[data-role='rag-changed-pending']");
-    if (ragPendingCard) triggerRagSync();
-  });
-  feedbackSourceSelect?.addEventListener("change", () => {
-    openFeedbackModal().catch((e) => window.alert(`加载失败: ${String(e)}`));
-  });
-  feedbackExportBtn?.addEventListener("click", () => {
-    exportFeedbackJson().catch((e) => window.alert(`导出失败: ${String(e)}`));
-  });
-  feedbackClearBtn?.addEventListener("click", () => {
-    clearFeedback().catch((e) => window.alert(`清空失败: ${String(e)}`));
-  });
-  feedbackCloseBtn?.addEventListener("click", closeFeedbackModal);
-  feedbackDetailCloseBtn?.addEventListener("click", closeFeedbackDetailModal);
-  feedbackDetailOpenTraceBtn?.addEventListener("click", () => {
-    const traceId = String(currentFeedbackDetailItem?.trace_id || "").trim();
-    if (!traceId) return;
-    openTraceModal(traceId).catch((e) => showAppErrorModal("Trace 加载失败", String(e)));
-  });
-  feedbackModal?.addEventListener("click", (event) => {
-    const target = event.target;
-    if (!(target instanceof Element)) return;
-    if (target.dataset.role === "feedback-backdrop") closeFeedbackModal();
-  });
-  feedbackDetailModal?.addEventListener("click", (event) => {
-    const target = event.target;
-    if (!(target instanceof Element)) return;
-    if (target.dataset.role === "feedback-detail-backdrop") closeFeedbackDetailModal();
-  });
-  feedbackModalList?.addEventListener("click", (event) => {
-    const target = event.target;
-    const item = target instanceof Element ? target.closest("[data-feedback-id]") : null;
-    if (!item) return;
-    const feedbackId = String(item.getAttribute("data-feedback-id") || "").trim();
-    const row = currentFeedbackItems.find((entry) => String(entry.id || "") === feedbackId);
-    if (row) showFeedbackDetail(row);
-  });
-  if (feedbackModalList) bindLongPress(feedbackModalList, (target) => {
-    const item = target.closest("[data-feedback-id]");
-    if (!item) return;
-    const feedbackId = String(item.getAttribute("data-feedback-id") || "").trim();
-    const row = currentFeedbackItems.find((entry) => String(entry.id || "") === feedbackId);
-    if (row) showFeedbackDetail(row);
-  });
+  dashboardHandlersBootstrap.bindEvents();
 }
 
-let _ticketsHandlersRegistered = false;
-function _registerTicketsHandlers() {
-  if (_ticketsHandlersRegistered) return;
-  _ticketsHandlersRegistered = true;
+let _authorizationHandlersRegistered = false;
+function _registerAuthorizationHandlers() {
+  if (_authorizationHandlersRegistered) return;
+  _authorizationHandlersRegistered = true;
 
-  ticketsRefreshBtn?.addEventListener("click", () => {
-    refreshTickets({ keepSelection: true }).catch((e) => showAppErrorModal("Tickets 刷新失败", String(e)));
-  });
-  ticketsNewBtn?.addEventListener("click", () => { resetTicketEditor(); });
-  ticketPasteFillBtn?.addEventListener("click", () => {
-    fillTicketFromPaste().catch((e) => showAppErrorModal("BUG-TICKET 填充失败", String(e)));
-  });
-  ticketsAIDraftBtn?.addEventListener("click", () => {
-    createTicketAIDraft().catch((e) => showAppErrorModal("AI Ticket 草稿失败", String(e)));
-  });
-  ticketsSaveBtn?.addEventListener("click", () => {
-    saveCurrentTicket().catch((e) => showAppErrorModal("Ticket 保存失败", String(e)));
-  });
-  ticketsDeleteBtn?.addEventListener("click", openTicketDeleteModal);
-  ticketsList?.addEventListener("click", (event) => {
-    const target = event.target;
-    const traceBtn = target instanceof Element ? target.closest("[data-ticket-trace-open]") : null;
-    if (traceBtn) {
-      const traceId = String(traceBtn.getAttribute("data-ticket-trace-open") || "").trim();
-      debugUiEvent("ticket row click received", traceId ? `trace=${traceId}` : "trace=empty");
-      if (traceId) openTraceModal(traceId).catch((e) => showAppErrorModal("Trace 加载失败", String(e)));
-      return;
-    }
-    const item = target instanceof Element ? target.closest("[data-ticket-id]") : null;
-    if (!item) return;
-    const ticketId = String(item.getAttribute("data-ticket-id") || "").trim();
-    debugUiEvent("ticket row click received", ticketId || "ticket=empty");
-    const ticket = currentTickets.find((entry) => String(entry.ticket_id || "") === ticketId);
-    if (!ticket) return;
-    applyTicketToForm(ticket);
-    renderTicketsList();
-  });
-  ticketRelatedTracesLinks?.addEventListener("click", (event) => {
-    const target = event.target;
-    const button = target instanceof Element ? target.closest("[data-ticket-trace-open]") : null;
-    if (!button) return;
-    const traceId = String(button.getAttribute("data-ticket-trace-open") || "").trim();
-    if (traceId) openTraceModal(traceId).catch((e) => showAppErrorModal("Trace 加载失败", String(e)));
-  });
-  [ticketsStatusFilter, ticketsPriorityFilter, ticketsDomainFilter, ticketsCategoryFilter, ticketsCreatedFrom, ticketsCreatedTo].forEach((node) => {
-    node?.addEventListener("change", () => {
-      refreshTickets({ keepSelection: false }).catch((e) => showAppErrorModal("Tickets 筛选失败", String(e)));
+  authorizationUnlockBtn?.addEventListener("click", () => {
+    unlockAuthorizationPanel().catch((error) => {
+      showAuthorizationError(authorizationReauthError, String(error));
     });
   });
-  ticketsSearchInput?.addEventListener("keydown", (event) => {
+  authorizationPasswordInput?.addEventListener("keydown", (event) => {
     if (event.key !== "Enter") return;
     event.preventDefault();
-    refreshTickets({ keepSelection: false }).catch((e) => showAppErrorModal("Tickets 搜索失败", String(e)));
-  });
-  ticketRelatedTracesInput?.addEventListener("input", () => {
-    renderTicketTraceLinks(ticketRelatedTracesInput.value || "");
-  });
-  ticketPasteInput?.addEventListener("input", () => { syncTicketsPaneHeights(); });
-  ticketDeleteConfirmSelect?.addEventListener("change", () => {
-    if (ticketDeleteConfirmBtn) ticketDeleteConfirmBtn.disabled = String(ticketDeleteConfirmSelect.value || "") !== "delete";
-  });
-  ticketsSortToggleBtn?.addEventListener("click", () => {
-    currentTicketSort = currentTicketSort === "updated_asc" ? "updated_desc" : "updated_asc";
-    renderTicketSortButton();
-    refreshTickets({ keepSelection: false }).catch((e) => showAppErrorModal("Tickets 排序失败", String(e)));
-  });
-  ticketsListCollapseBtn?.addEventListener("click", () => { setTicketsListCollapsed(!ticketsListCollapsed); });
-  ticketDeleteConfirmBtn?.addEventListener("click", () => {
-    confirmDeleteCurrentTicket().catch((e) => showAppErrorModal("Ticket 删除失败", String(e)));
-  });
-  ticketDeleteCancelBtn?.addEventListener("click", closeTicketDeleteModal);
-  ticketDeleteModal?.addEventListener("click", (event) => {
-    const target = event.target;
-    if (target instanceof Element && target.getAttribute("data-role") === "ticket-delete-backdrop") closeTicketDeleteModal();
-  });
-}
-
-let _benchmarkHandlersRegistered = false;
-function _registerBenchmarkHandlers() {
-  if (_benchmarkHandlersRegistered) return;
-  _benchmarkHandlersRegistered = true;
-
-  document.getElementById("bm-run-btn")?.addEventListener("click", () => {
-    debugUiEvent("benchmark run click received");
-    runBenchmark();
-  });
-  document.getElementById("bm-abort-btn")?.addEventListener("click", async () => {
-    debugUiEvent("benchmark abort click received", String(activeBenchmarkJobId || ""));
-    if (!activeBenchmarkJobId) return;
-    try {
-      await apiPost(`/api/benchmark/jobs/${encodeURIComponent(activeBenchmarkJobId)}/cancel`, {});
-    } catch (_err) {
-      // Ignore cancel race with completed jobs.
-    }
-  });
-  document.getElementById("bm-router-cls-run")?.addEventListener("click", () => {
-    debugUiEvent("benchmark router click received");
-    runRouterClassification();
-  });
-  document.getElementById("bm-unit-tests-run")?.addEventListener("click", () => {
-    debugUiEvent("benchmark unit click received");
-    runUnitTests();
-  });
-  benchmarkCaseTraceRefreshBtn?.addEventListener("click", () => {
-    debugUiEvent("benchmark trace refresh click received");
-    refreshBenchmarkLatestCase().catch((e) => showAppErrorModal("刷新最新 case 失败", String(e), "可直接复制下面的报错内容"));
-  });
-  const bmTestsetSel = document.getElementById("bm-testset-select");
-  if (bmTestsetSel) {
-    // Sync JS state from SSR-rendered initial selection.
-    if (bmTestsetSel.value) currentBmTestSet = bmTestsetSel.value;
-    bmTestsetSel.addEventListener("change", () => {
-      currentBmTestSet = bmTestsetSel.value;
-      renderBenchmarkTable(benchmarkHistory);
+    unlockAuthorizationPanel().catch((error) => {
+      showAuthorizationError(authorizationReauthError, String(error));
     });
-  }
-  document.getElementById("bm-case-set-select")?.addEventListener("change", () => {
-    syncBenchmarkCountOptions();
   });
-  document.getElementById("bm-case-trace-list")?.addEventListener("click", (event) => {
-    const target = event.target;
-    const btn = target instanceof Element ? target.closest("[data-trace-open]") : null;
-    if (!btn) return;
-    const traceId = String(btn.getAttribute("data-trace-open") || "").trim();
-    if (!traceId) return;
-    openTraceModal(traceId).catch((e) => showAppErrorModal("Trace 加载失败", String(e)));
+  authorizationRefreshBtn?.addEventListener("click", () => {
+    bootstrapAuthorizationTab({ forcePrompt: false }).catch((error) => {
+      showAppErrorModal("Authorization 刷新失败", String(error));
+    });
+  });
+  authorizationBootstrapBtn?.addEventListener("click", () => {
+    createAuthorizationBootstrapAdmin().catch((error) => {
+      showAuthorizationError(authorizationBootstrapError, String(error));
+    });
+  });
+  authorizationCreateRole?.addEventListener("change", () => {
+    const allAppIds = (authorizationState.data?.available_apps || []).map((item) => String(item.app_id || "")).filter(Boolean);
+    const nextRole = String(authorizationCreateRole?.value || "user");
+    renderAuthorizationAppChecks(
+      authorizationCreateApps,
+      authorizationState.data?.available_apps || [],
+      nextRole === "admin" ? allAppIds : collectAuthorizationApps(authorizationCreateApps),
+      { disabled: nextRole === "admin" },
+    );
+  });
+  authorizationCreateBtn?.addEventListener("click", () => {
+    createAuthorizationUser().catch((error) => {
+      showAppErrorModal("Authorization 创建失败", String(error));
+    });
   });
 }
 
@@ -4872,6 +6296,11 @@ async function init() {
       if (target === "benchmark") {
         bootstrapBenchmarkTab().catch(() => {});
       }
+      if (target === "authorization") {
+        bootstrapAuthorizationTab({ forcePrompt: true }).catch((err) => { showAppErrorModal("Authorization 加载失败", String(err)); });
+      } else {
+        resetAuthorizationReauth();
+      }
     };
     tab.addEventListener("click", switchFn);
     if ((tab.dataset.tab || "home") === "dashboard") {
@@ -4884,8 +6313,14 @@ async function init() {
   // ── Register all tab handler bindings up-front so every control is
   // immediately clickable — independent of when the data actually loads.
   _registerDashboardHandlers();
-  _registerTicketsHandlers();
-  _registerBenchmarkHandlers();
+  dashboardTicketsBootstrap.bindEvents();
+  dashboardBenchmarkBootstrap.bindEvents();
+  _registerAuthorizationHandlers();
+  traceModalController?.bindBackdropClose?.("trace-backdrop");
+  libraryAliasModalController?.bindBackdropClose?.("library-alias-backdrop");
+  ticketDeleteModalController?.bindBackdropClose?.("ticket-delete-backdrop");
+  taskDeleteModalController?.bindBackdropClose?.("task-delete-backdrop");
+  benchmarkRouterClsModalController?.bindBackdropClose?.("bm-router-cls-backdrop");
 
   // Bind error modal controls early so a later init failure never leaves
   // a blocking modal that cannot be dismissed.
@@ -4901,70 +6336,39 @@ async function init() {
   setModel();
   const currentTab = String(document.querySelector(".tab.active")?.getAttribute("data-tab") || "home");
   setMainTab(currentTab);
-  loadInitialCards();
+  dashboardCustomCardsBootstrap.bindEvents();
+  dashboardCustomCardsBootstrap.loadInitialCards();
+  dashboardCustomCardsBootstrap.hydratePendingCardEdit();
+  loadInitialAgentSessions();
+  hydrateDashboardShellFromStoredData();
+  if (currentTab !== "dashboard") prewarmDashboardOverview();
   if (currentTab === "dashboard") {
     bootstrapDashboardTab().catch((err) => { renderDashboardError(err); });
   } else if (currentTab === "tickets") {
     bootstrapTicketsTab().catch((err) => { showAppErrorModal("Tickets 加载失败", String(err)); });
   } else if (currentTab === "benchmark") {
     bootstrapBenchmarkTab().catch(() => {});
+  } else if (currentTab === "authorization") {
+    bootstrapAuthorizationTab({ forcePrompt: true }).catch((err) => { showAppErrorModal("Authorization 加载失败", String(err)); });
   }
 
-  document.getElementById("agent-toggle-sidebar")?.addEventListener("click", () => {
-    debugUiEvent("agent sidebar toggle click received");
-    toggleSidebar("agent-sidebar");
-  });
-  updateSidebarToggleButton("agent-sidebar");
-  document.getElementById("agent-new-session")?.addEventListener("click", () => {
-    debugUiEvent("agent new session click received");
-    createSessionAction().catch((e) => appendChatRow("assistant", `**错误**: ${String(e)}`));
-  });
-  document.getElementById("agent-delete-session")?.addEventListener("click", () => {
-    debugUiEvent("agent delete session click received", String(currentSessionId || ""));
-    deleteCurrentSessionAction().catch((e) => appendChatRow("assistant", `**错误**: ${String(e)}`));
-  });
+  mountAgentSidebarController();
+  dashboardAgentSessionUiBootstrap.bindEvents();
 
-  qaAsk?.addEventListener("click", () => {
-    debugUiEvent("agent search click received");
-    ask("hybrid").catch((e) => appendChatRow("assistant", `**错误**: ${String(e)}`));
-  });
-  qaAskLocal?.addEventListener("click", () => {
-    debugUiEvent("agent local answer click received");
-    ask("local_only").catch((e) => appendChatRow("assistant", `**错误**: ${String(e)}`));
-  });
-  qaAbort?.addEventListener("click", abortAsk);
-  qaInput?.addEventListener("keydown", (event) => {
-    if (event.key === "Enter" && !event.shiftKey) {
-      event.preventDefault();
-      ask("local_only").catch((e) => appendChatRow("assistant", `**错误**: ${String(e)}`));
-    }
-  });
-
-  customCardUploadBtn?.addEventListener("click", () => customCardUploadInput?.click());
-  customCardUploadInput?.addEventListener("change", () => {
-    uploadCustomCardImage().catch((e) => window.alert(`上传失败: ${String(e)}`));
-  });
-  customCardImageInput?.addEventListener("input", () => setCardPreview(customCardImageInput.value));
-  customCardSaveBtn?.addEventListener("click", () => {
-    saveCustomCardFromModal().catch((e) => window.alert(`保存失败: ${String(e)}`));
-  });
-  customCardCancelBtn?.addEventListener("click", closeCustomCardModal);
-  customCardModal?.addEventListener("click", (event) => {
-    const target = event.target;
-    if (target instanceof Element && target.getAttribute("data-role") === "custom-card-backdrop") {
-      closeCustomCardModal();
-    }
-  });
-  bindCropCanvasEvents();
   document.addEventListener("keydown", (event) => {
     if (event.key === "Escape") {
       if (warningsModal && !warningsModal.classList.contains("hidden")) closeWarningsModal();
       if (missingQueriesModal && !missingQueriesModal.classList.contains("hidden")) closeMissingQueriesModal();
-      if (traceModal && !traceModal.classList.contains("hidden")) closeTraceModal();
-      if (customCardModal && !customCardModal.classList.contains("hidden")) closeCustomCardModal();
+      if (dashboardLibraryAliasController.isOpen()) closeLibraryAliasModal();
+      if (traceModalController?.isOpen?.()) closeTraceModal();
+      if (ticketDeleteModalController?.isOpen?.()) closeTicketDeleteModal();
+      if (taskDeleteModalController?.isOpen?.()) closeTaskDeleteModal();
+      if (benchmarkRouterClsModalController?.isOpen?.()) closeRouterClassificationEditor();
+      if (customCardModal && !customCardModal.classList.contains("hidden")) dashboardCustomCardsBootstrap.closeCustomCardModal();
       const usageModal = document.getElementById("usage-edit-modal");
       if (usageModal && !usageModal.classList.contains("hidden")) closeUsageModal();
       if (appErrorModal && !appErrorModal.classList.contains("hidden")) closeAppErrorModal();
+      closeAllTraceStageTooltips();
     }
   });
 
@@ -4973,41 +6377,19 @@ async function init() {
     exportCurrentTrace().catch((e) => showAppErrorModal("Trace 导出失败", String(e)));
   });
   traceModalContent?.addEventListener("click", _traceStageClickHandler);
-  traceModal?.addEventListener("click", (event) => {
+  traceModalContent?.addEventListener("mouseover", _traceStageHoverHandler);
+  traceModalContent?.addEventListener("focusin", _traceStageHoverHandler);
+  traceModalContent?.addEventListener("mouseleave", () => clearTraceStageTooltip(traceModalContent, { force: false }));
+  document.addEventListener("click", (event) => {
     const target = event.target;
-    if (target instanceof Element && target.getAttribute("data-role") === "trace-backdrop") closeTraceModal();
+    if (target instanceof Element && target.closest(".trace-stage-composite-wrap")) return;
+    closeAllTraceStageTooltips();
   });
   window.addEventListener("resize", () => {
     renderTicketsListCollapseButton();
-    updateSidebarToggleButton("agent-sidebar");
     syncTicketsPaneHeights();
+    closeAllTraceStageTooltips();
   });
-  sessionRenameSaveBtn?.addEventListener("click", () => {
-    saveSessionRename().catch((e) => window.alert(`重命名失败: ${String(e)}`));
-  });
-  sessionRenameCancelBtn?.addEventListener("click", closeSessionRenameModal);
-  sessionRenameInput?.addEventListener("keydown", (event) => {
-    if (event.key !== "Enter") return;
-    event.preventDefault();
-    saveSessionRename().catch((e) => window.alert(`重命名失败: ${String(e)}`));
-  });
-  sessionRenameModal?.addEventListener("click", (event) => {
-    const target = event.target;
-    if (!(target instanceof Element)) return;
-    if (target.dataset.role === "session-rename-backdrop") closeSessionRenameModal();
-  });
-  const sessionList = document.getElementById("agent-session-list");
-  sessionList?.addEventListener("contextmenu", (event) => {
-    const target = event.target;
-    const item = target instanceof Element ? target.closest("[data-session-id]") : null;
-    if (!item) return;
-    event.preventDefault();
-    openSessionRenameModalFromTarget(item);
-  });
-  if (sessionList) bindLongPress(sessionList, (target) => {
-    openSessionRenameModalFromTarget(target);
-  });
-
   // ── Background async work: fires after all bindings are set up ──
   // Sessions are loaded in the background so interactions are never blocked.
   refreshSessions("").catch((err) => {

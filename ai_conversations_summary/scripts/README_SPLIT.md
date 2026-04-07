@@ -1,4 +1,4 @@
-﻿# 多主题文档拆分工具
+# 多主题文档拆分工具
 
 本工具用于将单个多主题Markdown 文档拆分为多个单主题文档，便于后续索引重建与检索质量提升。
 
@@ -17,7 +17,7 @@
 ## 3. 脚本说明
 
 - `split_multi_topic_documents.py`：拆分单个文件。
-- `batch_split_documents.py`：批量扫描目录并拆分。
+- `data_maintenance/batch_split_documents.py`：批量扫描目录并拆分。
 
 ## 4. 使用方式
 
@@ -30,13 +30,13 @@ python split_multi_topic_documents.py <input_file> [--output-dir <dir>] [--dry-r
 ### 4.2 批量拆分
 
 ```bash
-python batch_split_documents.py <documents_dir> [--dry-run] [--move-originals] [--no-recursive]
+python data_maintenance/batch_split_documents.py <documents_dir> [--dry-run] [--move-originals] [--no-recursive]
 ```
 
 如果在当前仓库统一虚拟环境下执行，推荐使用：
 
 ```powershell
-..\..\.venv\Scripts\python.exe batch_split_documents.py <documents_dir> --dry-run
+..\..\.venv\Scripts\python.exe data_maintenance\batch_split_documents.py <documents_dir> --dry-run
 ```
 
 ## 5. 推荐流程

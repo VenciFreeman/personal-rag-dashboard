@@ -7,7 +7,6 @@ import os
 import queue
 import re
 import socket
-import sys
 import threading
 import time
 from datetime import datetime
@@ -18,16 +17,16 @@ from urllib.parse import urlparse
 from urllib.parse import quote
 from uuid import uuid4
 
-WORKSPACE_ROOT = Path(__file__).resolve().parents[3]
-if str(WORKSPACE_ROOT) not in sys.path:
-    sys.path.insert(0, str(WORKSPACE_ROOT))
-SCRIPTS_DIR = WORKSPACE_ROOT / "ai_conversations_summary" / "scripts"
-if str(SCRIPTS_DIR) not in sys.path:
-    sys.path.insert(0, str(SCRIPTS_DIR))
+try:
+    from ai_conversations_summary.scripts import ask_rag as ask_rag_script
+    from ai_conversations_summary.scripts.cache_db import get_web_cache, log_no_context_query
+    from ai_conversations_summary.scripts.rag_knowledge_graph import expand_query_by_graph
+except ImportError:
+    from scripts import ask_rag as ask_rag_script  # type: ignore[no-redef]
+    from scripts.cache_db import get_web_cache, log_no_context_query  # type: ignore[no-redef]
+    from scripts.rag_knowledge_graph import expand_query_by_graph  # type: ignore[no-redef]
 
-import ask_rag as ask_rag_script
-
-from web.config import DOCUMENTS_DIR, RAG_SESSIONS_DIR, VECTOR_DB_DIR
+from web.config import DEBUG_DIR, DOCUMENTS_DIR, MEMORY_DIR, RAG_SESSIONS_DIR, RETRIEVAL_METRICS_FILE, VECTOR_DB_DIR
 from web.services.context import (
     DEFAULT_API_BASE_URL,
     DEFAULT_API_KEY,
@@ -37,10 +36,10 @@ from web.services.context import (
     RAGIndexError,
     search_vector_index_with_diagnostics,
 )
-from rag_knowledge_graph import expand_query_by_graph
 from web.services.preview_service import resolve_embedding_model
-from core_service.config import get_settings
-from core_service.trace_store import write_trace_record
+from core_service import get_settings
+from core_service.observability import record_trace as write_trace_record
+from core_service.observability import record_usage as notify_nav_dashboard_usage
 
 _LOCK = threading.Lock()
 _PROCESS_LOCK = threading.Lock()
@@ -51,8 +50,6 @@ _MEMORY_WORKER_STARTED = False
 _CORE_SETTINGS = get_settings()
 
 SESSION_FILE_PREFIX = "session_"
-MEMORY_DIR = RAG_SESSIONS_DIR / "_memory"
-DEBUG_DIR = RAG_SESSIONS_DIR / "debug_data"
 MEMORY_MAX_TOKENS = 1000
 
 # Optional local OpenAI-compatible LLM endpoint (for example LM Studio server).
@@ -89,7 +86,6 @@ LONG_QUERY_VECTOR_TOP_N_DELTA = int(os.getenv("AI_SUMMARY_LONG_QUERY_VECTOR_TOP_
 SHORT_QUERY_TOP_K_DELTA = int(os.getenv("AI_SUMMARY_SHORT_QUERY_TOP_K_DELTA", "2") or "2")
 LONG_QUERY_TOP_K_DELTA = int(os.getenv("AI_SUMMARY_LONG_QUERY_TOP_K_DELTA", "-1") or "-1")
 
-RETRIEVAL_METRICS_FILE = RAG_SESSIONS_DIR / "retrieval_metrics.json"
 RETRIEVAL_METRICS_MAX = 20
 
 
@@ -99,9 +95,40 @@ def _new_trace_id() -> str:
 
 def _normalize_trace_id(trace_id: str = "") -> str:
     value = re.sub(r"[^a-zA-Z0-9_.:-]", "", str(trace_id or "").strip())
+    prefixed_hex = re.fullmatch(r"trace_([0-9a-fA-F]{16,64})", value)
+    if prefixed_hex:
+        return f"trace_{prefixed_hex.group(1)[:16]}"
+    raw_hex = re.fullmatch(r"([0-9a-fA-F]{16,64})", value)
+    if raw_hex:
+        return f"trace_{raw_hex.group(1)[:16]}"
     if value:
         return value[:80]
     return _new_trace_id()
+
+
+_GROUPED_CITATION_RE = re.compile(r"\[(资料\s*\d+(?:\s*[,，]\s*资料\s*\d+)+)\]")
+_LEADING_THINK_ANSWER_RE = re.compile(r"^\s*(?:思考|分析|推理)\s*[:：]\s*(.+?)\s*(?:回答|答案)\s*[:：]\s*(.+)$", re.S)
+
+
+def _normalize_rag_answer_structure(answer: str) -> str:
+    text = str(answer or "").strip()
+    if not text:
+        return text
+
+    def _expand_grouped_citations(match: re.Match[str]) -> str:
+        payload = str(match.group(1) or "")
+        parts = [str(item or "").strip() for item in re.split(r"\s*[,，]\s*", payload) if str(item or "").strip()]
+        return " ".join(f"[{part}]" for part in parts)
+
+    text = _GROUPED_CITATION_RE.sub(_expand_grouped_citations, text)
+    if "<think>" not in text.lower():
+        leading_think = _LEADING_THINK_ANSWER_RE.match(text)
+        if leading_think:
+            thought = str(leading_think.group(1) or "").strip()
+            answer_body = str(leading_think.group(2) or "").strip()
+            if thought and answer_body:
+                text = f"<think>\n{thought}\n</think>\n\n{answer_body}"
+    return text.strip()
 
 # ─── In-process reranker sidecar ──────────────────────────────────────────────
 # A minimal HTTP server that wraps the CrossEncoder and stays alive for the
@@ -299,92 +326,22 @@ def _prewarm_embed_sidecar() -> None:
 
 threading.Thread(target=_prewarm_embed_sidecar, daemon=True, name="embed-prewarm").start()
 
-# ─── Dashboard quota sync (non-blocking best-effort) ──────────────────────────
-_NAV_DASHBOARD_QUOTA_URL = os.getenv("NAV_DASHBOARD_QUOTA_RECORD_URL", "").strip()
-
-
-def _notify_nav_dashboard_quota(*, web_search_delta: int = 0, deepseek_delta: int = 0) -> None:
-    """Fire-and-forget: tell nav_dashboard to record quota usage for RAG QA calls.
-    Runs in a background thread so it never blocks the answer stream.
-    """
-    web_inc = max(0, int(web_search_delta or 0))
-    deepseek_inc = max(0, int(deepseek_delta or 0))
-    if web_inc <= 0 and deepseek_inc <= 0:
-        return
-
-    # Derive the nav_dashboard base URL: prefer env override, else detect running port.
-    base = _NAV_DASHBOARD_QUOTA_URL.rstrip("/") if _NAV_DASHBOARD_QUOTA_URL else ""
-    if not base:
-        base = "http://127.0.0.1:8092"
-    url = f"{base}/api/dashboard/usage/record"
-
-    def _fire() -> None:
-        import json as _json
-        from urllib import error as _urlerror, request as _urlrequest
-        payload = _json.dumps({"web_search_delta": web_inc, "deepseek_delta": deepseek_inc}, ensure_ascii=False).encode()
-        req = _urlrequest.Request(url, data=payload, headers={"Content-Type": "application/json"}, method="POST")
-        try:
-            opener = _urlrequest.build_opener(_urlrequest.ProxyHandler({}))
-            with opener.open(req, timeout=3):
-                pass
-        except Exception:
-            pass  # quota sync is best-effort; never raise
-
-    import threading as _threading
-    _threading.Thread(target=_fire, daemon=True).start()
-
-
 def _check_rag_quota_exceeded(mode: str, search_mode: str) -> list[dict[str, Any]]:
     """Read nav_dashboard quota state and return a list of exceeded quota descriptors.
     Returns empty list if within limits or if quota state cannot be determined.
     """
-    from pathlib import Path as _Path
-    nav_data_dir = _Path(__file__).resolve().parents[3] / "nav_dashboard" / "data"
-    quota_file = nav_data_dir / "agent_quota.json"
-    if not quota_file.exists():
-        return []
     try:
-        raw = json.loads(quota_file.read_text(encoding="utf-8"))
-        if not isinstance(raw, dict):
-            return []
-        today = datetime.now().strftime("%Y-%m-%d")
-        if raw.get("date") != today:
-            return []  # quota resets at day change
-        web_count = int(raw.get("web_search", 0) or 0)
-        deepseek_count = int(raw.get("deepseek", 0) or 0)
+        from nav_dashboard.web.services.shared import quota_service as _nav_quota_service
     except Exception:
         return []
-
-    # Read limits from agent_service defaults; fall back to safe values
     try:
-        import importlib.util as _ilu
-        _spec = _ilu.spec_from_file_location(
-            "_nav_agent_svc",
-            _Path(__file__).resolve().parents[3] / "nav_dashboard" / "web" / "services" / "agent_service.py",
+        return _nav_quota_service.check_external_quota_exceeded(
+            mode=mode,
+            search_mode=search_mode,
+            normalize_search_mode=_normalize_search_mode,
         )
     except Exception:
-        _spec = None
-
-    web_limit = 50
-    deepseek_limit = 25
-    if _spec:
-        try:
-            _mod = importlib.util.module_from_spec(_spec)
-            _spec.loader.exec_module(_mod)  # type: ignore[union-attr]
-            web_limit = int(getattr(_mod, "WEB_SEARCH_DAILY_LIMIT", web_limit) or web_limit)
-            deepseek_limit = int(getattr(_mod, "DEEPSEEK_DAILY_LIMIT", deepseek_limit) or deepseek_limit)
-        except Exception:
-            pass
-
-    normalized_mode = (mode or "local").strip().lower()
-    normalized_search = _normalize_search_mode(search_mode)
-
-    exceeded: list[dict[str, Any]] = []
-    if normalized_search == "hybrid" and web_count >= web_limit:
-        exceeded.append({"kind": "web_search", "current": web_count, "limit": web_limit})
-    if normalized_mode in {"deepseek", "reasoner"} and deepseek_count >= deepseek_limit:
-        exceeded.append({"kind": "deepseek", "current": deepseek_count, "limit": deepseek_limit})
-    return exceeded
+        return []
 
 
 def _register_active_request(session_id: str, **state: Any) -> None:
@@ -738,6 +695,13 @@ def _build_rag_trace_record(
     used_docs = payload.get("used_context_docs") if isinstance(payload.get("used_context_docs"), list) else []
     llm = payload.get("llm") if isinstance(payload.get("llm"), dict) else {}
     graph_batches = payload.get("graph_expansion_batches") if isinstance(payload.get("graph_expansion_batches"), list) else []
+    result_payload = payload.get("result") if isinstance(payload.get("result"), dict) else {}
+    error_message = str(result_payload.get("error_message") or payload.get("error") or "").strip()
+    result_status = str(result_payload.get("status") or ("error" if error_message else "ok")).strip() or "ok"
+    vector_status = "ok"
+    if result_status == "error" and not float(timings.get("total", 0) or 0):
+        vector_status = "error"
+    llm_status = "error" if result_status == "error" else "ok"
     call_type = "benchmark_case" if str(source or "").startswith("benchmark") else str(payload.get("call_type") or "answer")
     return {
         "trace_id": trace_id,
@@ -765,14 +729,14 @@ def _build_rag_trace_record(
         "tools": [
             {
                 "name": "vector_recall",
-                "status": "ok",
+                "status": vector_status,
                 "latency_ms": round(float(timings.get("total", 0) or 0) * 1000, 1),
                 "result_count": int(payload.get("retrieved_local_count", 0) or 0),
                 "trace_stage": "rag.vector_recall",
             },
             {
                 "name": "llm_answer",
-                "status": "ok",
+                "status": llm_status,
                 "latency_ms": round(float(llm.get("latency_seconds", 0) or 0) * 1000, 1),
                 "result_count": int(payload.get("retrieved_count", 0) or 0),
                 "trace_stage": "rag.llm.answer",
@@ -834,11 +798,12 @@ def _build_rag_trace_record(
         },
         "total_elapsed_seconds": round(float(payload.get("elapsed_seconds", 0) or 0), 6),
         "result": {
-            "status": "ok",
+            "status": result_status,
             "no_context": int(no_context or 0),
             "no_context_reason": str(no_context_reason or ""),
-            "degraded_to_retrieval": False,
+            "degraded_to_retrieval": bool(result_payload.get("degraded_to_retrieval") or payload.get("degraded")),
             "used_context_docs": len(used_docs),
+            "error_message": error_message,
         },
     }
 
@@ -848,6 +813,51 @@ def _write_rag_trace_record(record: dict[str, Any]) -> None:
         write_trace_record(record)
     except Exception:
         pass
+
+
+def _write_failed_rag_trace_record(
+    *,
+    trace_id: str,
+    session_id: str,
+    source: str,
+    mode: str,
+    search_mode: str,
+    query_profile: dict[str, Any],
+    similarity_threshold: float,
+    error_message: str,
+    timings: dict[str, Any] | None = None,
+    elapsed_seconds: float = 0.0,
+) -> None:
+    payload = {
+        "elapsed_seconds": round(float(elapsed_seconds or 0.0), 6),
+        "mode": mode,
+        "llm": {
+            "model": mode,
+            "latency_seconds": 0.0,
+            "calls": 0,
+        },
+        "error": str(error_message or "").strip(),
+        "result": {
+            "status": "error",
+            "error_message": str(error_message or "").strip(),
+            "degraded_to_retrieval": False,
+        },
+    }
+    _write_rag_trace_record(
+        _build_rag_trace_record(
+            trace_id=trace_id,
+            session_id=session_id,
+            source=source,
+            mode=mode,
+            search_mode=search_mode,
+            query_profile=query_profile,
+            similarity_threshold=float(similarity_threshold),
+            payload=payload,
+            timings=dict(timings or {}),
+            no_context=0,
+            no_context_reason="",
+        )
+    )
 
 
 def get_retrieval_metrics_summary() -> dict[str, Any]:
@@ -1286,7 +1296,6 @@ def _search_web_tavily_rows(question: str, max_results: int) -> tuple[list[dict[
     # Check web search cache before calling the API.
     _wcache = None
     try:
-        from cache_db import get_web_cache
         _wcache = get_web_cache()
         _cached = _wcache.get(question, max_results)
         if _cached is not None:
@@ -1419,6 +1428,14 @@ def resolve_chat_model(mode: str, requested_model: str | None) -> str:
 
 
 def readable_model_name(model_value: str) -> str:
+    raw = _readable_model_name_raw(model_value)
+    if not raw:
+        return raw
+    stripped = re.sub(r"[-_](?:GGUF|GPTQ|AWQ|EXL2|EXL|MLX).*$", "", raw, flags=re.IGNORECASE).strip()
+    return stripped or raw
+
+
+def _readable_model_name_raw(model_value: str) -> str:
     value = (model_value or "").strip()
     if not value:
         return ""
@@ -1501,6 +1518,28 @@ def suggest_local_session_title_from_qa(question: str, answer: str, max_len: int
     return suggest_local_session_title(q, max_len=max_len)
 
 
+def _reduce_single_source_inline_citation_density(text: str, ranked_entries: list[dict[str, Any]]) -> str:
+    if len(ranked_entries) != 1:
+        return text
+    only_link = str(ranked_entries[0].get("link") or "").strip()
+    if not only_link:
+        return text
+
+    marker = f"[1]({only_link})"
+    marker_re = re.compile(rf"\s*{re.escape(marker)}")
+    seen = 0
+
+    def _replace(match: re.Match[str]) -> str:
+        nonlocal seen
+        seen += 1
+        return match.group(0) if seen <= 2 else ""
+
+    reduced = marker_re.sub(_replace, text)
+    reduced = re.sub(r"[ \t]{2,}", " ", reduced)
+    reduced = re.sub(r"\n{3,}", "\n\n", reduced)
+    return reduced.strip()
+
+
 def format_local_answer_with_refs(
     answer: str,
     used_docs: list[dict[str, Any]] | None,
@@ -1515,30 +1554,38 @@ def format_local_answer_with_refs(
     window that the model never referenced.  Falls back to the full *used_docs*
     list when *citation_map* is absent (e.g. local-only mode, fallback paths).
     """
-    text = (answer or "").strip()
+    text = _normalize_rag_answer_structure(answer)
     if not text:
         return text
 
-    text = re.sub(r"\[资料\s*(\d+)\]", r"[\1]", text)
+    mentioned_indices = {
+        int(match.group(1) or 0)
+        for match in re.finditer(r"\[(?:资料\s*)?(\d+)\]", text)
+        if int(match.group(1) or 0) > 0
+    }
 
     # Restrict reference entries to cited docs when citation_map is available.
     all_docs = used_docs or []
+    selected_indices: list[int] = []
+    cited_indices: set[int] = set()
     if citation_map is not None:
-        cited_indices: set[int] = (
+        cited_indices = (
             set(citation_map.get("cited_by_model") or [])
             | set(citation_map.get("auto_annotated") or [])
         )
         if cited_indices:
-            # used_docs is 0-indexed; citation indices are 1-based
-            docs = [all_docs[i - 1] for i in sorted(cited_indices) if 1 <= i <= len(all_docs)]
+            selected_indices = [i for i in sorted(cited_indices) if 1 <= i <= len(all_docs)]
+            docs = [all_docs[i - 1] for i in selected_indices]
         else:
+            selected_indices = list(range(1, len(all_docs) + 1))
             docs = all_docs  # nothing specifically cited — keep all
     else:
+        selected_indices = list(range(1, len(all_docs) + 1))
         docs = all_docs
 
     ref_entries: list[dict[str, Any]] = []
     seen_keys: set[str] = set()
-    for item in docs:
+    for original_idx, item in zip(selected_indices, docs):
         if not isinstance(item, dict):
             continue
         path = str(item.get("path", "")).strip().replace("\\", "/")
@@ -1553,18 +1600,60 @@ def format_local_answer_with_refs(
         label = title if (is_web and title) else path
         key = f"{label}|{link}"
         if key in seen_keys:
+            for entry in ref_entries:
+                if entry.get("key") == key:
+                    entry.setdefault("source_indices", []).append(original_idx)
+                    break
             continue
         seen_keys.add(key)
-        ref_entries.append({"label": label, "link": link, "score": score, "rerank_score": rerank_score})
+        ref_entries.append({
+            "key": key,
+            "label": label,
+            "link": link,
+            "score": score,
+            "rerank_score": rerank_score,
+            "source_indices": [original_idx],
+        })
 
     if not ref_entries:
         return text
 
-    ranked_entries = sorted(ref_entries, key=lambda entry: float(entry.get("score", 0.0) or 0.0), reverse=True)[: max(1, int(MAX_REFERENCE_ITEMS))]
+    reference_limit = max(1, int(MAX_REFERENCE_ITEMS))
+    if mentioned_indices:
+        reference_limit = max(reference_limit, max(mentioned_indices))
+    if citation_map is not None and cited_indices:
+        reference_limit = len(ref_entries)
+    ranked_entries = ref_entries[:reference_limit]
 
-    if not re.search(r"\[\d+\]", text):
-        markers = "".join(f"[{idx}]" for idx in range(1, len(ranked_entries) + 1))
-        text = f"{text}\n\n参考标注：{markers}"
+    citation_number_map: dict[int, int] = {}
+    for display_idx, entry in enumerate(ranked_entries, start=1):
+        for original_idx in entry.get("source_indices", []):
+            citation_number_map[int(original_idx)] = display_idx
+
+    def _remap_inline_reference(match: re.Match[str]) -> str:
+        original_idx = int(match.group(1) or 0)
+        display_idx = citation_number_map.get(original_idx)
+        if display_idx is None:
+            return ""
+        return f"[{display_idx}]"
+
+    text = re.sub(r"\[(?:资料\s*)?(\d+)\]", _remap_inline_reference, text)
+
+    link_map = {
+        str(index): str(entry.get("link") or "")
+        for index, entry in enumerate(ranked_entries, start=1)
+        if str(entry.get("link") or "")
+    }
+
+    def _linkify_inline_marker(match: re.Match[str]) -> str:
+        index = str(match.group(1) or "")
+        url = link_map.get(index)
+        if not url:
+            return match.group(0)
+        return f"[{index}]({url})"
+
+    text = re.sub(r"(?<!\[)\[(\d+)\](?!\])(?!\()", _linkify_inline_marker, text)
+    text = _reduce_single_source_inline_citation_density(text, ranked_entries)
 
     lines = ["---", "### 参考资料"]
     for idx, entry in enumerate(ranked_entries, start=1):
@@ -1591,7 +1680,7 @@ def format_answer_with_refs(
     if normalized_mode == "local":
         return format_local_answer_with_refs(answer, used_docs, citation_map=citation_map)
 
-    text = (answer or "").strip()
+    text = _normalize_rag_answer_structure(answer)
     if not text:
         return text
 
@@ -2086,20 +2175,21 @@ def _generate_memory_delta(session_id: str, question: str, answer: str) -> dict[
     prompt = {
         "call_type": "memory_update",
         "instruction": (
-            "你是会话记忆摘要器。分析最新问答，提取关键要素更新结构化记忆。\n"
-            "注意：这是滚动摘要，不是问答历史记录！只提取有长期价值的决策/问题/假设。"
+            "你是会话记忆摘要器。分析最新一轮问答，提取有长期价值的要素，更新结构化记忆。\n"
+            "⚠️ 滚动摘要 ≠ 对话历史记录。不要记录“用户问了什么、我答了什么”。\n"
+            "只提取：决策、未解决问题、假设。忽略解释性内容。"
         ),
         "field_definitions": {
-            "session_goal": "会话的核心目标/探讨主题（一句话概括，随讨论深入可更新）",
-            "decisions": "用户做出的重要决策、达成的结论、约定的事项（不要记录问答本身！）",
-            "open_issues": "讨论中提出但尚未解决的问题（已回答的问题不记录）",
-            "assumptions": "讨论中假定的前提条件、背景假设",
+            "session_goal": "会话的核心目标或探讨主题（一句话概括，可随深入而更新）",
+            "decisions": "用户做出的重要决策、达成的结论、约定的事项（绝对不是问答本身）",
+            "open_issues": "讨论中提出但尚未解决的问题（已回答的不算）",
+            "assumptions": "讨论中假定的前提条件或背景假设",
         },
         "update_rules": {
-            "decisions": "新决策用 append；当新决策覆盖旧决策时，旧的标记 superseded",
-            "open_issues": "新问题用 open；已解决的标记 closed",
-            "assumptions": "新假设用 active；验证的标记 validated；推翻的标记 invalidated",
-            "quality": "只提取有持续价值的信息，忽略无关紧要的细节",
+            "decisions": "新决策追加（append）；若新决策覆盖旧决策，旧决策状态改为 superseded（保留文本）",
+            "open_issues": "新问题状态 open；已解决状态 closed",
+            "assumptions": "新假设状态 active；已验证状态 validated；已推翻状态 invalidated",
+            "quality": "只提取有持续价值的信息，忽略细节",
             "max_tokens": MEMORY_MAX_TOKENS,
         },
         "examples": {
@@ -2111,10 +2201,10 @@ def _generate_memory_delta(session_id: str, question: str, answer: str) -> dict[
         "existing_memory": existing,
         "latest_turn": {"question": question, "answer": answer},
         "output_schema": {
-            "session_goal": "string",
-            "decisions": [{"text": "string", "status": "append|superseded"}],
-            "open_issues": [{"text": "string", "status": "open|closed"}],
-            "assumptions": [{"text": "string", "status": "active|validated|invalidated"}],
+            "session_goal": "string（无变化可为空）",
+            "decisions": [{"text": "决策内容", "status": "append 或 superseded"}],
+            "open_issues": [{"text": "问题内容", "status": "open 或 closed"}],
+            "assumptions": [{"text": "假设内容", "status": "active 或 validated 或 invalidated"}],
         },
     }
 
@@ -2136,7 +2226,7 @@ def _generate_memory_delta(session_id: str, question: str, answer: str) -> dict[
                 "content": (
                     "你是会话记忆摘要器。任务：提取会话中的关键决策、问题、假设，构建滚动摘要。\n"
                     "重要：这不是问答历史记录器！只提取有长期价值的结构化信息。\n"
-                    "输出纯 JSON，不要 markdown 代码块，不要解释文字。"
+                    "只返回符合 output_schema 的 JSON，不要额外解释。若某字段无更新，返回空列表或空字符串。"
                 ),
             },
             {"role": "user", "content": json.dumps(prompt, ensure_ascii=False)},
@@ -2395,9 +2485,36 @@ def _post_stream_finalize_async(
             is_deepseek_call = normalized_mode in {"deepseek", "reasoner"}
             web_count = int(payload.get("retrieved_web_count", 0) or 0)
             web_from_cache = str(timings.get("web_search_status", "")) == "cache_hit"
-            _notify_nav_dashboard_quota(
+            usage_events: list[dict[str, Any]] = []
+            if web_count > 0 and not web_from_cache:
+                usage_events.append(
+                    {
+                        "provider": "web_search",
+                        "feature": "ai_conversations_summary.rag_answer",
+                        "page": "rag_qa",
+                        "source": "ai_conversations_summary",
+                        "message": question,
+                        "trace_id": trace_id,
+                        "session_id": session_id,
+                    }
+                )
+            if is_deepseek_call:
+                usage_events.append(
+                    {
+                        "provider": "deepseek",
+                        "feature": "ai_conversations_summary.rag_answer",
+                        "page": "rag_qa",
+                        "source": "ai_conversations_summary",
+                        "message": question,
+                        "trace_id": trace_id,
+                        "session_id": session_id,
+                    }
+                )
+            notify_nav_dashboard_usage(
                 web_search_delta=1 if (web_count > 0 and not web_from_cache) else 0,
                 deepseek_delta=1 if is_deepseek_call else 0,
+                events=usage_events,
+                background=True,
             )
             schedule_generated_session_title(session_id, question, answer, lock=True)
         except Exception:
@@ -2694,6 +2811,16 @@ def ask_rag(
                     },
                 )
             return fallback_payload
+        _write_failed_rag_trace_record(
+            trace_id=resolved_trace_id,
+            session_id=session_id,
+            source="benchmark_rag" if benchmark_mode else "rag_qa",
+            mode=normalized_mode,
+            search_mode=normalized_search_mode,
+            query_profile=query_profile,
+            similarity_threshold=float(effective_similarity_threshold),
+            error_message=error_text,
+        )
         raise RuntimeError(error_text) from exc
 
     payload["trace_id"] = str(payload.get("trace_id") or resolved_trace_id)
@@ -2741,7 +2868,6 @@ def ask_rag(
     )
     if _no_context and not benchmark_mode:
         try:
-            from cache_db import log_no_context_query
             log_no_context_query(
                 q,
                 source="rag_qa",
@@ -2901,6 +3027,16 @@ def ask_rag_stream(
             return
         except Exception as exc:
             error_message = _humanize_error_message(str(exc) or "本地检索失败")
+            _write_failed_rag_trace_record(
+                trace_id=resolved_trace_id,
+                session_id=session_id,
+                source="benchmark_rag" if benchmark_mode else "rag_qa_stream",
+                mode=normalized_mode,
+                search_mode=normalized_search_mode,
+                query_profile=query_profile,
+                similarity_threshold=float(effective_similarity_threshold),
+                error_message=error_message,
+            )
             yield {"type": "error", "trace_id": resolved_trace_id, "message": error_message}
         return
 
@@ -3082,6 +3218,16 @@ def ask_rag_stream(
                 if partial:
                     append_message_with_trace(session_id, "助手", partial + "\n\n---\n\n_[输出中断]_", trace_id=resolved_trace_id)
                 append_message(session_id, "系统", f"RAG Q&A 失败：{error_text}")
+                _write_failed_rag_trace_record(
+                    trace_id=resolved_trace_id,
+                    session_id=session_id,
+                    source="benchmark_rag" if benchmark_mode else "rag_qa_stream",
+                    mode=normalized_mode,
+                    search_mode=normalized_search_mode,
+                    query_profile=query_profile,
+                    similarity_threshold=float(effective_similarity_threshold),
+                    error_message=error_text,
+                )
                 yield {"type": "error", "trace_id": resolved_trace_id, "message": error_text}
                 return
 
@@ -3144,7 +3290,6 @@ def ask_rag_stream(
                 )
                 if _no_context and not benchmark_mode:
                     try:
-                        from cache_db import log_no_context_query
                         log_no_context_query(
                             q,
                             source="rag_qa",
@@ -3198,6 +3343,16 @@ def ask_rag_stream(
         if partial:
             append_message_with_trace(session_id, "助手", partial + "\n\n---\n\n_[输出中断]_", trace_id=resolved_trace_id)
         append_message(session_id, "系统", f"RAG Q&A 失败：{error_message}")
+        _write_failed_rag_trace_record(
+            trace_id=resolved_trace_id,
+            session_id=session_id,
+            source="benchmark_rag" if benchmark_mode else "rag_qa_stream",
+            mode=normalized_mode,
+            search_mode=normalized_search_mode,
+            query_profile=query_profile,
+            similarity_threshold=float(effective_similarity_threshold),
+            error_message=error_message,
+        )
         yield {"type": "error", "trace_id": resolved_trace_id, "message": error_message}
     finally:
         _, state = _clear_active_request(session_id)

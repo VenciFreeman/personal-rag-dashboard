@@ -1,5 +1,5 @@
 {
-  "_comment": "This directory holds LLM-generated candidate entries awaiting human review. Files here are NEVER read by the live system. Run scripts/ontology_review.py to promote entries to approved/.",
+  "_comment": "This directory holds LLM-generated candidate entries awaiting human review. Files here are NEVER read by the live system. Run scripts/data_maintenance/ontology_review.py to promote entries to approved/.",
   "_schema": {
     "version": "string — proposal file version",
     "domain": "string — music | video | book",

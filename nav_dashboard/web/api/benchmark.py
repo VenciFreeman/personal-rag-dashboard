@@ -5,7 +5,7 @@
   POST /api/benchmark/run      — 运行基准测试，通过 SSE（Server-Sent Events）实时推送进度
                                   请求体：{ modules, query_count, run_id }
   DELETE /api/benchmark/run    — 中止当前进行中的测试（通过 run_id 标记取消标志位）
-    GET  /api/benchmark/history  — 获取最近 N 次测试结果（存储于 data/benchmark/results.json）
+    GET  /api/benchmark/history  — 获取最近 N 次测试结果（存储于 app runtime data/benchmark/results.json）
   DELETE /api/benchmark/history — 清空历史
 
 测试流程：
@@ -21,9 +21,10 @@ from __future__ import annotations
 
 import json
 import os
+import re
+import subprocess
 import sys
 import time
-import unittest
 from datetime import datetime
 from pathlib import Path
 from typing import Any
@@ -36,112 +37,51 @@ from fastapi import APIRouter, HTTPException, Request
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, Field
 
-from web.config import AI_SUMMARY_URL_OVERRIDE
-from web.services import dashboard_jobs
+from nav_dashboard.web.clients.internal_services import request_json
+from nav_dashboard.web.api.response_models import (
+    API_SCHEMA_VERSION,
+    BenchmarkCaseSetsResponse,
+    BenchmarkHistoryResponse,
+    BenchmarkRouterClassificationCaseMutationResponse,
+    BenchmarkRouterClassificationCasesResponse,
+    BenchmarkRouterClassificationHistoryResponse,
+    BenchmarkRouterClassificationResponse,
+    build_benchmark_case_sets_response,
+    build_benchmark_history_response,
+    build_benchmark_job_response,
+    build_benchmark_router_classification_case_mutation_response,
+    build_benchmark_router_classification_cases_response,
+    build_benchmark_router_classification_history_response,
+    build_benchmark_router_classification_response,
+    build_benchmark_stream_event,
+)
+from nav_dashboard.web.config import AI_SUMMARY_URL_OVERRIDE, PORT
+from nav_dashboard.web.services import benchmark_contracts
+from nav_dashboard.web.services import benchmark_history_store
+from nav_dashboard.web.services import benchmark_runner
+from nav_dashboard.web.services.agent.benchmark_case_catalog import (
+    BENCHMARK_CASE_SET_CASES,
+    CASE_SET_LABELS,
+    CASE_SET_METADATA,
+    QUERY_CASE_SETS,
+    normalize_followup_mode,
+    resolve_case_batch,
+)
+from nav_dashboard.web.services.dashboard import dashboard_jobs
+from nav_dashboard.web.services.planner import planner_contracts
+from nav_dashboard.web.services.runtime_paths import BENCHMARK_FILE, ROUTER_CLS_CASES_FILE, ROUTER_CLS_HISTORY_FILE
 
 router = APIRouter(prefix="/api/benchmark", tags=["benchmark"])
 
-APP_DIR = Path(__file__).resolve().parent.parent  # nav_dashboard/web/
-# Store benchmark data in its own subfolder, fully isolated from dashboard data
-BENCHMARK_FILE = APP_DIR.parent / "data" / "benchmark" / "results.json"
 BENCHMARK_HISTORY_MAX = 5
-
-# ─── Query pools (20 per length) ─────────────────────────────────────────────
-
-SHORT_QUERIES: list[str] = [
-    "机器学习是什么",
-    "量子计算原理",
-    "通货膨胀的影响",
-    "区块链技术",
-    "人工智能伦理",
-    "气候变化原因",
-    "深度学习框架",
-    "大数据处理",
-    "微服务架构",
-    "认知偏差类型",
-    "股市波动因素",
-    "自然语言处理",
-    "操作系统调度",
-    "碳中和概念",
-    "全球化影响",
-    "基因编辑技术",
-    "密码学基础",
-    "云计算服务",
-    "数字货币监管",
-    "历史唯物主义",
-]
-
-MEDIUM_QUERIES: list[str] = [
-    "深度学习中的注意力机制是如何工作的，有哪些主要应用场景",
-    "比较分析传统关系型数据库与NoSQL数据库的优缺点",
-    "量子纠缠现象对未来量子通信技术的潜在影响是什么",
-    "全球供应链断裂对新兴市场国家经济发展的具体影响",
-    "人工智能在医疗保健领域的主要应用案例和挑战",
-    "现代微服务架构中容器化与服务网格的关系是什么",
-    "碳排放交易市场的运作机制及其减排效果评估",
-    "认知行为疗法与正念冥想在治疗焦虑症方面的对比",
-    "推荐系统中协同过滤与内容过滤算法的优缺点对比",
-    "区块链技术在供应链追溯中的实际应用案例分析",
-    "联邦学习如何在保护数据隐私的同时实现模型训练",
-    "多模态大语言模型的训练方式与单模态模型的主要区别",
-    "分析当前全球半导体短缺危机的原因与长期解决路径",
-    "生物信息学中基因组序列比对的主要算法思路",
-    "现代城市规划如何在经济发展和生态保护之间取得平衡",
-    "网络安全中零信任架构的核心理念和实施步骤",
-    "强化学习在机器人控制领域的典型算法和训练策略",
-    "阐述全球数字货币监管框架的现状和主要挑战",
-    "电影叙事结构中非线性叙事的艺术价值和典型案例",
-    "精益生产方法论的核心要素与适用的行业场景",
-]
-
-LONG_QUERIES: list[str] = [
-    "请详细解释Transformer架构中多头注意力机制的数学原理，与传统RNN相比有哪些计算效率上的优势，以及为什么这种架构特别适合并行训练，并给出一些近年来基于此架构的重要变体",
-    "从经济学和社会学两个角度深入分析人工智能自动化对未来劳动力市场的影响，包括哪些职业最容易被替代、哪些技能会变得更有价值，以及政府和教育机构应如何应对这一趋势",
-    "请系统地比较PostgreSQL、MongoDB和Redis三种数据库在数据模型、一致性保证、水平扩展能力和典型使用场景上的差异，并给出在设计分布式系统时如何选择合适数据库的建议",
-    "详细分析气候变化对全球粮食安全的多维影响，包括对不同地区农业产量的影响、水资源变化、极端天气增加对物流的干扰，以及国际社会应如何协作建立更具弹性的全球粮食系统",
-    "解释CRISPR-Cas9基因编辑技术的分子机制，重点讲解gRNA的设计原则、HDR与NHEJ修复路径的区别，讨论其在遗传病治疗中的临床试验现状，并分析目前面临的技术壁垒和伦理争论",
-    "请从架构设计、性能调优和运维实践三个角度，系统讲解在高并发场景下如何设计一个支持百万级QPS的分布式缓存系统，包括数据分片策略、一致性哈希、热点问题处理和故障恢复机制",
-    "深入分析量子计算对现有密码学体系的威胁，特别是Shor算法对RSA和ECC算法的破坏能力，讨论后量子密码学的主要候选方案（如NTRU、CRYSTALS-Kyber等），以及当前迁移计划的挑战",
-    "请综合分析近十年来中美关系的结构性变化，包括贸易摩擦的深层经济逻辑、科技脱钩的战略背景、台湾问题的地缘政治敏感性，以及这种竞争格局对全球多边主义体系的长远影响",
-    "从神经科学和计算认知科学两个视角，详细解释人类工作记忆和长期记忆的编码、存储和提取机制，类比讨论大型语言模型的记忆与人类记忆的根本差异，以及这对AI系统设计的启示",
-    "请详细说明微服务架构下的服务治理体系，涵盖服务注册与发现、负载均衡策略、熔断器模式、限流算法（令牌桶vs漏桶）、分布式追踪和日志聚合，并讨论Service Mesh在简化复杂性方面的作用",
-    "比较分析凯恩斯主义经济学和货币主义在应对经济衰退时的政策主张差异，结合2008年金融危机和2020年新冠疫情的政策实践，评估两种理论框架在现代经济环境中的适用性和局限性",
-    "请系统梳理大规模语言模型的对齐技术发展历程，包括早期InstructGPT中的RLHF方法、Constitutional AI的核心思路、直接偏好优化DPO的原理，以及当前对齐研究面临的主要挑战",
-    "分析数字平台经济下网络效应、数据垄断和算法推荐如何共同形成强大的市场壁垒，探讨欧盟数字市场法和中国平台反垄断监管的不同思路及对全球互联网产业格局的影响",
-    "请详细讲解强化学习中的策略梯度方法，包括REINFORCE算法、Actor-Critic架构、PPO裁剪目标函数的数学推导，并解释为什么PPO成为当前大模型RLHF实践中的主流算法选择",
-    "从城市规划、交通工程和行为经济学三个角度深入分析如何设计更高效的公共交通系统，包括BRT与地铁的适用条件、需求响应式交通的新兴实践，以及数字化技术如何改变城市出行模式",
-    "请综述表观遗传学的主要调控机制（DNA甲基化、组蛋白修饰、非编码RNA等），解释这些机制如何介导基因-环境相互作用，并讨论表观遗传修饰在癌症发生发展中的功能及靶向治疗前景",
-    "详细分析供应链金融的主要模式（应收账款融资、预付款融资、存货融资），探讨区块链和物联网技术如何提升供应链金融的信息透明度，以及在中小企业融资难背景下的实践价值",
-    "请从哲学、伦理学和法律三个维度，深入探讨自动驾驶汽车在面临不可避免事故时的决策伦理，分析不同国家的立法思路，以及这些讨论如何推动AI系统责任归属理论的发展",
-    "系统讲解现代编译器的前端、中端和后端架构，重点介绍LLVM IR的设计哲学、各类优化Pass的工作原理（常量折叠、循环展开、内联优化），以及AOT与JIT编译策略各自的性能取舍",
-    "请综合分析Web3和去中心化金融（DeFi）生态系统的核心组件（智能合约、AMM、流动性挖矿、Layer2扩展方案），评估其技术可行性与经济模型的可持续性，以及监管框架缺失带来的系统性风险",
-]
-
-QUERY_POOL: dict[str, list[str]] = {
-    "short": SHORT_QUERIES,
-    "medium": MEDIUM_QUERIES,
-    "long": LONG_QUERIES,
-}
-
-QUERY_CASE_SETS: dict[str, dict[str, list[str]]] = {
-    "smoke_v1": {
-        "short": SHORT_QUERIES[:10],
-        "medium": MEDIUM_QUERIES[:10],
-        "long": LONG_QUERIES[:10],
-    },
-    "regression_v1": QUERY_POOL,
-}
-
-CASE_SET_LABELS: dict[str, str] = {
-    "smoke_v1": "快速烟测样本池",
-    "regression_v1": "基线回归样本池",
-}
 
 CHAIN_SPECS: dict[str, dict[str, str]] = {
     "rag": {"label": "RAG Q&A", "family": "rag", "search_mode": "local_only"},
     "agent": {"label": "LLM Agent", "family": "agent", "search_mode": "local_only"},
     "hybrid": {"label": "混合路由 Agent", "family": "agent", "search_mode": "hybrid"},
 }
+
+_BENCHMARK_LENGTHS = ["short", "medium", "long"]
 
 DEFAULT_ASSERTION_LIMITS: dict[str, dict[str, Any]] = {
     "rag": {
@@ -165,9 +105,83 @@ ASSERTION_LIMIT_OVERRIDES_BY_CASE_SET: dict[str, dict[str, dict[str, Any]]] = {
     "regression_v1": {
         # Full regression pool includes materially heavier prompts than the first 3-item subset
         # used during early tuning, so its p95 tail needs its own baseline.
+        "agent": {
+            "max_p95_wall_clock_s": {"medium": 60.0, "long": 75.0, "global": 75.0},
+            "max_p95_elapsed_s": {"medium": 60.0, "long": 75.0, "global": 75.0},
+        },
         "rag": {
             "max_p95_wall_clock_s": {"short": 55.0, "medium": 60.0, "long": 75.0, "global": 75.0},
             "max_p95_elapsed_s": {"short": 55.0, "medium": 60.0, "long": 75.0, "global": 75.0},
+        },
+    },
+    "session_contamination_v1": {
+        "agent": {
+            "max_p95_wall_clock_s": {"short": 55.0, "medium": 60.0, "long": 70.0, "global": 70.0},
+            "max_p95_elapsed_s": {"short": 55.0, "medium": 60.0, "long": 70.0, "global": 70.0},
+            "by_taxonomy": {
+                "entity_detail_noise": {
+                    "max_quality_fail_rate": 0.0,
+                    "max_wrong_topic_leak_rate": 0.0,
+                    "max_p95_wall_clock_s": {"global": 55.0},
+                    "max_p95_elapsed_s": {"global": 55.0},
+                },
+                "followup_contamination": {
+                    "max_quality_fail_rate": 0.0,
+                    "max_wrong_topic_leak_rate": 0.0,
+                    "max_followup_contamination_rate": 0.0,
+                    "max_empty_answer_rate": 0.0,
+                    "max_p95_wall_clock_s": {"global": 60.0},
+                    "max_p95_elapsed_s": {"global": 60.0},
+                },
+                "compare_terminal_quality": {
+                    "max_quality_fail_rate": 0.0,
+                    "max_reference_order_violation_rate": 0.0,
+                    "max_empty_answer_rate": 0.0,
+                    "max_p95_wall_clock_s": {"global": 45.0},
+                    "max_p95_elapsed_s": {"global": 45.0},
+                },
+                "personal_review_cross_contamination": {
+                    "max_quality_fail_rate": 0.0,
+                    "max_wrong_topic_leak_rate": 0.0,
+                    "max_empty_answer_rate": 0.0,
+                    "max_p95_wall_clock_s": {"global": 65.0},
+                    "max_p95_elapsed_s": {"global": 65.0},
+                },
+                "strict_scope_alias_collection": {
+                    "max_quality_fail_rate": 0.0,
+                    "max_strict_scope_false_negative_rate": 0.0,
+                    "max_empty_answer_rate": 0.0,
+                    "max_p95_wall_clock_s": {"global": 45.0},
+                    "max_p95_elapsed_s": {"global": 45.0},
+                },
+            },
+        },
+        "hybrid": {
+            "max_p95_wall_clock_s": {"short": 70.0, "medium": 80.0, "long": 90.0, "global": 90.0},
+            "max_p95_elapsed_s": {"short": 70.0, "medium": 80.0, "long": 90.0, "global": 90.0},
+            "by_taxonomy": {
+                "entity_detail_noise": {
+                    "max_quality_fail_rate": 0.0,
+                    "max_wrong_topic_leak_rate": 0.0,
+                },
+                "followup_contamination": {
+                    "max_quality_fail_rate": 0.0,
+                    "max_wrong_topic_leak_rate": 0.0,
+                    "max_followup_contamination_rate": 0.0,
+                },
+                "compare_terminal_quality": {
+                    "max_quality_fail_rate": 0.0,
+                    "max_reference_order_violation_rate": 0.0,
+                },
+                "personal_review_cross_contamination": {
+                    "max_quality_fail_rate": 0.0,
+                    "max_wrong_topic_leak_rate": 0.0,
+                },
+                "strict_scope_alias_collection": {
+                    "max_quality_fail_rate": 0.0,
+                    "max_strict_scope_false_negative_rate": 0.0,
+                },
+            },
         },
     },
 }
@@ -186,28 +200,39 @@ def _ai_summary_base() -> str:
     return "http://127.0.0.1:8000"
 
 
+def _nav_dashboard_internal_base(request: Request | None = None) -> str:
+    raw = (os.getenv("NAV_DASHBOARD_INTERNAL_URL", "") or "").strip().rstrip("/")
+    if raw:
+        return raw
+    scheme = "http"
+    port = int(PORT)
+    if request is not None:
+        try:
+            request_scheme = str(request.url.scheme or "").strip()
+            if request_scheme:
+                scheme = request_scheme
+        except Exception:
+            pass
+        try:
+            request_port = int(request.url.port or 0)
+            if request_port > 0:
+                port = request_port
+        except Exception:
+            pass
+    return f"{scheme}://127.0.0.1:{port}"
+
+
 # ─── HTTP helper ──────────────────────────────────────────────────────────────
 
 def _post_json(url: str, body: dict[str, Any], timeout: int = 180) -> dict[str, Any]:
-    data = json.dumps(body, ensure_ascii=False).encode("utf-8")
-    req = urlrequest.Request(
-        url,
-        data=data,
-        headers={"Content-Type": "application/json", "Accept": "application/json"},
-        method="POST",
-    )
     try:
-        opener = urlrequest.build_opener(urlrequest.ProxyHandler({}))
-        with opener.open(req, timeout=timeout) as resp:
-            raw = resp.read().decode("utf-8", errors="replace")
-            return json.loads(raw) if raw.strip() else {}
-    except urlerror.HTTPError as exc:
-        snippet = ""
-        try:
-            snippet = exc.read().decode("utf-8", errors="replace")[:200]
-        except Exception:
-            pass
-        return {"_error": f"HTTP {exc.code}: {snippet}"}
+        payload = request_json("POST", url, payload=body, timeout=timeout)
+        if isinstance(payload, dict):
+            error_text = str(payload.get("error") or "").strip()
+            if not payload.get("ok", True) and error_text and not str(payload.get("_error") or "").strip():
+                payload = dict(payload)
+                payload["_error"] = error_text
+        return payload
     except Exception as exc:
         return {"_error": str(exc)[:200]}
 
@@ -216,160 +241,157 @@ def _benchmark_trace_id(prefix: str) -> str:
     return f"benchmark_{prefix}_{uuid4().hex[:12]}"
 
 
+def _coerce_named_tool_list(value: Any) -> list[str]:
+    names: list[str] = []
+    seen: set[str] = set()
+    for item in value if isinstance(value, list) else []:
+        if isinstance(item, dict):
+            raw_name = item.get("name") or item.get("tool")
+        else:
+            raw_name = item
+        name = str(raw_name or "").strip()
+        if not name or name in seen:
+            continue
+        seen.add(name)
+        names.append(name)
+    return names
+
+
+def _coerce_text_list(value: Any) -> list[str]:
+    if value is None:
+        return []
+    if isinstance(value, list):
+        items = value
+    elif isinstance(value, tuple):
+        items = list(value)
+    else:
+        items = [value]
+    normalized: list[str] = []
+    for item in items:
+        text = str(item or "").strip()
+        if text:
+            normalized.append(text)
+    return normalized
+
+
+def _flatten_text_map(value: Any) -> str:
+    if isinstance(value, dict):
+        parts = [str(item or "").strip() for item in value.values()]
+        return "\n".join(part for part in parts if part)
+    return str(value or "").strip()
+
+
+def _normalize_benchmark_text_line(value: Any) -> str:
+    return benchmark_contracts.normalize_benchmark_text_line(value)
+
+
+def _strip_rewritten_query_echo_lines(rewritten_blob: Any, *source_texts: Any) -> str:
+    return benchmark_contracts.strip_rewritten_query_echo_lines(rewritten_blob, *source_texts)
+
+
+def _extract_answer_reference_metrics(answer: str) -> dict[str, Any]:
+    return benchmark_contracts.extract_answer_reference_metrics(answer)
+
+
+def _evaluate_quality_assertions(case: dict[str, Any], record: dict[str, Any]) -> tuple[list[dict[str, Any]], dict[str, bool], dict[str, bool]]:
+    return benchmark_contracts.evaluate_quality_assertions(case, record)
+
+
+def _validate_agent_payload_schema(payload: dict[str, Any]) -> dict[str, Any]:
+    return benchmark_contracts.validate_agent_payload_schema(payload)
+
+
+def extract_agent_benchmark_metrics(resp: dict[str, Any]) -> dict[str, Any]:
+    return benchmark_contracts.extract_agent_benchmark_metrics(resp)
+
+
 def _derive_rag_no_context(resp: dict[str, Any], timings: dict[str, Any]) -> tuple[int, str]:
-    local_after_threshold = timings.get("local_after_threshold")
-    try:
-        if local_after_threshold is not None and float(local_after_threshold) <= 0:
-            return 1, "below_threshold"
-    except Exception:
-        pass
-    top1 = timings.get("local_top1_vector_score_after_rerank")
-    if top1 is None:
-        top1 = timings.get("local_top1_score")
-    threshold = resp.get("similarity_threshold")
-    try:
-        if top1 is not None and threshold is not None and float(top1) < float(threshold):
-            return 1, "below_threshold"
-    except Exception:
-        pass
-    return 0, ""
+    return benchmark_runner.derive_rag_no_context(resp, timings)
 
 
-def _derive_agent_no_context(resp: dict[str, Any], timings: dict[str, Any]) -> tuple[int, str, dict[str, Any]]:
-    tool_results = resp.get("tool_results") if isinstance(resp.get("tool_results"), list) else []
-    doc_result = next(
-        (
-            item for item in tool_results
-            if isinstance(item, dict) and str(item.get("tool", "")).strip() == "query_document_rag" and isinstance(item.get("data"), dict)
-        ),
-        None,
-    )
-    doc_data = doc_result.get("data") if isinstance(doc_result, dict) else {}
-    if int(timings.get("no_context", 0) or 0) > 0:
-        return 1, str(timings.get("no_context_reason", "") or "below_threshold"), doc_data
-    query_type = str(((resp.get("query_classification") or {}).get("query_type") or "")).strip().upper()
-    planned_tools = [
-        str(item.get("name", "")).strip()
-        for item in (resp.get("planned_tools") if isinstance(resp.get("planned_tools"), list) else [])
-        if isinstance(item, dict)
-    ]
-    if "query_document_rag" not in planned_tools and query_type in {"TECH_QUERY", "MIXED_QUERY"}:
-        return 1, "knowledge_route_without_rag", doc_data
-    return 0, "", doc_data
-
-
-def _compact_benchmark_record(question: str, record: dict[str, Any]) -> dict[str, Any]:
-    planned_tools = [str(name).strip() for name in list(record.get("planned_tools") or []) if str(name).strip()]
-    return {
-        "query": question,
-        "trace_id": str(record.get("trace_id") or "").strip(),
-        "query_type": str(record.get("query_type") or "").strip(),
-        "planned_tools": planned_tools,
-        "no_context": int(record.get("no_context", 0) or 0),
-        "no_context_reason": str(record.get("no_context_reason") or "").strip(),
-        "doc_top1_score": record.get("doc_top1_score"),
-        "doc_score_threshold": record.get("doc_score_threshold"),
-        "error": record.get("error"),
-    }
+def _compact_benchmark_record(case: dict[str, Any], record: dict[str, Any]) -> dict[str, Any]:
+    return benchmark_contracts.compact_benchmark_record(case, record)
 
 
 def _collect_failed_trace_ids(records: list[dict[str, Any]] | None, *, kind: str) -> list[str]:
-    trace_ids: list[str] = []
-    for row in records or []:
-        if not isinstance(row, dict):
-            continue
-        if kind == "errors":
-            failed = bool(row.get("error"))
-        elif kind == "no_context_rate":
-            failed = int(row.get("no_context", 0) or 0) > 0
-        else:
-            failed = False
-        if not failed:
-            continue
-        value = str(row.get("trace_id") or "").strip()
-        if value and value not in trace_ids:
-            trace_ids.append(value)
-    return trace_ids
+    return benchmark_contracts.collect_failed_trace_ids(records, kind=kind)
 
 
 # ─── Per-query runners ────────────────────────────────────────────────────────
 
-def _run_rag_query(ai_base: str, question: str) -> dict[str, Any]:
-    url = f"{ai_base}/api/rag/ask"
-    trace_id = _benchmark_trace_id("rag")
-    t0 = time.perf_counter()
-    resp = _post_json(url, {"question": question, "mode": "local", "search_mode": "local_only", "no_embed_cache": True, "benchmark_mode": True, "trace_id": trace_id})
-    wall_clock = round(time.perf_counter() - t0, 3)
-    error = resp.get("_error") or None
-    timings = resp.get("timings") if isinstance(resp.get("timings"), dict) else {}
-    elapsed = float(resp.get("elapsed_seconds") or 0.0)
-    no_context, no_context_reason = _derive_rag_no_context(resp, timings)
-    return {
-        "trace_id": str(resp.get("trace_id") or trace_id),
-        "wall_clock_s": wall_clock,
-        "elapsed_s": elapsed,
-        "error": error,
-        "timings": timings,
-        "no_context": no_context,
-        "no_context_reason": no_context_reason,
-        "doc_top1_score": timings.get("local_top1_vector_score_after_rerank", timings.get("local_top1_score")),
-        "doc_score_threshold": resp.get("similarity_threshold"),
-    }
-
-
-def _run_agent_query(self_base: str, question: str, *, search_mode: str) -> dict[str, Any]:
-    url = f"{self_base}/api/agent/chat"
-    trace_id = _benchmark_trace_id("agent")
-    t0 = time.perf_counter()
-    resp = _post_json(
-        url,
-        {"question": question, "backend": "local", "search_mode": search_mode, "deny_over_quota": True, "benchmark_mode": True, "trace_id": trace_id},
-        timeout=240,
+def _run_rag_query(ai_base: str, case: dict[str, Any]) -> dict[str, Any]:
+    return benchmark_runner.run_rag_query(
+        ai_base,
+        case,
+        post_json=_post_json,
+        benchmark_trace_id=_benchmark_trace_id,
     )
-    wall_clock = round(time.perf_counter() - t0, 3)
-    error = resp.get("_error") or None
-    timings = resp.get("timings") if isinstance(resp.get("timings"), dict) else {}
-    no_context, no_context_reason, doc_data = _derive_agent_no_context(resp, timings)
-    return {
-        "trace_id": str(resp.get("trace_id") or trace_id),
-        "wall_clock_s": wall_clock,
-        "elapsed_s": wall_clock,
-        "error": error,
-        "timings": timings,
-        "no_context": no_context,
-        "no_context_reason": no_context_reason,
-        "query_type": str(((resp.get("query_classification") or {}).get("query_type") or "")).strip(),
-        "planned_tools": [
-            str(item.get("name", "")).strip()
-            for item in (resp.get("planned_tools") if isinstance(resp.get("planned_tools"), list) else [])
-            if isinstance(item, dict)
-        ],
-        "doc_top1_score": doc_data.get("doc_top1_score") if isinstance(doc_data, dict) else None,
-        "doc_score_threshold": timings.get("doc_score_threshold"),
-    }
+
+
+def _run_agent_query(self_base: str, case: dict[str, Any], *, search_mode: str) -> dict[str, Any]:
+    return benchmark_runner.run_agent_query(
+        self_base,
+        case,
+        search_mode=search_mode,
+        post_json=_post_json,
+        benchmark_trace_id=_benchmark_trace_id,
+        extract_agent_benchmark_metrics=extract_agent_benchmark_metrics,
+        evaluate_quality_assertions=_evaluate_quality_assertions,
+    )
+
+
+def _resolve_case_batch(case_set_id: str, length: str, query_count: int) -> list[dict[str, Any]]:
+    return resolve_case_batch(case_set_id, length, query_count)
+
+
+def _resolve_case_batch_for_chain(case_set_id: str, length: str, query_count: int, chain: str) -> list[dict[str, Any]]:
+    return benchmark_runner.resolve_case_batch_for_chain(case_set_id, length, query_count, chain)
 
 
 def _resolve_case_queries(case_set_id: str, length: str, query_count: int) -> list[str]:
-    case_set = QUERY_CASE_SETS.get(case_set_id) or QUERY_CASE_SETS["regression_v1"]
-    pool = list(case_set.get(length) or QUERY_POOL.get(length) or [])
-    return pool[: min(query_count, len(pool))]
+    return [str(case.get("query") or "") for case in _resolve_case_batch(case_set_id, length, query_count)]
 
 
-def _resolve_assertion_limits(chain: str, case_set_id: str) -> dict[str, Any]:
-    base = dict(DEFAULT_ASSERTION_LIMITS.get(chain, DEFAULT_ASSERTION_LIMITS["agent"]))
-    override = (
-        ASSERTION_LIMIT_OVERRIDES_BY_CASE_SET.get(case_set_id, {}).get(chain, {})
-        if case_set_id
-        else {}
+def _select_total_case_batches(cases_by_length: dict[str, list[dict[str, Any]]], query_count: int) -> dict[str, list[dict[str, Any]]]:
+    return benchmark_runner.select_total_case_batches(_BENCHMARK_LENGTHS, cases_by_length, query_count)
+
+
+def _resolve_case_batches_for_chain(case_set_id: str, query_count: int, chain: str) -> dict[str, list[dict[str, Any]]]:
+    return benchmark_runner.resolve_case_batches_for_chain(_BENCHMARK_LENGTHS, case_set_id, query_count, chain)
+
+
+def _benchmark_case_detail(case: dict[str, Any]) -> dict[str, Any]:
+    return benchmark_runner.benchmark_case_detail(case)
+
+
+def _build_case_details(rows_by_length: dict[str, list[dict[str, Any]]]) -> dict[str, list[dict[str, Any]]]:
+    return benchmark_runner.build_case_details(_BENCHMARK_LENGTHS, rows_by_length)
+
+
+def _merge_case_batches_by_length(cases_by_chain: dict[str, dict[str, list[dict[str, Any]]]]) -> dict[str, list[dict[str, Any]]]:
+    return benchmark_runner.merge_case_batches_by_length(_BENCHMARK_LENGTHS, cases_by_chain)
+
+
+def _normalize_cases_by_chain_input(chains: list[str], cases_payload: dict[str, Any]) -> dict[str, dict[str, list[dict[str, Any]]]]:
+    return benchmark_runner.normalize_cases_by_chain_input(_BENCHMARK_LENGTHS, CHAIN_SPECS, chains, cases_payload)
+
+
+def _merge_assertion_limits(base: dict[str, Any], override: dict[str, Any]) -> dict[str, Any]:
+    return benchmark_contracts.merge_assertion_limits(base, override)
+
+
+def _group_rows_by_taxonomy(rows_by_bucket: dict[str, list[dict[str, Any]]]) -> dict[str, list[dict[str, Any]]]:
+    return benchmark_contracts.group_rows_by_taxonomy(rows_by_bucket)
+
+
+def _resolve_assertion_limits(chain: str, case_set_id: str, *, taxonomy: str = "") -> dict[str, Any]:
+    return benchmark_contracts.resolve_assertion_limits(
+        chain,
+        case_set_id,
+        DEFAULT_ASSERTION_LIMITS,
+        ASSERTION_LIMIT_OVERRIDES_BY_CASE_SET,
+        taxonomy=taxonomy,
     )
-    for key, value in override.items():
-        if isinstance(value, dict) and isinstance(base.get(key), dict):
-            merged = dict(base.get(key) or {})
-            merged.update(value)
-            base[key] = merged
-        else:
-            base[key] = value
-    return base
 
 
 def _evaluate_assertions(
@@ -378,370 +400,104 @@ def _evaluate_assertions(
     aggregate: dict[str, Any],
     case_set_id: str = "",
     records: list[dict[str, Any]] | None = None,
+    *,
+    limit_bucket: str | None = None,
+    taxonomy: str = "",
 ) -> dict[str, Any]:
-    limits = _resolve_assertion_limits(chain, case_set_id)
-    checks: list[dict[str, Any]] = []
-    errors = int(aggregate.get("errors", 0) or 0)
-    count = int(aggregate.get("count", 0) or 0)
-    errors_check = {
-        "name": "errors",
-        "actual": errors,
-        "expected": "0",
-        "passed": errors == 0,
-    }
-    error_trace_ids = _collect_failed_trace_ids(records, kind="errors")
-    if error_trace_ids:
-        errors_check["trace_ids"] = error_trace_ids
-    checks.append(errors_check)
-    if count > 0:
-        no_context_rate = float(aggregate.get("no_context_rate", 0) or 0)
-        max_no_context = float(limits.get("max_no_context_rate", 1.0) or 1.0)
-        no_context_check = {
-            "name": "no_context_rate",
-            "actual": round(no_context_rate, 4),
-            "expected": f"<= {max_no_context}",
-            "passed": no_context_rate <= max_no_context,
-        }
-        no_context_trace_ids = _collect_failed_trace_ids(records, kind="no_context_rate")
-        if no_context_trace_ids:
-            no_context_check["trace_ids"] = no_context_trace_ids
-        checks.append(no_context_check)
-        p95_wall = float(aggregate.get("p95_wall_clock_s", 0) or 0)
-        wall_limit = float((limits.get("max_p95_wall_clock_s", {}) or {}).get(length, 999999))
-        checks.append({
-            "name": "p95_wall_clock_s",
-            "actual": round(p95_wall, 4),
-            "expected": f"<= {wall_limit}",
-            "passed": p95_wall <= wall_limit,
-        })
-        p95_elapsed = float(aggregate.get("p95_elapsed_s", aggregate.get("p95_wall_clock_s", 0)) or 0)
-        elapsed_limit = float((limits.get("max_p95_elapsed_s", {}) or {}).get(length, 999999))
-        checks.append({
-            "name": "p95_elapsed_s",
-            "actual": round(p95_elapsed, 4),
-            "expected": f"<= {elapsed_limit}",
-            "passed": p95_elapsed <= elapsed_limit,
-        })
-    passed = all(bool(item.get("passed")) for item in checks)
-    return {"passed": passed, "checks": checks}
+    return benchmark_contracts.evaluate_assertions(
+        chain,
+        length,
+        aggregate,
+        DEFAULT_ASSERTION_LIMITS,
+        ASSERTION_LIMIT_OVERRIDES_BY_CASE_SET,
+        case_set_id,
+        records,
+        limit_bucket=limit_bucket,
+        taxonomy=taxonomy,
+    )
 
 
 def _attach_assertions(result: dict[str, Any], chains: list[str]) -> dict[str, Any]:
-    assertions: dict[str, Any] = {}
-    summary = {"passed": 0, "failed": 0}
-    config = result.get("config") if isinstance(result.get("config"), dict) else {}
-    case_set_id = str(config.get("case_set_id") or "").strip()
-    for chain in chains:
-        chain_payload = result.get(chain) if isinstance(result.get(chain), dict) else {}
-        if not isinstance(chain_payload, dict):
-            continue
-        by_length = chain_payload.get("by_length") if isinstance(chain_payload.get("by_length"), dict) else {}
-        records_by_length = chain_payload.get("records_by_length") if isinstance(chain_payload.get("records_by_length"), dict) else {}
-        global_records: list[dict[str, Any]] = []
-        for value in records_by_length.values():
-            if isinstance(value, list):
-                global_records.extend(item for item in value if isinstance(item, dict))
-        chain_assertions = {
-            "by_length": {},
-            "global": _evaluate_assertions(
-                chain,
-                "global",
-                chain_payload.get("global") if isinstance(chain_payload.get("global"), dict) else {},
-                case_set_id=case_set_id,
-                records=global_records,
-            ),
-        }
-        for length, aggregate in by_length.items():
-            if isinstance(aggregate, dict):
-                chain_assertions["by_length"][length] = _evaluate_assertions(
-                    chain,
-                    str(length),
-                    aggregate,
-                    case_set_id=case_set_id,
-                    records=records_by_length.get(length) if isinstance(records_by_length.get(length), list) else [],
-                )
-        for value in list(chain_assertions["by_length"].values()) + [chain_assertions["global"]]:
-            if value.get("passed"):
-                summary["passed"] += 1
-            else:
-                summary["failed"] += 1
-        assertions[chain] = chain_assertions
-    result["assertions"] = assertions
-    result["assertion_summary"] = summary
-    return result
+    return benchmark_contracts.attach_assertions(
+        result,
+        chains,
+        DEFAULT_ASSERTION_LIMITS,
+        ASSERTION_LIMIT_OVERRIDES_BY_CASE_SET,
+    )
 
 
 # ─── Aggregation ──────────────────────────────────────────────────────────────
 
 def _percentile(values: list[float], p: float) -> float:
-    if not values:
-        return 0.0
-    ordered = sorted(values)
-    idx = int(round((len(ordered) - 1) * max(0.0, min(1.0, p / 100.0))))
-    return ordered[idx]
+    return benchmark_contracts.percentile(values, p)
 
 
 def _aggregate(records: list[dict[str, Any]]) -> dict[str, Any]:
-    if not records:
-        return {"count": 0, "errors": 0}
-    errors = sum(1 for r in records if r.get("error"))
-    valid = [r for r in records if not r.get("error")]
-    out: dict[str, Any] = {"count": len(records), "errors": errors}
-    if not valid:
-        return out
-    n = len(valid)
-    out["avg_wall_clock_s"] = round(sum(r["wall_clock_s"] for r in valid) / n, 3)
-    # Wall-clock percentiles
-    wall_vals = [r["wall_clock_s"] for r in valid]
-    out["p50_wall_clock_s"] = round(_percentile(wall_vals, 50), 3)
-    out["p95_wall_clock_s"] = round(_percentile(wall_vals, 95), 3)
-    out["p99_wall_clock_s"] = round(_percentile(wall_vals, 99), 3)
-
-    if any("elapsed_s" in r for r in valid):
-        vals = [float(r.get("elapsed_s") or 0) for r in valid]
-        out["avg_elapsed_s"] = round(sum(vals) / n, 3)
-        out["p50_elapsed_s"] = round(_percentile(vals, 50), 3)
-        out["p95_elapsed_s"] = round(_percentile(vals, 95), 3)
-        out["p99_elapsed_s"] = round(_percentile(vals, 99), 3)
-
-    # No-context rate
-    no_ctx = sum(1 for r in valid if int(r.get("no_context", 0) or 0))
-    out["no_context_rate"] = round(no_ctx / n, 3) if n else 0.0
-
-    # Per-stage averages and percentiles from timings dicts
-    sums: dict[str, float] = {}
-    cnts: dict[str, int] = {}
-    vals_by_stage: dict[str, list[float]] = {}
-    for r in valid:
-        for k, v in (r.get("timings") or {}).items():
-            try:
-                fv = float(v)
-            except Exception:
-                continue
-            if fv < 0:
-                continue
-            sums[k] = sums.get(k, 0.0) + fv
-            cnts[k] = cnts.get(k, 0) + 1
-            vals_by_stage.setdefault(k, []).append(fv)
-    for k, s in sums.items():
-        c = cnts[k]
-        out[f"avg_{k}_s"] = round(s / c, 4) if c else 0.0
-    # Percentiles for key timing stages
-    for k, vlist in vals_by_stage.items():
-        if len(vlist) >= 1:
-            out[f"p50_{k}_s"] = round(_percentile(vlist, 50), 4)
-            out[f"p95_{k}_s"] = round(_percentile(vlist, 95), 4)
-            out[f"p99_{k}_s"] = round(_percentile(vlist, 99), 4)
-    return out
+    return benchmark_contracts.aggregate_records(records)
 
 
 # ─── History storage ──────────────────────────────────────────────────────────
 
 def _load_history() -> list[dict[str, Any]]:
-    if not BENCHMARK_FILE.exists():
-        return []
-    try:
-        raw = json.loads(BENCHMARK_FILE.read_text(encoding="utf-8"))
-        results = list(raw.get("results", [])) if isinstance(raw, dict) else []
-        normalized: list[dict[str, Any]] = []
-        for item in results[-BENCHMARK_HISTORY_MAX:]:
-            if not isinstance(item, dict):
-                continue
-            config = item.get("config") if isinstance(item.get("config"), dict) else {}
-            modules = [m for m in config.get("modules", []) if m in ("rag", "agent", "hybrid")]
-            normalized.append(_attach_assertions(item, modules) if modules else item)
-        return normalized
-    except Exception:
-        return []
+    return benchmark_history_store.load_history(BENCHMARK_FILE, BENCHMARK_HISTORY_MAX, _attach_assertions)
 
 
 def _save_result(result: dict[str, Any]) -> None:
-    history = _load_history()
-    history.append(result)
-    history = history[-BENCHMARK_HISTORY_MAX:]
-    BENCHMARK_FILE.parent.mkdir(parents=True, exist_ok=True)
-    BENCHMARK_FILE.write_text(
-        json.dumps({"results": history}, ensure_ascii=False, indent=2), encoding="utf-8"
-    )
+    benchmark_history_store.save_result(BENCHMARK_FILE, BENCHMARK_HISTORY_MAX, result, _attach_assertions)
 
 
 # ─── Benchmark generator (SSE source) ────────────────────────────────────────
 
-def _build_result(chains: list[str], query_count: int, case_set_id: str, cases_by_length: dict[str, list[str]], rag_recs: dict[str, list[dict[str, Any]]], chain_records: dict[str, dict[str, list[dict[str, Any]]]]) -> dict[str, Any]:
-    lengths = ["short", "medium", "long"]
-    result: dict[str, Any] = {
-        "id": str(uuid4())[:8],
-        "timestamp": datetime.now().isoformat(timespec="seconds"),
-        "config": {"modules": chains, "query_count_per_type": query_count, "case_set_id": case_set_id},
-        "cases": {length: list(cases_by_length.get(length) or []) for length in lengths},
-    }
-    if "rag" in chains:
-        all_rag = [r for length in lengths for r in rag_recs[length]]
-        result["rag"] = {
-            "by_length": {length: _aggregate(rag_recs[length]) for length in lengths},
-            "global": _aggregate(all_rag),
-            "records_by_length": {
-                length: [_compact_benchmark_record(query, rec) for query, rec in zip(cases_by_length.get(length, []), rag_recs[length])]
-                for length in lengths
-            },
-        }
-    for chain in ("agent", "hybrid"):
-        if chain not in chains:
-            continue
-        per_length = chain_records.get(chain, {})
-        all_rows = [r for length in lengths for r in per_length.get(length, [])]
-        result[chain] = {
-            "by_length": {length: _aggregate(per_length.get(length, [])) for length in lengths},
-            "global": _aggregate(all_rows),
-            "records_by_length": {
-                length: [
-                    _compact_benchmark_record(query, rec)
-                    for query, rec in zip(cases_by_length.get(length, []), per_length.get(length, []))
-                ]
-                for length in lengths
-            },
-        }
-    return _attach_assertions(result, chains)
+def _build_result(chains: list[str], query_count: int, case_set_id: str, cases_by_chain: dict[str, dict[str, list[dict[str, Any]]]], rag_recs: dict[str, list[dict[str, Any]]], chain_records: dict[str, dict[str, list[dict[str, Any]]]]) -> dict[str, Any]:
+    return benchmark_runner.build_result(
+        _BENCHMARK_LENGTHS,
+        CHAIN_SPECS,
+        chains,
+        query_count,
+        case_set_id,
+        cases_by_chain,
+        rag_recs,
+        chain_records,
+        compact_benchmark_record=_compact_benchmark_record,
+        group_rows_by_taxonomy=_group_rows_by_taxonomy,
+        aggregate_records=_aggregate,
+        attach_assertions=_attach_assertions,
+    )
 
 
 def _run_benchmark(chains: list[str], query_count: int, ai_base: str, self_base: str, case_set_id: str):
-    lengths = ["short", "medium", "long"]
-    total = len(chains) * 3 * query_count
-    done = 0
-    rag_recs: dict[str, list[dict[str, Any]]] = {l: [] for l in lengths}
-    chain_records: dict[str, dict[str, list[dict[str, Any]]]] = {
-        chain: {length: [] for length in lengths}
-        for chain in chains
-        if chain in {"agent", "hybrid"}
-    }
-    cases_by_length: dict[str, list[str]] = {}
-
-    yield {"type": "progress", "message": f"准备运行 {total} 项测试...", "current": 0, "total": total}
-
-    for length in lengths:
-        queries = _resolve_case_queries(case_set_id, length, query_count)
-        cases_by_length[length] = list(queries)
-
-        if "rag" in chains:
-            for i, q in enumerate(queries):
-                label = q[:22] + ("..." if len(q) > 22 else "")
-                yield {
-                    "type": "progress",
-                    "message": f"[RAG / {length}] {i + 1}/{len(queries)}: {label}",
-                    "current": done,
-                    "total": total,
-                }
-                rec = _run_rag_query(ai_base, q)
-                rag_recs[length].append(rec)
-                done += 1
-
-        for chain in [c for c in chains if c in {"agent", "hybrid"}]:
-            chain_label = CHAIN_SPECS.get(chain, {}).get("label", chain)
-            search_mode = CHAIN_SPECS.get(chain, {}).get("search_mode", "local_only")
-            for i, q in enumerate(queries):
-                label = q[:22] + ("..." if len(q) > 22 else "")
-                yield {
-                    "type": "progress",
-                    "message": f"[{chain_label} / {length}] {i + 1}/{len(queries)}: {label}",
-                    "current": done,
-                    "total": total,
-                }
-                rec = _run_agent_query(self_base, q, search_mode=search_mode)
-                chain_records.setdefault(chain, {}).setdefault(length, []).append(rec)
-                done += 1
-
-    result = _build_result(chains, query_count, case_set_id, cases_by_length, rag_recs, chain_records)
-
-    _save_result(result)
-    yield {"type": "result", "data": result, "current": total, "total": total}
+    yield from benchmark_runner.run_benchmark(
+        _BENCHMARK_LENGTHS,
+        CHAIN_SPECS,
+        chains,
+        query_count,
+        ai_base,
+        self_base,
+        case_set_id,
+        run_rag_query_fn=_run_rag_query,
+        run_agent_query_fn=lambda base, case, search_mode: _run_agent_query(base, case, search_mode=search_mode),
+        build_result_fn=_build_result,
+        save_result_fn=_save_result,
+    )
 
 
 def _run_benchmark_job(chains: list[str], query_count: int, ai_base: str, self_base: str, case_set_id: str, report_progress, is_cancelled) -> dict[str, Any]:
-    lengths = ["short", "medium", "long"]
-    total = len(chains) * 3 * query_count
-    done = 0
-    rag_recs: dict[str, list[dict[str, Any]]] = {l: [] for l in lengths}
-    chain_records: dict[str, dict[str, list[dict[str, Any]]]] = {
-        chain: {length: [] for length in lengths}
-        for chain in chains
-        if chain in {"agent", "hybrid"}
-    }
-    cases_by_length: dict[str, list[str]] = {}
-    trace_log_lines: list[str] = []
-    report_progress(message=f"准备运行 {total} 项测试...", current=0, total=total, log=f"准备运行 {total} 项测试")
-
-    for length in lengths:
-        queries = _resolve_case_queries(case_set_id, length, query_count)
-        cases_by_length[length] = list(queries)
-
-        if "rag" in chains:
-            for i, q in enumerate(queries):
-                if is_cancelled():
-                    report_progress(message="Benchmark 已取消", log="Benchmark 已取消")
-                    return {"cancelled": True}
-                label = q[:22] + ("..." if len(q) > 22 else "")
-                message = f"[RAG / {length}] {i + 1}/{len(queries)}: {label}"
-                report_progress(message=message, current=done, total=total, log=message)
-                rec = _run_rag_query(ai_base, q)
-                rag_recs[length].append(rec)
-                done += 1
-                compact = _compact_benchmark_record(q, rec)
-                trace_line = f"TRACE_ID [RAG / {length} / {i + 1}] {compact.get('trace_id', '')}"
-                trace_log_lines.append(trace_line)
-                report_progress(
-                    current=done,
-                    total=total,
-                    log=trace_line,
-                    metadata={
-                        "latest_case": {
-                            "module": "rag",
-                            "length": length,
-                            "case_index": i + 1,
-                            "case_total": len(queries),
-                            "timestamp": datetime.now().isoformat(timespec="seconds"),
-                            "record": compact,
-                        },
-                        "trace_ids": list(trace_log_lines),
-                    },
-                )
-
-        for chain in [c for c in chains if c in {"agent", "hybrid"}]:
-            chain_label = CHAIN_SPECS.get(chain, {}).get("label", chain)
-            search_mode = CHAIN_SPECS.get(chain, {}).get("search_mode", "local_only")
-            for i, q in enumerate(queries):
-                if is_cancelled():
-                    report_progress(message="Benchmark 已取消", log="Benchmark 已取消")
-                    return {"cancelled": True}
-                label = q[:22] + ("..." if len(q) > 22 else "")
-                message = f"[{chain_label} / {length}] {i + 1}/{len(queries)}: {label}"
-                report_progress(message=message, current=done, total=total, log=message)
-                rec = _run_agent_query(self_base, q, search_mode=search_mode)
-                chain_records.setdefault(chain, {}).setdefault(length, []).append(rec)
-                done += 1
-                compact = _compact_benchmark_record(q, rec)
-                trace_line = f"TRACE_ID [{chain_label} / {length} / {i + 1}] {compact.get('trace_id', '')}"
-                trace_log_lines.append(trace_line)
-                report_progress(
-                    current=done,
-                    total=total,
-                    log=trace_line,
-                    metadata={
-                        "latest_case": {
-                            "module": chain,
-                            "length": length,
-                            "case_index": i + 1,
-                            "case_total": len(queries),
-                            "timestamp": datetime.now().isoformat(timespec="seconds"),
-                            "record": compact,
-                        },
-                        "trace_ids": list(trace_log_lines),
-                    },
-                )
-
-    result = _build_result(chains, query_count, case_set_id, cases_by_length, rag_recs, chain_records)
-    _save_result(result)
-    report_progress(message="Benchmark 完成", current=total, total=total, result=result, log="Benchmark 完成")
-    return result
+    return benchmark_runner.run_benchmark_job(
+        _BENCHMARK_LENGTHS,
+        CHAIN_SPECS,
+        chains,
+        query_count,
+        ai_base,
+        self_base,
+        case_set_id,
+        report_progress=report_progress,
+        is_cancelled=is_cancelled,
+        run_rag_query_fn=_run_rag_query,
+        run_agent_query_fn=lambda base, case, search_mode: _run_agent_query(base, case, search_mode=search_mode),
+        compact_benchmark_record=_compact_benchmark_record,
+        build_result_fn=_build_result,
+        save_result_fn=_save_result,
+    )
 
 
 # ─── Pydantic models ──────────────────────────────────────────────────────────
@@ -764,14 +520,14 @@ def post_run(payload: RunPayload, request: Request) -> StreamingResponse:
     if case_set_id not in QUERY_CASE_SETS:
         raise HTTPException(status_code=400, detail="未知回归测试集")
     ai_base = _ai_summary_base()
-    self_base = str(request.base_url).rstrip("/")
+    self_base = _nav_dashboard_internal_base(request)
 
     def event_stream():
         try:
             for event in _run_benchmark(modules, query_count, ai_base, self_base, case_set_id):
-                yield f"data: {json.dumps(event, ensure_ascii=False)}\n\n"
+                yield f"data: {json.dumps(build_benchmark_stream_event(event), ensure_ascii=False)}\n\n"
         except Exception as exc:
-            yield f"data: {json.dumps({'type': 'error', 'message': str(exc)}, ensure_ascii=False)}\n\n"
+            yield f"data: {json.dumps(build_benchmark_stream_event({'type': 'error', 'message': str(exc)}), ensure_ascii=False)}\n\n"
 
     return StreamingResponse(
         event_stream(),
@@ -780,25 +536,32 @@ def post_run(payload: RunPayload, request: Request) -> StreamingResponse:
     )
 
 
-@router.get("/history")
+@router.get("/history", response_model=BenchmarkHistoryResponse, response_model_exclude_unset=True)
 def get_history() -> dict[str, Any]:
-    return {"results": _load_history()}
+    return build_benchmark_history_response(_load_history())
 
 
-@router.get("/cases")
+@router.get("/cases", response_model=BenchmarkCaseSetsResponse, response_model_exclude_unset=True)
 def get_benchmark_case_sets() -> dict[str, Any]:
-    return {
-        "case_sets": [
+    response = build_benchmark_case_sets_response(
+        [
             {
                 "id": case_id,
                 "label": CASE_SET_LABELS.get(case_id, case_id),
                 "lengths": {length: len(queries) for length, queries in lengths.items()},
-                "max_query_count_per_type": min((len(queries) for queries in lengths.values()), default=0),
+                "max_query_count_per_type": int((CASE_SET_METADATA.get(case_id) or {}).get("max_query_count_per_type") or 0),
+                "taxonomy_counts": dict((CASE_SET_METADATA.get(case_id) or {}).get("taxonomy_counts") or {}),
+                "source_counts": dict((CASE_SET_METADATA.get(case_id) or {}).get("source_counts") or {}),
+                "supported_modules": list((CASE_SET_METADATA.get(case_id) or {}).get("supported_modules") or []),
+                "module_case_counts": dict((CASE_SET_METADATA.get(case_id) or {}).get("module_case_counts") or {}),
+                "module_length_counts": dict((CASE_SET_METADATA.get(case_id) or {}).get("module_length_counts") or {}),
+                "module_max_query_count_per_type": dict((CASE_SET_METADATA.get(case_id) or {}).get("module_max_query_count_per_type") or {}),
             }
             for case_id, lengths in QUERY_CASE_SETS.items()
         ],
-        "chains": [{"id": chain, **spec} for chain, spec in CHAIN_SPECS.items()],
-    }
+        [{"id": chain, **spec} for chain, spec in CHAIN_SPECS.items()],
+    )
+    return response
 
 
 @router.post("/jobs")
@@ -811,14 +574,14 @@ def create_benchmark_job(payload: RunPayload, request: Request) -> dict[str, Any
     if case_set_id not in QUERY_CASE_SETS:
         raise HTTPException(status_code=400, detail="未知回归测试集")
     ai_base = _ai_summary_base()
-    self_base = str(request.base_url).rstrip("/")
+    self_base = _nav_dashboard_internal_base(request)
     job = dashboard_jobs.create_job(
         job_type="benchmark",
         label="性能基准测试",
         metadata={"modules": modules, "query_count_per_type": query_count, "case_set_id": case_set_id},
         target=lambda report_progress, is_cancelled: _run_benchmark_job(modules, query_count, ai_base, self_base, case_set_id, report_progress, is_cancelled),
     )
-    return {"ok": True, "job": job}
+    return build_benchmark_job_response(ok=True, job=job)
 
 
 @router.get("/jobs/{job_id}")
@@ -826,7 +589,7 @@ def get_benchmark_job(job_id: str) -> dict[str, Any]:
     job = dashboard_jobs.get_job(job_id)
     if not job or job.get("type") != "benchmark":
         raise HTTPException(status_code=404, detail="Job not found")
-    return {"ok": True, "job": job}
+    return build_benchmark_job_response(ok=True, job=job)
 
 
 @router.post("/jobs/{job_id}/cancel")
@@ -834,7 +597,7 @@ def cancel_benchmark_job(job_id: str) -> dict[str, Any]:
     job = dashboard_jobs.request_cancel(job_id)
     if not job or job.get("type") != "benchmark":
         raise HTTPException(status_code=404, detail="Job not found")
-    return {"ok": True, "job": job}
+    return build_benchmark_job_response(ok=True, job=job)
 
 
 @router.delete("/history")
@@ -860,7 +623,7 @@ def clear_history() -> dict[str, Any]:
 # tech_primary, entity_wins, media_surface_wins, abstract_concept_wins,
 # mixed_due_to_entity_plus_tech, llm_media_weak_general, followup, etc.
 
-ROUTER_CLASSIFICATION_CASES: list[dict[str, Any]] = [
+LEGACY_ROUTER_CLASSIFICATION_CASES: list[dict[str, Any]] = [
     # ── tech_primary ──────────────────────────────────────────────────────────
     {"query": "机器学习的概念和应用",          "mock_label": "TECH", "mock_domain": "tech",    "mock_entities": [],        "mock_lu": "general_lookup",  "exp_domain": "tech",    "exp_arb": "tech_primary",            "note": "core tech — CJK token fix"},
     {"query": "深度学习架构原理是什么",          "mock_label": "TECH", "mock_domain": "tech",    "mock_entities": [],        "mock_lu": "general_lookup",  "exp_domain": "tech",    "exp_arb": "tech_primary",            "note": "tech with lexical cues"},
@@ -892,51 +655,142 @@ ROUTER_CLASSIFICATION_CASES: list[dict[str, Any]] = [
 ]
 
 # History file for router classification results
-ROUTER_CLS_HISTORY_FILE = APP_DIR.parent / "data" / "benchmark" / "router_cls_results.json"
-ROUTER_CLS_HISTORY_MAX = 20
+ROUTER_CLS_HISTORY_MAX = benchmark_history_store.ROUTER_CLS_HISTORY_MAX
+
+_ROUTER_CLS_ALLOWED_DOMAINS = benchmark_history_store.ROUTER_CLS_ALLOWED_DOMAINS
+_ROUTER_CLS_ALLOWED_LABELS = benchmark_history_store.ROUTER_CLS_ALLOWED_LABELS
+_ROUTER_CLS_ALLOWED_LOOKUP_MODES = benchmark_history_store.ROUTER_CLS_ALLOWED_LOOKUP_MODES
+
+
+def _coerce_router_cls_list(value: Any) -> list[str]:
+    if value is None:
+        return []
+    if isinstance(value, list):
+        items = value
+    elif isinstance(value, tuple):
+        items = list(value)
+    else:
+        text = str(value).replace("\r", "\n")
+        for token in ["|", ",", "\n", "\t"]:
+            text = text.replace(token, "\n")
+        items = text.split("\n")
+    normalized: list[str] = []
+    for item in items:
+        text = str(item or "").strip()
+        if text:
+            normalized.append(text)
+    return normalized
+
+
+def _derive_router_cls_mock_label(expected_domain: str) -> str:
+    if expected_domain == "media":
+        return "MEDIA"
+    if expected_domain == "tech":
+        return "TECH"
+    return "OTHER"
+
+
+def _derive_router_cls_mock_domain(expected_domain: str) -> str:
+    return expected_domain if expected_domain in {"media", "tech"} else "general"
+
+
+def _derive_router_cls_lookup_mode(expected_domain: str, expected_arbitration: list[str], mock_entities: list[str]) -> str:
+    if mock_entities:
+        return "entity_lookup"
+    if any("concept" in item for item in expected_arbitration):
+        return "concept_lookup"
+    if expected_domain == "media" and any("surface" in item for item in expected_arbitration):
+        return "filter_search"
+    return "general_lookup"
+
+
+def _normalize_router_cls_case_record(payload: dict[str, Any], *, case_id: str | None = None) -> dict[str, Any]:
+    return benchmark_history_store.normalize_router_cls_case_record(payload, case_id=case_id)
+
+
+def _default_router_cls_case_records() -> list[dict[str, Any]]:
+    return benchmark_history_store.default_router_cls_case_records(LEGACY_ROUTER_CLASSIFICATION_CASES)
+
+
+def _load_router_cls_case_records() -> list[dict[str, Any]]:
+    return benchmark_history_store.load_router_cls_case_records(ROUTER_CLS_CASES_FILE, LEGACY_ROUTER_CLASSIFICATION_CASES)
+
+
+def _save_router_cls_case_records(records: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    return benchmark_history_store.save_router_cls_case_records(ROUTER_CLS_CASES_FILE, records)
 
 
 def _load_router_cls_history() -> list[dict[str, Any]]:
-    if not ROUTER_CLS_HISTORY_FILE.exists():
-        return []
-    try:
-        raw = json.loads(ROUTER_CLS_HISTORY_FILE.read_text(encoding="utf-8"))
-        return list(raw.get("results", []))[-ROUTER_CLS_HISTORY_MAX:] if isinstance(raw, dict) else []
-    except Exception:
-        return []
+    return benchmark_history_store.load_router_cls_history(ROUTER_CLS_HISTORY_FILE)
 
 
 def _save_router_cls_result(result: dict[str, Any]) -> None:
-    history = _load_router_cls_history()
-    history.append(result)
-    ROUTER_CLS_HISTORY_FILE.parent.mkdir(parents=True, exist_ok=True)
-    ROUTER_CLS_HISTORY_FILE.write_text(
-        json.dumps({"results": history[-ROUTER_CLS_HISTORY_MAX:]}, ensure_ascii=False, indent=2),
-        encoding="utf-8",
-    )
+    benchmark_history_store.save_router_cls_result(ROUTER_CLS_HISTORY_FILE, result)
+
+
+class RouterClassificationCasePayload(BaseModel):
+    query: str = Field(..., min_length=1, max_length=400)
+    expected_domain: str = Field(..., min_length=1)
+    expected_arbitration: str | list[str] = Field(...)
+    expected_query_class: str | None = Field(default=None)
+    subject_scope: str | None = Field(default=None)
+    time_scope_type: str | None = Field(default=None)
+    answer_shape: str | None = Field(default=None)
+    media_family: str | None = Field(default=None)
+    followup_mode: str | None = Field(default=None)
+    note: str = Field(default="", max_length=300)
+    mock_label: str | None = Field(default=None)
+    mock_domain: str | None = Field(default=None)
+    mock_entities: list[str] | str | None = Field(default=None)
+    mock_lookup_mode: str | None = Field(default=None)
+
+
+def _build_router_cls_case_response(record: dict[str, Any]) -> dict[str, Any]:
+    return {
+        "id": str(record.get("id") or ""),
+        "query": str(record.get("query") or ""),
+        "expected_domain": str(record.get("expected_domain") or ""),
+        "expected_arbitration": record.get("expected_arbitration") or "",
+        "expected_query_class": str(record.get("expected_query_class") or ""),
+        "subject_scope": str(record.get("subject_scope") or ""),
+        "time_scope_type": str(record.get("time_scope_type") or ""),
+        "answer_shape": str(record.get("answer_shape") or ""),
+        "media_family": str(record.get("media_family") or ""),
+        "followup_mode": str(record.get("followup_mode") or ""),
+        "note": str(record.get("note") or ""),
+        "mock_label": str(record.get("mock_label") or ""),
+        "mock_domain": str(record.get("mock_domain") or ""),
+        "mock_entities": list(record.get("mock_entities") or []),
+        "mock_lookup_mode": str(record.get("mock_lookup_mode") or ""),
+        "updated_at": str(record.get("updated_at") or ""),
+    }
 
 
 def _run_router_classification_suite() -> dict[str, Any]:
-    """Run all ROUTER_CLASSIFICATION_CASES in-process without LLM calls.
+    """Run all stored router classification cases in-process without LLM calls.
 
     Returns a result dict with per-case outcomes and aggregate pass/fail counts.
     """
-    import sys as _sys
-    from pathlib import Path as _Path
+    from contextlib import ExitStack as _ExitStack
     from unittest.mock import patch as _patch
 
-    _repo_root = _Path(__file__).resolve().parents[3]
-    if str(_repo_root) not in _sys.path:
-        _sys.path.insert(0, str(_repo_root))
-
-    import nav_dashboard.web.services.agent_service as _svc
+    from nav_dashboard.web.services.agent.domain import router_service as _router_svc
 
     _empty_quota: dict = {}
 
     def _resolve_profile(q: str) -> dict:
-        return _svc._resolve_query_profile(q)
+        return _router_svc._resolve_query_profile(q)
 
-    def _decide(query: str, mock_label: str, mock_domain: str, mock_entities: list, mock_lu: str) -> Any:
+    def _decide(
+        query: str,
+        mock_label: str,
+        mock_domain: str,
+        mock_entities: list,
+        mock_lu: str,
+        *,
+        history: list[dict[str, Any]] | None = None,
+        previous_trace_context: dict[str, Any] | None = None,
+    ) -> Any:
         mock_llm = {
             "label": mock_label,
             "domain": mock_domain,
@@ -951,13 +805,14 @@ def _run_router_classification_suite() -> dict[str, Any]:
             "confidence": 0.85,
             "rewritten_queries": {},
         }
-        with (
-            _patch.object(_svc, "_classify_media_query_with_llm", return_value=mock_llm),
-            _patch.object(_svc, "_rewrite_tool_queries_with_llm", return_value={}),
-        ):
-            decision, _, _ = _svc._build_router_decision(
+        with _ExitStack() as stack:
+            stack.enter_context(_patch.object(_router_svc, "_classify_media_query_with_llm", return_value=mock_llm))
+            stack.enter_context(_patch.object(_router_svc, "_rewrite_tool_queries_with_llm", return_value={}))
+            if history or previous_trace_context is not None:
+                stack.enter_context(_patch.object(_router_svc, "_find_previous_trace_context", return_value=previous_trace_context))
+            decision, _, _ = _router_svc._build_router_decision(
                 question=query,
-                history=[],
+                history=list(history or []),
                 quota_state=_empty_quota,
                 query_profile=_resolve_profile(query),
             )
@@ -968,11 +823,17 @@ def _run_router_classification_suite() -> dict[str, Any]:
     failed = 0
     violations: list[dict[str, Any]] = []
 
-    for case in ROUTER_CLASSIFICATION_CASES:
+    stored_cases = _load_router_cls_case_records()
+
+    for case in stored_cases:
         query = str(case.get("query") or "")
-        exp_domain = str(case.get("exp_domain") or "")
-        exp_arb = str(case.get("exp_arb") or "")
-        exp_arb_any: list[str] = [str(v) for v in (case.get("exp_arb_any") or [])]
+        exp_domain = str(case.get("expected_domain") or case.get("exp_domain") or "")
+        raw_expected_arbitration = case.get("expected_arbitration")
+        exp_arb_any: list[str] = _coerce_router_cls_list(raw_expected_arbitration)
+        exp_arb = exp_arb_any[0] if len(exp_arb_any) == 1 else ""
+        case_id = str(case.get("id") or "")
+        history = case.get("history") if isinstance(case.get("history"), list) else []
+        previous_trace_context = case.get("previous_trace_context") if isinstance(case.get("previous_trace_context"), dict) else None
 
         try:
             decision = _decide(
@@ -980,21 +841,54 @@ def _run_router_classification_suite() -> dict[str, Any]:
                 str(case.get("mock_label") or "OTHER"),
                 str(case.get("mock_domain") or "general"),
                 list(case.get("mock_entities") or []),
-                str(case.get("mock_lu") or "general_lookup"),
+                str(case.get("mock_lookup_mode") or case.get("mock_lu") or "general_lookup"),
+                history=history,
+                previous_trace_context=previous_trace_context,
             )
             actual_domain = str(decision.domain or "")
             actual_arb = str(decision.arbitration or "")
+            actual_query_class = str(decision.query_class or "")
+            actual_subject_scope = str(decision.subject_scope or "")
+            actual_time_scope_type = str(decision.time_scope_type or "")
+            actual_answer_shape = str(decision.answer_shape or "")
+            actual_media_family = str(decision.media_family or "")
+            actual_followup_mode = normalize_followup_mode(decision.followup_mode)
+            expected_query_class = str(case.get("expected_query_class") or "")
+            expected_subject_scope = str(case.get("subject_scope") or "")
+            expected_time_scope_type = str(case.get("time_scope_type") or "")
+            expected_answer_shape = str(case.get("answer_shape") or "")
+            expected_media_family = str(case.get("media_family") or "")
+            expected_followup_mode = normalize_followup_mode(case.get("followup_mode"))
 
             domain_ok = actual_domain == exp_domain
             arb_ok = (actual_arb == exp_arb) if exp_arb else (actual_arb in exp_arb_any) if exp_arb_any else True
-            ok = domain_ok and arb_ok
+            query_class_ok = not expected_query_class or actual_query_class == expected_query_class
+            subject_scope_ok = not expected_subject_scope or actual_subject_scope == expected_subject_scope
+            time_scope_type_ok = not expected_time_scope_type or actual_time_scope_type == expected_time_scope_type
+            answer_shape_ok = not expected_answer_shape or actual_answer_shape == expected_answer_shape
+            media_family_ok = not expected_media_family or actual_media_family == expected_media_family
+            followup_mode_ok = not expected_followup_mode or actual_followup_mode == expected_followup_mode
+            ok = all((domain_ok, arb_ok, query_class_ok, subject_scope_ok, time_scope_type_ok, answer_shape_ok, media_family_ok, followup_mode_ok))
 
             row: dict[str, Any] = {
+                "id": case_id,
                 "query": query,
                 "expected_domain": exp_domain,
-                "expected_arbitration": exp_arb or exp_arb_any,
+                "expected_arbitration": raw_expected_arbitration or exp_arb or exp_arb_any,
+                "expected_query_class": str(case.get("expected_query_class") or ""),
+                "subject_scope": str(case.get("subject_scope") or ""),
+                "time_scope_type": str(case.get("time_scope_type") or ""),
+                "answer_shape": str(case.get("answer_shape") or ""),
+                "media_family": str(case.get("media_family") or ""),
+                "followup_mode": str(case.get("followup_mode") or ""),
                 "actual_domain": actual_domain,
                 "actual_arbitration": actual_arb,
+                "actual_query_class": str(decision.query_class or ""),
+                "actual_subject_scope": str(decision.subject_scope or ""),
+                "actual_time_scope_type": str(decision.time_scope_type or ""),
+                "actual_answer_shape": str(decision.answer_shape or ""),
+                "actual_media_family": str(decision.media_family or ""),
+                "actual_followup_mode": str(decision.followup_mode or ""),
                 "pass": ok,
                 "note": str(case.get("note") or ""),
             }
@@ -1002,9 +896,34 @@ def _run_router_classification_suite() -> dict[str, Any]:
                 row["violation"] = {
                     "domain_mismatch": not domain_ok,
                     "arbitration_mismatch": not arb_ok,
+                    "query_class_mismatch": not query_class_ok,
+                    "subject_scope_mismatch": not subject_scope_ok,
+                    "time_scope_type_mismatch": not time_scope_type_ok,
+                    "answer_shape_mismatch": not answer_shape_ok,
+                    "media_family_mismatch": not media_family_ok,
+                    "followup_mode_mismatch": not followup_mode_ok,
                 }
-                violations.append({"query": query, "expected_domain": exp_domain, "actual_domain": actual_domain,
-                                    "expected_arbitration": exp_arb or exp_arb_any, "actual_arbitration": actual_arb})
+                violations.append(
+                    {
+                        "query": query,
+                        "expected_domain": exp_domain,
+                        "actual_domain": actual_domain,
+                        "expected_arbitration": exp_arb or exp_arb_any,
+                        "actual_arbitration": actual_arb,
+                        "expected_query_class": expected_query_class,
+                        "actual_query_class": actual_query_class,
+                        "expected_subject_scope": expected_subject_scope,
+                        "actual_subject_scope": actual_subject_scope,
+                        "expected_time_scope_type": expected_time_scope_type,
+                        "actual_time_scope_type": actual_time_scope_type,
+                        "expected_answer_shape": expected_answer_shape,
+                        "actual_answer_shape": actual_answer_shape,
+                        "expected_media_family": expected_media_family,
+                        "actual_media_family": actual_media_family,
+                        "expected_followup_mode": expected_followup_mode,
+                        "actual_followup_mode": actual_followup_mode,
+                    }
+                )
 
             cases_out.append(row)
             if ok:
@@ -1012,7 +931,7 @@ def _run_router_classification_suite() -> dict[str, Any]:
             else:
                 failed += 1
         except Exception as exc:
-            cases_out.append({"query": query, "pass": False, "error": str(exc)[:200]})
+            cases_out.append({"id": case_id, "query": query, "pass": False, "error": str(exc)[:200]})
             failed += 1
             violations.append({"query": query, "error": str(exc)[:200]})
 
@@ -1030,26 +949,83 @@ def _run_router_classification_suite() -> dict[str, Any]:
     return result
 
 
-@router.post("/router-classification")
+@router.post("/router-classification", response_model=BenchmarkRouterClassificationResponse, response_model_exclude_unset=True)
 def post_router_classification() -> dict[str, Any]:
     """Run the in-process router classification regression suite and return results."""
     result = _run_router_classification_suite()
-    return result
+    return build_benchmark_router_classification_response(result)
 
 
-@router.get("/router-classification/history")
+@router.get("/router-classification/cases", response_model=BenchmarkRouterClassificationCasesResponse, response_model_exclude_unset=True)
+def get_router_classification_cases() -> dict[str, Any]:
+    records = _load_router_cls_case_records()
+    return build_benchmark_router_classification_cases_response([_build_router_cls_case_response(record) for record in records])
+
+
+@router.post("/router-classification/cases", response_model=BenchmarkRouterClassificationCaseMutationResponse, response_model_exclude_unset=True)
+def create_router_classification_case(payload: RouterClassificationCasePayload) -> dict[str, Any]:
+    records = _load_router_cls_case_records()
+    try:
+        record = _normalize_router_cls_case_record(payload.model_dump())
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    records.append(record)
+    _save_router_cls_case_records(records)
+    return build_benchmark_router_classification_case_mutation_response(
+        ok=True,
+        case=_build_router_cls_case_response(record),
+        cases=[_build_router_cls_case_response(item) for item in records],
+    )
+
+
+@router.patch("/router-classification/cases/{case_id}", response_model=BenchmarkRouterClassificationCaseMutationResponse, response_model_exclude_unset=True)
+def update_router_classification_case(case_id: str, payload: RouterClassificationCasePayload) -> dict[str, Any]:
+    normalized_case_id = str(case_id or "").strip()
+    records = _load_router_cls_case_records()
+    index = next((idx for idx, item in enumerate(records) if str(item.get("id") or "") == normalized_case_id), -1)
+    if index < 0:
+        raise HTTPException(status_code=404, detail="未找到对应的 router classification case")
+    try:
+        record = _normalize_router_cls_case_record(payload.model_dump(), case_id=normalized_case_id)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    records[index] = record
+    _save_router_cls_case_records(records)
+    return build_benchmark_router_classification_case_mutation_response(
+        ok=True,
+        case=_build_router_cls_case_response(record),
+        cases=[_build_router_cls_case_response(item) for item in records],
+    )
+
+
+@router.delete("/router-classification/cases/{case_id}", response_model=BenchmarkRouterClassificationCaseMutationResponse, response_model_exclude_unset=True)
+def delete_router_classification_case(case_id: str) -> dict[str, Any]:
+    normalized_case_id = str(case_id or "").strip()
+    records = _load_router_cls_case_records()
+    filtered = [item for item in records if str(item.get("id") or "") != normalized_case_id]
+    if len(filtered) == len(records):
+        raise HTTPException(status_code=404, detail="未找到对应的 router classification case")
+    _save_router_cls_case_records(filtered)
+    return build_benchmark_router_classification_case_mutation_response(
+        ok=True,
+        cases=[_build_router_cls_case_response(item) for item in filtered],
+    )
+
+
+@router.get("/router-classification/history", response_model=BenchmarkRouterClassificationHistoryResponse, response_model_exclude_unset=True)
 def get_router_classification_history() -> dict[str, Any]:
-    return {"results": _load_router_cls_history()}
+    return build_benchmark_router_classification_history_response(_load_router_cls_history())
 
 
 # ─── Unit / regression test runner ───────────────────────────────────────────
 
 _REPO_ROOT = Path(__file__).resolve().parents[3]
+_UNIT_TEST_RUNNER = _REPO_ROOT / "scripts" / "dev" / "run_isolated_unit_suite.py"
 
 UNIT_TEST_SUITES: dict[str, dict[str, Any]] = {
     "regression_router": {
         "label": "Router 回归",
-        "file": _REPO_ROOT / "scripts" / "regression_router.py",
+        "file": _REPO_ROOT / "scripts" / "regression" / "regression_router.py",
     },
     "post_retrieval": {
         "label": "PostRetrieval Policy",
@@ -1065,39 +1041,11 @@ UNIT_TEST_SUITES: dict[str, dict[str, Any]] = {
     },
 }
 
-
-class _CollectingResult(unittest.TestResult):
-    """Custom TestResult that captures per-test outcomes with short messages."""
-
-    def __init__(self) -> None:
-        super().__init__()
-        self.test_outcomes: list[dict[str, Any]] = []
-
-    def addSuccess(self, test: unittest.TestCase) -> None:
-        self.test_outcomes.append({"id": test.id(), "status": "pass", "message": ""})
-
-    def addFailure(self, test: unittest.TestCase, err: Any) -> None:
-        super().addFailure(test, err)
-        msg = str(err[1])[:300] if err and err[1] else ""
-        self.test_outcomes.append({"id": test.id(), "status": "fail", "message": msg})
-
-    def addError(self, test: unittest.TestCase, err: Any) -> None:
-        super().addError(test, err)
-        msg = str(err[1])[:300] if err and err[1] else ""
-        self.test_outcomes.append({"id": test.id(), "status": "error", "message": msg})
-
-    def addSkip(self, test: unittest.TestCase, reason: str) -> None:
-        super().addSkip(test, reason)
-        self.test_outcomes.append({"id": test.id(), "status": "skip", "message": reason})
-
-
 def _run_unit_test_suite(suite_id: str, suite_def: dict[str, Any]) -> dict[str, Any]:
-    """Dynamically load a unittest file and run it in-process."""
-    import importlib.util as _ilu
-    import sys as _sys
-
+    """Run a unittest suite in an isolated subprocess to avoid shared module state."""
     file_path = Path(suite_def["file"])
     label = str(suite_def.get("label") or suite_id)
+    timeout_seconds = max(30, int(suite_def.get("timeout_seconds") or 300))
 
     if not file_path.is_file():
         return {
@@ -1110,40 +1058,54 @@ def _run_unit_test_suite(suite_id: str, suite_def: dict[str, Any]) -> dict[str, 
             "tests": [{"id": "<setup>", "status": "error", "message": f"File not found: {file_path}"}],
         }
 
-    # Ensure repo root is on sys.path (needed by test modules that import from tests.conftest)
-    repo_root = str(_REPO_ROOT)
-    if repo_root not in _sys.path:
-        _sys.path.insert(0, repo_root)
-
     try:
-        module_name = f"_bm_dynsuite_{suite_id}"
-        spec = _ilu.spec_from_file_location(module_name, file_path)
-        if spec is None or spec.loader is None:
-            raise ImportError(f"Cannot create spec for {file_path}")
-        module = _ilu.module_from_spec(spec)
-        _sys.modules[module_name] = module  # must be registered before exec so @dataclass can resolve cls.__module__
-        spec.loader.exec_module(module)  # type: ignore[union-attr]
-
-        loader = unittest.TestLoader()
-        suite = loader.loadTestsFromModule(module)
-
-        result = _CollectingResult()
         t0 = time.perf_counter()
-        suite.run(result)
+        completed = subprocess.run(
+            [
+                sys.executable,
+                str(_UNIT_TEST_RUNNER),
+                suite_id,
+                label,
+                str(file_path),
+            ],
+            cwd=str(_REPO_ROOT),
+            capture_output=True,
+            text=True,
+            timeout=timeout_seconds,
+            check=False,
+        )
         elapsed = round(time.perf_counter() - t0, 3)
-
-        passed = sum(1 for t in result.test_outcomes if t["status"] == "pass")
-        failed = sum(1 for t in result.test_outcomes if t["status"] == "fail")
-        errors = sum(1 for t in result.test_outcomes if t["status"] == "error")
-
+        stdout = str(completed.stdout or "").strip()
+        stderr = str(completed.stderr or "").strip()
+        if not stdout:
+            raise RuntimeError(stderr or f"isolated unit runner returned {completed.returncode} without JSON output")
+        result = json.loads(stdout)
+        if not isinstance(result, dict):
+            raise ValueError("isolated unit runner returned a non-object payload")
+        result.setdefault("id", suite_id)
+        result.setdefault("label", label)
+        result["elapsed_seconds"] = round(float(result.get("elapsed_seconds") or elapsed), 3)
+        result["passed"] = int(result.get("passed", 0) or 0)
+        result["failed"] = int(result.get("failed", 0) or 0)
+        result["errors"] = int(result.get("errors", 0) or 0)
+        result["tests"] = list(result.get("tests") or [])
+        if completed.returncode != 0 and result["errors"] <= 0 and result["failed"] <= 0:
+            result["errors"] = 1
+            result["tests"] = list(result["tests"]) + [{
+                "id": "<runner>",
+                "status": "error",
+                "message": stderr[:400] or f"isolated unit runner exited with code {completed.returncode}",
+            }]
+        return result
+    except subprocess.TimeoutExpired:
         return {
             "id": suite_id,
             "label": label,
-            "elapsed_seconds": elapsed,
-            "passed": passed,
-            "failed": failed,
-            "errors": errors,
-            "tests": result.test_outcomes,
+            "elapsed_seconds": float(timeout_seconds),
+            "passed": 0,
+            "failed": 0,
+            "errors": 1,
+            "tests": [{"id": "<timeout>", "status": "error", "message": f"timeout after {timeout_seconds}s"}],
         }
     except Exception as exc:
         return {

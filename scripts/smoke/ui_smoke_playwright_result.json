@@ -1,0 +1,105 @@
+{
+  "base": "http://127.0.0.1:8092",
+  "steps": [
+    {
+      "name": "tab-agent",
+      "selector": "#tab-agent",
+      "clicked": true,
+      "ok": true,
+      "detail": "#panel-agent active"
+    },
+    {
+      "name": "tab-dashboard",
+      "selector": "#tab-dashboard",
+      "clicked": true,
+      "ok": true,
+      "detail": "#panel-dashboard active"
+    },
+    {
+      "name": "tab-tickets",
+      "selector": "#tab-tickets",
+      "clicked": true,
+      "ok": true,
+      "detail": "#panel-tickets active"
+    },
+    {
+      "name": "tickets-date-defaults",
+      "selector": "#tickets-created-from,#tickets-created-to",
+      "clicked": false,
+      "ok": true,
+      "detail": "{\"created_from\": \"2026-04-01\", \"created_to\": \"2026-04-07\", \"expected_from\": \"2026-04-01\", \"expected_to\": \"2026-04-07\"}"
+    },
+    {
+      "name": "tab-benchmark",
+      "selector": "#tab-benchmark",
+      "clicked": true,
+      "ok": true,
+      "detail": "#panel-benchmark active"
+    },
+    {
+      "name": "tab-agent-again",
+      "selector": "#tab-agent",
+      "clicked": true,
+      "ok": true,
+      "detail": "#panel-agent active"
+    },
+    {
+      "name": "ask-local",
+      "selector": "#qa-ask-local",
+      "clicked": true,
+      "ok": true,
+      "detail": ""
+    },
+    {
+      "name": "ask-hybrid",
+      "selector": "#qa-ask",
+      "clicked": true,
+      "ok": true,
+      "detail": ""
+    },
+    {
+      "name": "tab-tickets-again",
+      "selector": "#tab-tickets",
+      "clicked": true,
+      "ok": true,
+      "detail": "#panel-tickets active"
+    },
+    {
+      "name": "ticket-first-item",
+      "selector": "#tickets-list .ticket-list-item,#tickets-list .ticket-empty-state",
+      "clicked": true,
+      "ok": true,
+      "detail": "clicked first ticket item"
+    },
+    {
+      "name": "tab-benchmark-again",
+      "selector": "#tab-benchmark",
+      "clicked": true,
+      "ok": true,
+      "detail": "#panel-benchmark active"
+    },
+    {
+      "name": "benchmark-run",
+      "selector": "#bm-run-btn",
+      "clicked": true,
+      "ok": true,
+      "detail": ""
+    },
+    {
+      "name": "benchmark-router-cls",
+      "selector": "#bm-router-cls-run",
+      "clicked": false,
+      "ok": false,
+      "detail": "Locator.click: Timeout 8000ms exceeded.\nCall log:\n  - waiting for locator(\"#bm-router-cls-run\").first\n    - locator resolved to <button type=\"button\" id=\"bm-router-cls-run\" data-benchmark-router-bound=\"1\">▶ 运行</button>\n  - attempting click action\n    2 × waiting for element to be visible, enabled and stable\n      - element is not visible\n    - retrying click action\n    - waiting 20ms\n    2 × waiting for element to be visible, enabled and stable\n      - element is not visible\n    - retrying click action\n      - waiting 100ms\n    15 × waiting for element to be visible, enabled and stable\n       - element is not visible\n     - retrying click action\n       - waiting 500ms\n"
+    },
+    {
+      "name": "benchmark-unit-tests",
+      "selector": "#bm-unit-tests-run",
+      "clicked": false,
+      "ok": false,
+      "detail": "Locator.click: Timeout 8000ms exceeded.\nCall log:\n  - waiting for locator(\"#bm-unit-tests-run\").first\n    - locator resolved to <button type=\"button\" id=\"bm-unit-tests-run\">▶ 运行</button>\n  - attempting click action\n    2 × waiting for element to be visible, enabled and stable\n      - element is not visible\n    - retrying click action\n    - waiting 20ms\n    2 × waiting for element to be visible, enabled and stable\n      - element is not visible\n    - retrying click action\n      - waiting 100ms\n    15 × waiting for element to be visible, enabled and stable\n       - element is not visible\n     - retrying click action\n       - waiting 500ms\n"
+    }
+  ],
+  "page_errors": [],
+  "console_errors": []
+}

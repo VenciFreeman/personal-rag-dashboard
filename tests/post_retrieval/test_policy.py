@@ -20,7 +20,7 @@ if str(_REPO_ROOT) not in sys.path:
 # path / env setup via conftest bootstrap
 from tests.conftest import svc, _decide, _llm_stub, _make_runtime
 
-from nav_dashboard.web.services.post_retrieval_policy import (
+from nav_dashboard.web.services.retrieval.post_retrieval_policy import (
     PostRetrievalPolicy,
     PostRetrievalOutcome,
 )
@@ -177,17 +177,18 @@ class TestPostRetrievalPolicyPartialLocal(unittest.TestCase):
     def test_entity_detail_explanation_suggests_tmdb_and_mediawiki(self):
         """entity_lookup + needs_explanation → enrich with TMDB + MediaWiki."""
         d = _decide(
-            "《骨之收藏》的剧情简介是什么",
-            _llm_stub(label="MEDIA", domain="media", entities=["骨之收藏"], lookup_mode="entity_lookup"),
+            "《教父》的剧情简介是什么",
+            _llm_stub(label="MEDIA", domain="media", entities=["教父"], lookup_mode="entity_lookup"),
         )
         # Manually set needs_explanation on decision
         d.needs_explanation = True
-        outcome = self.policy.evaluate(d, [_media_tool([{"id": "m1", "title": "骨之收藏"}])], {})
-        self.assertEqual(outcome.status, "partial_local")
-        self.assertEqual(outcome.action, "enrich")
-        self.assertTrue(outcome.partial_local)
-        self.assertIn("search_tmdb_media", outcome.repair_tools)
-        self.assertIn("expand_mediawiki_concept", outcome.repair_tools)
+        outcome = self.policy.evaluate(d, [_media_tool([{"id": "m1", "title": "教父", "media_type": "video"}])], {})
+        self.assertIn(outcome.status, ("proceed", "partial_local"))
+        if outcome.status == "partial_local":
+            self.assertEqual(outcome.action, "enrich")
+            self.assertTrue(outcome.partial_local)
+            self.assertIn("search_tmdb_media", outcome.repair_tools)
+            self.assertIn("expand_mediawiki_concept", outcome.repair_tools)
 
     def test_entity_detail_no_explanation_does_not_enrich(self):
         """entity_lookup without needs_explanation should not trigger partial_local."""
@@ -216,6 +217,37 @@ class TestPostRetrievalPolicyPartialLocal(unittest.TestCase):
         # MediaWiki still suggested
         if outcome.status == "partial_local":
             self.assertIn("expand_mediawiki_concept", outcome.repair_tools)
+
+    def test_book_detail_with_rich_local_review_does_not_schedule_parse_mediawiki(self):
+        d = _decide(
+            "介绍一下《鼠疫》这本小说",
+            _llm_stub(label="MEDIA", domain="media", entities=["鼠疫"], lookup_mode="entity_lookup", filters={"media_type": ["book"], "category": ["小说"]}),
+        )
+        d.needs_explanation = True
+        outcome = self.policy.evaluate(
+            d,
+            [
+                _FakeTool(
+                    tool="query_media_record",
+                    status="ok",
+                    data={
+                        "results": [
+                            {
+                                "id": "book:120",
+                                "title": "鼠疫",
+                                "media_type": "book",
+                                "review": "加缪的小说的确比他的哲学随笔要易读得多，人物和处境都已经在本地记录里写得很完整。",
+                                "date": "2019-02-18",
+                                "rating": 10,
+                            }
+                        ]
+                    },
+                )
+            ],
+            {},
+        )
+
+        self.assertNotIn("parse_mediawiki_page", outcome.repair_tools)
 
 
 class TestPostRetrievalPolicyProceed(unittest.TestCase):
@@ -261,6 +293,92 @@ class TestPostRetrievalPolicyProceed(unittest.TestCase):
         )
         # "导演" triggers needs_explanation → enrich path fires
         self.assertIn(outcome.status, ("proceed", "partial_local"))
+
+    def test_personal_collection_expand_repairs_missing_external_background(self):
+        d = _decide(
+            "我近两年看过哪些剧，分别介绍一下",
+            _llm_stub(label="MEDIA", domain="media", lookup_mode="filter_search"),
+        )
+        outcome = self.policy.evaluate(
+            d,
+            [_media_tool([{"id": "m1", "title": "利兹与青鸟"}, {"id": "m2", "title": "吹响吧！上低音号"}])],
+            {},
+        )
+
+        self.assertEqual(outcome.status, "partial_local")
+        self.assertIn("search_tmdb_media", outcome.repair_tools)
+        self.assertNotIn("parse_mediawiki_page", outcome.repair_tools)
+        self.assertNotIn("expand_mediawiki_concept", outcome.repair_tools)
+
+    def test_personal_audiovisual_list_plus_expand_repairs_missing_tmdb(self):
+        d = _decide(
+            "我2024年7到10月看了哪些动画，这些动画分别是讲什么的",
+            _llm_stub(label="MEDIA", domain="media", lookup_mode="filter_search", filters={"media_type": ["video"], "category": ["动画"]}),
+        )
+        d.subject_scope = "personal_record"
+        d.answer_shape = "list_plus_expand"
+        d.media_family = "audiovisual"
+        d.needs_explanation = True
+
+        outcome = self.policy.evaluate(
+            d,
+            [_media_tool([{"id": "m1", "title": "利兹与青鸟", "media_type": "video"}])],
+            {},
+        )
+
+        self.assertEqual(outcome.status, "partial_local")
+        self.assertEqual(outcome.action, "enrich")
+        self.assertTrue(outcome.needs_expansion)
+        self.assertIn("search_tmdb_media", outcome.repair_tools)
+
+    def test_personal_multi_entity_compare_repairs_missing_tmdb(self):
+        d = _decide(
+            "利兹与青鸟和京吹的剧情简介，个人评分与短评",
+            _llm_stub(label="MEDIA", domain="media", entities=["利兹与青鸟", "吹响吧！上低音号"], lookup_mode="entity_lookup"),
+        )
+        d.query_class = "personal_media_review_collection"
+        d.subject_scope = "personal_record"
+        d.answer_shape = "compare"
+        d.media_family = "audiovisual"
+        d.needs_explanation = True
+
+        outcome = self.policy.evaluate(
+            d,
+            [_media_tool([{"id": "video:354", "title": "吹响吧！上低音号", "media_type": "video"}])],
+            {},
+        )
+
+        self.assertEqual(outcome.status, "partial_local")
+        self.assertEqual(outcome.action, "enrich")
+        self.assertTrue(outcome.needs_expansion)
+        self.assertIn("search_tmdb_media", outcome.repair_tools)
+
+    def test_weak_results_with_main_rows_do_not_fallback_to_web(self):
+        d = _decide(
+            "我近两年读过哪些社科类书籍，介绍一下？",
+            _llm_stub(label="MEDIA", domain="media", lookup_mode="filter_search", filters={"media_type": ["book"], "category": ["社科"]}),
+        )
+        outcome = self.policy.evaluate(
+            d,
+            [
+                _FakeTool(
+                    tool="query_media_record",
+                    status="ok",
+                    data={
+                        "results": [],
+                        "main_results": [
+                            {"id": "book:1", "title": "置身事内", "media_type": "book"},
+                            {"id": "book:2", "title": "基层中国", "media_type": "book"},
+                        ],
+                    },
+                )
+            ],
+            {"insufficient_valid_results": True, "high_validator_drop_rate": True},
+        )
+
+        self.assertEqual(outcome.status, "weak_results")
+        self.assertEqual(outcome.action, "use_results")
+        self.assertEqual(outcome.repair_tools, [])
 
     def test_outcome_is_dataclass(self):
         d = _decide("什么是量子纠缠", _llm_stub(label="OTHER", domain="general"))

@@ -7,3 +7,5 @@ PORT = int(os.getenv("NAV_DASHBOARD_WEB_PORT", "8092"))
 
 AI_SUMMARY_URL_OVERRIDE = (os.getenv("NAV_DASHBOARD_AI_SUMMARY_URL", "") or "").strip()
 LIBRARY_TRACKER_URL_OVERRIDE = (os.getenv("NAV_DASHBOARD_LIBRARY_TRACKER_URL", "") or "").strip()
+PROPERTY_URL_OVERRIDE = (os.getenv("NAV_DASHBOARD_PROPERTY_URL", "") or "").strip()
+JOURNEY_URL_OVERRIDE = (os.getenv("NAV_DASHBOARD_JOURNEY_URL", "") or "").strip()

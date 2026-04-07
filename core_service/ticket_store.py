@@ -7,11 +7,18 @@ from pathlib import Path
 from typing import Any
 from uuid import uuid4
 
+from core_service.runtime_data import app_runtime_root, workspace_root
 
-WORKSPACE_ROOT = Path(__file__).resolve().parent.parent
-TICKETS_FILE = WORKSPACE_ROOT / "nav_dashboard" / "data" / "tickets.jsonl"
+
+TICKETS_FILE = app_runtime_root("nav_dashboard") / "tickets" / "tickets.jsonl"
+_LEGACY_TICKET_FILES = (
+    workspace_root() / "records" / "nav_dashboard" / "tickets.jsonl",
+    app_runtime_root("nav_dashboard") / "tickets" / "tickets.jsonl",
+    app_runtime_root("nav_dashboard") / "tickets.jsonl",
+)
 _LOCK = threading.Lock()
 _CLOSED_TICKET_STATUSES = {"resolved", "closed"}
+_TREND_PRIORITIES = ("critical", "high", "medium")
 
 
 def _safe_text(value: Any) -> str:
@@ -65,12 +72,75 @@ def _parse_iso_datetime(value: Any) -> datetime | None:
         return None
 
 
+def _normalize_ticket_priority(value: Any) -> str:
+    key = _safe_text(value).lower()
+    if key in {"critical", "p0", "sev0", "blocker"}:
+        return "critical"
+    if key in {"high", "p1", "sev1"}:
+        return "high"
+    return "medium"
+
+
 def _week_bucket_start(moment: datetime) -> datetime:
     return (moment - timedelta(days=moment.weekday())).replace(hour=0, minute=0, second=0, microsecond=0)
 
 
+def _day_bucket_start(moment: datetime) -> datetime:
+    return moment.replace(hour=0, minute=0, second=0, microsecond=0)
+
+
+def _month_bucket_start(moment: datetime) -> datetime:
+    return moment.replace(day=1, hour=0, minute=0, second=0, microsecond=0)
+
+
+def _month_bucket_next(moment: datetime) -> datetime:
+    year = moment.year + (1 if moment.month == 12 else 0)
+    month = 1 if moment.month == 12 else moment.month + 1
+    return moment.replace(year=year, month=month, day=1, hour=0, minute=0, second=0, microsecond=0)
+
+
+def _build_bucket_series(*, start: datetime, end: datetime, mode: str) -> list[datetime]:
+    normalized = str(mode or "").strip().lower()
+    if normalized == "day":
+        cursor = _day_bucket_start(start)
+        limit = _day_bucket_start(end)
+        step = timedelta(days=1)
+        values: list[datetime] = []
+        while cursor <= limit:
+            values.append(cursor)
+            cursor += step
+        return values
+    if normalized == "month":
+        cursor = _month_bucket_start(start)
+        limit = _month_bucket_start(end)
+        values = []
+        while cursor <= limit:
+            values.append(cursor)
+            cursor = _month_bucket_next(cursor)
+        return values
+    cursor = _week_bucket_start(start)
+    limit = _week_bucket_start(end)
+    step = timedelta(days=7)
+    values = []
+    while cursor <= limit:
+        values.append(cursor)
+        cursor += step
+    return values
+
+
 def list_ticket_storage_paths() -> list[Path]:
     return [TICKETS_FILE]
+
+
+def _ensure_ticket_storage_location() -> None:
+    if TICKETS_FILE.exists():
+        return
+    for legacy_file in _LEGACY_TICKET_FILES:
+        if not legacy_file.exists():
+            continue
+        TICKETS_FILE.parent.mkdir(parents=True, exist_ok=True)
+        legacy_file.replace(TICKETS_FILE)
+        break
 
 
 def _title_fallback(payload: dict[str, Any]) -> str:
@@ -122,12 +192,14 @@ def _normalize_ticket_state(payload: dict[str, Any], existing: dict[str, Any] | 
 
 
 def _append_event_locked(event: dict[str, Any]) -> None:
+    _ensure_ticket_storage_location()
     TICKETS_FILE.parent.mkdir(parents=True, exist_ok=True)
     with TICKETS_FILE.open("a", encoding="utf-8") as handle:
         handle.write(json.dumps(_json_safe(event), ensure_ascii=False) + "\n")
 
 
 def _load_ticket_events_locked() -> list[dict[str, Any]]:
+    _ensure_ticket_storage_location()
     if not TICKETS_FILE.exists():
         return []
     try:
@@ -345,7 +417,7 @@ def delete_ticket(ticket_id: str, *, deleted_by: str = "human") -> dict[str, Any
         return _normalize_ticket_state(merged, existing=existing)
 
 
-def build_ticket_weekly_stats(*, weeks: int = 12) -> dict[str, Any]:
+def build_ticket_weekly_stats(*, weeks: int = 12, from_first_ticket: bool = False) -> dict[str, Any]:
     bucket_count = max(4, int(weeks or 12))
     with _LOCK:
         events = _load_ticket_events_locked()
@@ -362,8 +434,10 @@ def build_ticket_weekly_stats(*, weeks: int = 12) -> dict[str, Any]:
     bucket_lookup = {bucket.isoformat(): index for index, bucket in enumerate(buckets)}
     created_counts = [0 for _ in buckets]
     closed_counts = [0 for _ in buckets]
+    created_priority_counts = [dict() for _ in buckets]
     created_at_by_ticket: dict[str, datetime] = {}
     closed_at_by_ticket: dict[str, datetime] = {}
+    created_priority_by_ticket: dict[str, str] = {}
     status_by_ticket: dict[str, str] = {}
     status_counts: dict[str, int] = {}
     priority_counts: dict[str, int] = {}
@@ -388,6 +462,8 @@ def build_ticket_weekly_stats(*, weeks: int = 12) -> dict[str, Any]:
             created_at = _parse_iso_datetime(payload.get("created_at")) or event_time
             if created_at is not None and ticket_id not in created_at_by_ticket:
                 created_at_by_ticket[ticket_id] = created_at
+            priority = _normalize_ticket_priority(payload.get("priority"))
+            created_priority_by_ticket[ticket_id] = priority
             status = _safe_text(payload.get("status")).lower() or "open"
             status_by_ticket[ticket_id] = status
             if status == "closed" and ticket_id not in closed_at_by_ticket:
@@ -405,11 +481,14 @@ def build_ticket_weekly_stats(*, weeks: int = 12) -> dict[str, Any]:
             ):
                 closed_at_by_ticket[ticket_id] = _parse_iso_datetime(payload.get("updated_at")) or event_time or now
 
-    for created_at in created_at_by_ticket.values():
+    for ticket_id, created_at in created_at_by_ticket.items():
         bucket = _week_bucket_start(created_at)
         index = bucket_lookup.get(bucket.isoformat())
+        priority = created_priority_by_ticket.get(ticket_id) or _normalize_ticket_priority((current.get(ticket_id) or {}).get("priority"))
         if index is not None:
             created_counts[index] += 1
+            bucket_priority = created_priority_counts[index]
+            bucket_priority[priority] = int(bucket_priority.get(priority, 0) or 0) + 1
         if created_at >= recent_week_cutoff:
             submitted_last_week += 1
         if created_at >= recent_month_cutoff:
@@ -430,7 +509,7 @@ def build_ticket_weekly_stats(*, weeks: int = 12) -> dict[str, Any]:
         if status == "closed":
             continue
         active_non_closed_ids.add(ticket_id)
-        priority = _safe_text(ticket.get("priority")).lower() or "medium"
+        priority = _normalize_ticket_priority(ticket.get("priority"))
         status_counts[status] = status_counts.get(status, 0) + 1
         priority_counts[priority] = priority_counts.get(priority, 0) + 1
         created_at = _parse_iso_datetime(ticket.get("created_at"))
@@ -439,16 +518,115 @@ def build_ticket_weekly_stats(*, weeks: int = 12) -> dict[str, Any]:
             if age_days > current_longest_open_days:
                 current_longest_open_days = age_days
 
-    return {
-        "weeks": [
+    created_values = [value for value in created_at_by_ticket.values() if isinstance(value, datetime)]
+    closed_values = [value for value in closed_at_by_ticket.values() if isinstance(value, datetime)]
+    all_values = created_values + closed_values
+    if all_values:
+        earliest_ticket_time = min(all_values)
+        latest_ticket_time = max(all_values + [now])
+    else:
+        earliest_ticket_time = now
+        latest_ticket_time = now
+
+    week_bucket_map = {
+        bucket.isoformat(): {
+            "bucket_start": bucket.date().isoformat(),
+            "label": bucket.strftime("%m-%d"),
+            "submitted": int(created_counts[index]),
+            "closed": int(closed_counts[index]),
+            "priority_submitted": {name: int(created_priority_counts[index].get(name, 0) or 0) for name in _TREND_PRIORITIES},
+        }
+        for index, bucket in enumerate(buckets)
+    }
+
+    if from_first_ticket and all_values:
+        weekly_series = _build_bucket_series(start=earliest_ticket_time, end=latest_ticket_time, mode="week")
+        weekly_rows = [
+            week_bucket_map.get(
+                bucket.isoformat(),
+                {
+                    "bucket_start": bucket.date().isoformat(),
+                    "label": bucket.strftime("%m-%d"),
+                    "submitted": 0,
+                    "closed": 0,
+                    "priority_submitted": {name: 0 for name in _TREND_PRIORITIES},
+                },
+            )
+            for bucket in weekly_series
+        ]
+    else:
+        weekly_rows = [
             {
-                "week_start": bucket.date().isoformat(),
+                "bucket_start": bucket.date().isoformat(),
                 "label": bucket.strftime("%m-%d"),
-                "submitted": created_counts[index],
-                "closed": closed_counts[index],
+                "submitted": int(created_counts[index]),
+                "closed": int(closed_counts[index]),
+                "priority_submitted": {name: int(created_priority_counts[index].get(name, 0) or 0) for name in _TREND_PRIORITIES},
             }
             for index, bucket in enumerate(buckets)
-        ],
+        ]
+
+    daily_created: dict[str, int] = {}
+    daily_closed: dict[str, int] = {}
+    daily_priority_created: dict[str, dict[str, int]] = {}
+    monthly_created: dict[str, int] = {}
+    monthly_closed: dict[str, int] = {}
+    monthly_priority_created: dict[str, dict[str, int]] = {}
+    for ticket_id, created_at in created_at_by_ticket.items():
+        day_key = _day_bucket_start(created_at).isoformat()
+        month_key = _month_bucket_start(created_at).isoformat()
+        priority = created_priority_by_ticket.get(ticket_id) or _normalize_ticket_priority((current.get(ticket_id) or {}).get("priority"))
+        daily_created[day_key] = daily_created.get(day_key, 0) + 1
+        monthly_created[month_key] = monthly_created.get(month_key, 0) + 1
+        day_bucket = daily_priority_created.setdefault(day_key, {})
+        day_bucket[priority] = int(day_bucket.get(priority, 0) or 0) + 1
+        month_bucket = monthly_priority_created.setdefault(month_key, {})
+        month_bucket[priority] = int(month_bucket.get(priority, 0) or 0) + 1
+    for closed_at in closed_values:
+        day_key = _day_bucket_start(closed_at).isoformat()
+        month_key = _month_bucket_start(closed_at).isoformat()
+        daily_closed[day_key] = daily_closed.get(day_key, 0) + 1
+        monthly_closed[month_key] = monthly_closed.get(month_key, 0) + 1
+
+    if all_values:
+        day_series = _build_bucket_series(start=earliest_ticket_time, end=latest_ticket_time, mode="day")
+        month_series = _build_bucket_series(start=earliest_ticket_time, end=latest_ticket_time, mode="month")
+    else:
+        day_series = []
+        month_series = []
+
+    day_rows = [
+        {
+            "bucket_start": bucket.date().isoformat(),
+            "label": bucket.strftime("%m-%d"),
+            "submitted": int(daily_created.get(bucket.isoformat(), 0)),
+            "closed": int(daily_closed.get(bucket.isoformat(), 0)),
+            "priority_submitted": {name: int((daily_priority_created.get(bucket.isoformat(), {}) or {}).get(name, 0) or 0) for name in _TREND_PRIORITIES},
+        }
+        for bucket in day_series
+    ]
+    month_rows = [
+        {
+            "bucket_start": bucket.date().isoformat(),
+            "label": bucket.strftime("%Y-%m"),
+            "submitted": int(monthly_created.get(bucket.isoformat(), 0)),
+            "closed": int(monthly_closed.get(bucket.isoformat(), 0)),
+            "priority_submitted": {name: int((monthly_priority_created.get(bucket.isoformat(), {}) or {}).get(name, 0) or 0) for name in _TREND_PRIORITIES},
+        }
+        for bucket in month_series
+    ]
+
+    priority_counts = {name: int(priority_counts.get(name, 0) or 0) for name in _TREND_PRIORITIES}
+
+    return {
+        "weeks": weekly_rows,
+        "trends": {
+            "default_mode": "week",
+            "start_date": earliest_ticket_time.date().isoformat() if all_values else "",
+            "day": day_rows,
+            "week": weekly_rows,
+            "month": month_rows,
+        },
         "summary": {
             "current_open_total": len(active_non_closed_ids),
             "ticket_total": len(non_deleted_ids),

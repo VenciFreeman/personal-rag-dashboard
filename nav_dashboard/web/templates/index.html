@@ -3,17 +3,19 @@
 <head>
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, viewport-fit=cover" />
-  <title>Vincent's Navigation Dashboard</title>
+  <title>Navigation Dashboard</title>
   <link rel="apple-touch-icon" sizes="180x180" href="/static/favicon_logosc/apple-touch-icon.png" />
   <link rel="icon" type="image/png" sizes="32x32" href="/static/favicon_logosc/favicon-32x32.png" />
   <link rel="icon" type="image/png" sizes="16x16" href="/static/favicon_logosc/favicon-16x16.png" />
   <link rel="shortcut icon" href="/static/favicon_logosc/favicon.ico" />
   <link rel="manifest" href="/static/favicon_logosc/site.webmanifest" />
+  <link rel="stylesheet" href="/core-static/sidebar_shared.css?v={{ core_sidebar_shared_css_version }}" />
+  <link rel="stylesheet" href="/core-static/shell_shared.css?v={{ core_shell_shared_css_version }}" />
   <link rel="stylesheet" href="/static/app.css?v={{ css_version }}" />
 </head>
 <body data-local-model="{{ local_model }}" data-deepseek-model="{{ deepseek_model }}" data-ai-summary-url="{{ ai_summary_url }}" data-library-url="{{ library_tracker_url }}">
   <header class="top">
-    <h1>Vincent's Navigation Dashboard</h1>
+    <h1>Navigation Dashboard</h1>
   </header>
 
   <main class="shell">
@@ -23,7 +25,68 @@
       <button class="tab" data-tab="dashboard" id="tab-dashboard" role="tab" aria-selected="false">Dashboard</button>
       <button class="tab" data-tab="tickets" id="tab-tickets" role="tab" aria-selected="false">Tickets</button>
       <button class="tab" data-tab="benchmark" id="tab-benchmark" role="tab" aria-selected="false">Benchmark</button>
+      <button class="tab" data-tab="authorization" id="tab-authorization" role="tab" aria-selected="false">Authorization</button>
     </nav>
+
+    <script>
+      (() => {
+        // Keep all first-paint handoff state under one namespace so template
+        // bootstrap and app.js initialization stay in sync across refactors.
+        const bootstrap = window.__navDashboardBootstrap || {};
+        if (typeof bootstrap.getPreferredSessionId !== "function") {
+          bootstrap.preferredSessionId = String(bootstrap.preferredSessionId || "");
+          bootstrap.pendingCardEditIndex = Number.isInteger(bootstrap.pendingCardEditIndex)
+            ? bootstrap.pendingCardEditIndex
+            : null;
+          bootstrap.getPreferredSessionId = () => String(bootstrap.preferredSessionId || "").trim();
+          bootstrap.setPreferredSessionId = (sessionId) => {
+            bootstrap.preferredSessionId = String(sessionId || "").trim();
+          };
+          bootstrap.queueCardEdit = (index) => {
+            bootstrap.pendingCardEditIndex = Number.isInteger(index) ? index : null;
+          };
+          bootstrap.consumeCardEdit = () => {
+            const value = Number.isInteger(bootstrap.pendingCardEditIndex)
+              ? bootstrap.pendingCardEditIndex
+              : null;
+            bootstrap.pendingCardEditIndex = null;
+            return value;
+          };
+        }
+        window.__navDashboardBootstrap = bootstrap;
+      })();
+    </script>
+
+    <script>
+      (() => {
+        const setTab = (name) => {
+          const target = String(name || "home");
+          document.body.dataset.activeTab = target;
+          document.querySelectorAll(".tab").forEach((tab) => {
+            const active = tab.dataset.tab === target;
+            tab.classList.toggle("active", active);
+            tab.setAttribute("aria-selected", String(active));
+          });
+          document.querySelectorAll(".tab-panel").forEach((panel) => {
+            panel.classList.toggle("active", panel.id === `panel-${target}`);
+          });
+        };
+
+        const bindEarlyTabSwitching = () => {
+          const tabsHost = document.querySelector(".tabs");
+          if (!tabsHost || tabsHost.dataset.earlyTabsBound === "1") return;
+          tabsHost.dataset.earlyTabsBound = "1";
+          tabsHost.addEventListener("click", (event) => {
+            const tab = event.target instanceof Element ? event.target.closest(".tab[data-tab]") : null;
+            if (!tab) return;
+            setTab(tab.dataset.tab || "home");
+          });
+        };
+
+        document.body.dataset.activeTab = document.querySelector(".tab.active")?.dataset.tab || "home";
+        bindEarlyTabSwitching();
+      })();
+    </script>
 
     <section id="panel-home" class="tab-panel active" role="tabpanel" aria-labelledby="tab-home">
       <section class="panel hero">
@@ -37,13 +100,23 @@
 
           <a class="card" href="{{ library_tracker_url }}" target="_blank" rel="noopener noreferrer">
             <div class="card-title">Library Tracker</div>
-            <div class="card-sub">书影音游戏统计</div>
+            <div class="card-sub">书影音游戏条目统计</div>
+          </a>
+
+          <a class="card" href="{{ property_url }}" target="_blank" rel="noopener noreferrer">
+            <div class="card-title">Property Management</div>
+            <div class="card-sub">月度资产快照、收支记录与分析</div>
+          </a>
+
+          <a class="card" href="{{ journey_url }}" target="_blank" rel="noopener noreferrer">
+            <div class="card-title">Journey Archive</div>
+            <div class="card-sub">旅行计划、日程安排与资料归档</div>
           </a>
         </div>
       </section>
 
       <section class="panel quick-links">
-        <h3>快捷卡片</h3>
+        <h3>快捷跳转</h3>
         <div id="custom-card-grid" class="custom-card-grid">
           {%- set max_cards = 8 -%}
           {%- for i in range(max_cards) -%}
@@ -64,13 +137,74 @@
             {%- endif -%}
           {%- endfor -%}
         </div>
+        <script>
+          (() => {
+            const grid = document.getElementById("custom-card-grid");
+            if (!(grid instanceof HTMLElement) || grid.dataset.earlyLongPressBound === "1") return;
+            grid.dataset.earlyLongPressBound = "1";
+            Array.from(grid.children).forEach((node, index) => {
+              if (!(node instanceof HTMLElement)) return;
+              let timer = null;
+              let longPressed = false;
+
+              const clearPress = () => {
+                if (timer) {
+                  window.clearTimeout(timer);
+                  timer = null;
+                }
+              };
+
+              const openLater = () => {
+                longPressed = true;
+                window.__navDashboardBootstrap?.queueCardEdit?.(index);
+                const tryOpen = () => {
+                  if (typeof window.__navOpenCustomCardModal === "function") {
+                    window.__navOpenCustomCardModal(index);
+                    return true;
+                  }
+                  return false;
+                };
+                if (tryOpen()) return;
+                let retries = 0;
+                const intervalId = window.setInterval(() => {
+                  retries += 1;
+                  if (tryOpen() || retries >= 20) {
+                    window.clearInterval(intervalId);
+                  }
+                }, 150);
+              };
+
+              node.addEventListener("pointerdown", (event) => {
+                if (event.pointerType === "mouse" && event.button !== 0) return;
+                longPressed = false;
+                clearPress();
+                timer = window.setTimeout(openLater, 550);
+              });
+              ["pointerup", "pointerleave", "pointercancel"].forEach((eventName) => {
+                node.addEventListener(eventName, clearPress);
+              });
+              node.addEventListener("click", (event) => {
+                if (!longPressed) return;
+                event.preventDefault();
+                event.stopPropagation();
+                longPressed = false;
+              });
+            });
+          })();
+        </script>
       </section>
 
       <section class="panel notes">
         <h3>Information</h3>
+        <div
+          id="dashboard-information-notices"
+          class="information-notices"
+          data-library-url="{{ library_tracker_url | e }}"
+          data-property-url="{{ property_url | e }}"
+        >{{ dashboard_notifications_html | safe }}</div>
         <ul>
-          <li>导航页默认端口为 <code>8092</code>。链接默认跟随当前访问主机 IP 的对应端口，可通过环境变量覆盖。</li>
-          <li>当前 Agent 工具集：RAG 文档检索、媒体记录检索、知识图谱扩展、Media Wiki、TMDB、联网搜索</li>
+          <li>导航页默认端口为 <code>8092</code>。链接默认跟随当前访问主机 IP 对应端口，可通过环境变量覆盖。</li>
+          <li>当前 Agent 工具集：RAG 文档检索、媒体记录检索、知识图谱扩展、Media Wiki、TMDB、Bangumi、联网搜索</li>
         </ul>
       </section>
     </section>
@@ -80,14 +214,38 @@
         <aside id="agent-sidebar" class="sidebar">
           <div class="sidebar-head">
             <strong>历史会话</strong>
-            <button id="agent-toggle-sidebar" class="ghost sidebar-toggle" title="收起/展开">☰</button>
+            <button id="agent-toggle-sidebar" class="ghost sidebar-toggle" title="向左折叠侧边栏" aria-expanded="true">&lt;</button>
           </div>
-          <div class="sidebar-actions">
-            <button id="agent-new-session">新建</button>
-            <button id="agent-delete-session" class="ghost">删除</button>
+          <div class="sidebar-body">
+            <div class="sidebar-actions">
+              <button id="agent-new-session">新建</button>
+              <button id="agent-delete-session" class="ghost">删除</button>
+            </div>
+            <ul id="agent-session-list" class="list">{{ agent_sessions_html | safe }}</ul>
           </div>
-          <ul id="agent-session-list" class="list">{{ agent_sessions_html | safe }}</ul>
         </aside>
+
+        <script>
+          (() => {
+            const sessionList = document.getElementById("agent-session-list");
+            if (!sessionList) return;
+
+            if (sessionList.dataset.earlySessionBinding !== "1") {
+              sessionList.dataset.earlySessionBinding = "1";
+              sessionList.addEventListener("click", (event) => {
+                const item = event.target instanceof Element ? event.target.closest("[data-session-id]") : null;
+                if (!item) return;
+                const sessionId = String(item.getAttribute("data-session-id") || "").trim();
+                if (!sessionId) return;
+                window.__navDashboardBootstrap?.setPreferredSessionId?.(sessionId);
+                sessionList.querySelectorAll("[data-session-id]").forEach((node) => {
+                  const active = String(node.getAttribute("data-session-id") || "").trim() === sessionId;
+                  node.classList.toggle("active", active);
+                });
+              });
+            }
+          })();
+        </script>
 
         <div class="main-panel chat-layout">
           <div class="rag-head">
@@ -96,6 +254,7 @@
           </div>
 
           <div id="qa-messages" class="doc chat-box markdown-body"></div>
+          <script id="agent-sessions-data" type="application/json">{{ agent_sessions_json | safe }}</script>
 
           <div class="input-wrap">
             <textarea id="qa-input" placeholder="输入问题，Enter本地回答，Shift+Enter换行" autocomplete="off" spellcheck="false"></textarea>
@@ -121,8 +280,9 @@
           <div>
             <strong class="panel-heading">系统状态总览</strong>
             <div class="dashboard-meta-group">
-              <div id="dashboard-generated-at" class="dashboard-meta">{% if dashboard_prefill.get('generated_at') %}数据生成：{{ dashboard_prefill['generated_at'][:16] | e }}{% else %}等待加载...{% endif %}</div>
-              <div id="dashboard-deploy-time" class="dashboard-meta dashboard-deploy-meta">{% if dashboard_prefill.get('deployed_at') %}部署时间：{{ dashboard_prefill['deployed_at'] | e }}{% endif %}</div>
+              <div id="dashboard-generated-at" class="dashboard-meta">统计月份: {{ dashboard_prefill.get('month', '-') | e }} | 更新时间: {% if dashboard_prefill.get('generated_at') %}{{ dashboard_prefill['generated_at'][:16] | e }}{% else %}-{% endif %}</div>
+                <div class="dashboard-meta dashboard-deploy-meta"><span id="dashboard-deploy-time">{% if dashboard_prefill.get('deployed_at') %}部署时间: {{ dashboard_prefill.get('deployed_at', '')[:16] | e }}{% else %}部署时间: -{% endif %}</span><span id="dashboard-backup-time"> | {% if dashboard_prefill.get('data_backups', {}).get('latest_backup_at') %}最近备份: {{ dashboard_prefill.get('data_backups', {}).get('latest_backup_at', '')[:16] | e }}{% else %}最近备份: 暂无{% endif %}</span></div>
+              <div id="dashboard-load-status" class="dashboard-load-status{% if not dashboard_prefill.get('overview_status', {}).get('message') %} hidden{% endif %}" data-level="info">{{ dashboard_prefill.get('overview_status', {}).get('message', '') | e }}</div>
             </div>
           </div>
           <button id="dashboard-refresh" class="ghost">刷新统计</button>
@@ -130,17 +290,19 @@
 
         <div id="dashboard-grid" class="dashboard-grid">{{ dashboard_grid_html | safe }}</div>
 
-        <div class="stats-table-wrap dashboard-table-wrap">
+        <details class="stats-table-wrap dashboard-table-wrap dashboard-table-disclosure">
+          <summary class="dashboard-table-summary">阶段</summary>
           <table class="stats-table" id="dashboard-latency-table">
             {{ dashboard_latency_table_html | safe }}
           </table>
-        </div>
+        </details>
 
-        <div class="stats-table-wrap dashboard-table-wrap">
+        <details class="stats-table-wrap dashboard-table-wrap dashboard-table-disclosure">
+          <summary class="dashboard-table-summary">维度</summary>
           <table class="stats-table" id="dashboard-observability-table">
             {{ dashboard_observability_table_html | safe }}
           </table>
-        </div>
+        </details>
 
         <section class="dashboard-trace-panel panel-shell">
           <div class="dashboard-log-head dashboard-task-center-head">
@@ -156,23 +318,6 @@
           <div id="dashboard-trace-result" class="trace-result-empty">暂无 trace 数据</div>
         </section>
 
-        <section class="dashboard-task-center panel-shell">
-          <div class="dashboard-log-head dashboard-task-center-head">
-            <span>任务中心</span>
-            <div class="dashboard-task-toolbar">
-              <label class="dashboard-job-filter-label" for="dashboard-jobs-filter">任务筛选</label>
-              <select id="dashboard-jobs-filter" class="bm-testset-select">
-                <option value="active" selected>只看运行中</option>
-                <option value="all">看全部</option>
-              </select>
-              <button id="dashboard-jobs-refresh" class="ghost">刷新任务</button>
-            </div>
-          </div>
-          <div id="dashboard-jobs-list" class="dashboard-job-list">
-            {{ dashboard_jobs_html | safe }}
-          </div>
-        </section>
-
         <section class="dashboard-ticket-insights">
           <section class="panel-shell dashboard-ticket-summary-panel">
             <div class="dashboard-log-head">近几周 Ticket 概览</div>
@@ -183,7 +328,17 @@
           </section>
 
           <section class="panel-shell dashboard-ticket-trend-panel">
-            <div class="dashboard-log-head">Ticket 周趋势</div>
+            <div class="dashboard-log-head dashboard-ticket-trend-head">
+              <span>Ticket 趋势</span>
+              <label class="dashboard-ticket-trend-mode" for="dashboard-ticket-trend-mode">
+                <span>粒度</span>
+                <select id="dashboard-ticket-trend-mode" class="bm-testset-select">
+                  <option value="week" selected>周趋势</option>
+                  <option value="day">日趋势</option>
+                  <option value="month">月趋势</option>
+                </select>
+              </label>
+            </div>
             <div id="dashboard-ticket-trend-meta" class="dashboard-meta">{{ dashboard_ticket_trend_meta | e }}</div>
             <div id="dashboard-ticket-trend-chart" class="ticket-trend-chart">
               {{ dashboard_ticket_trend_html | safe }}
@@ -191,10 +346,24 @@
           </section>
         </section>
 
+        <section class="dashboard-task-center panel-shell">
+          <div class="dashboard-log-head dashboard-task-center-head">
+            <span>任务中心</span>
+            <div class="dashboard-task-toolbar">
+              <button id="dashboard-jobs-clear-history" class="ghost">清空历史</button>
+              <button id="dashboard-jobs-refresh" class="ghost">刷新任务</button>
+            </div>
+          </div>
+          <div id="dashboard-jobs-list" class="dashboard-task-center-grid">
+            {{ dashboard_jobs_html | safe }}
+          </div>
+        </section>
+
         <section class="dashboard-log-panel">
           <div class="dashboard-log-head">启动一致性检查日志</div>
           <pre id="dashboard-startup-logs" class="dashboard-log-window">{{ dashboard_startup_logs_text | e }}</pre>
         </section>
+
       </div>
     </section>
 
@@ -228,7 +397,7 @@
               {{ benchmark_case_set_options_html | safe }}
             </select>
           </label>
-          <div class="benchmark-section-label" style="margin-top:8px">每类 Query 条数</div>
+          <div class="benchmark-section-label" style="margin-top:8px">本次 Query 条数</div>
           <div class="benchmark-count-row">
             <label><input type="radio" name="bm-count" value="3" checked /> 3</label>
             <label><input type="radio" name="bm-count" value="5" /> 5</label>
@@ -263,74 +432,236 @@
           </select>
         </div>
 
-        <div class="stats-table-wrap">
-          <table class="stats-table" id="bm-history-table">
-            {{ benchmark_history_table_html | safe }}
-          </table>
-        </div>
-
-        <section class="panel-shell bm-case-trace-panel">
-          <div class="dashboard-log-head">
-            <span>当前最新单 Case Trace</span>
-            <button id="bm-case-trace-refresh" class="ghost" type="button">刷新当前最新</button>
-          </div>
-          <div id="bm-case-trace-meta" class="dashboard-meta">显示正在运行或最近一次 Benchmark 的最新 trace 详情</div>
-          <div id="bm-case-trace-list" class="bm-case-trace-list">
-            <div class="trace-result-empty">暂无 case trace 数据</div>
-          </div>
-        </section>
-
-        <section class="panel-shell bm-router-cls-panel">
-          <div class="dashboard-log-head bm-router-cls-head">
-            <span>Router 分类回归</span>
-            <div class="bm-router-cls-toolbar">
-              <span id="bm-router-cls-meta" class="dashboard-meta">对已知分类路径做一致性验证，不调用 LLM，秒级完成</span>
-              <button id="bm-router-cls-run" type="button">▶ 跑分类</button>
-            </div>
-          </div>
-          <div id="bm-router-cls-summary" class="bm-router-cls-summary hidden"></div>
-          <div id="bm-router-cls-table-wrap" class="stats-table-wrap hidden">
-            <table class="stats-table bm-router-cls-table" id="bm-router-cls-table">
-              <thead>
-                <tr>
-                  <th>Query</th>
-                  <th>期望 domain</th>
-                  <th>期望 arbitration</th>
-                  <th>实际 domain</th>
-                  <th>实际 arbitration</th>
-                  <th>结果</th>
-                  <th>备注</th>
-                </tr>
-              </thead>
-              <tbody id="bm-router-cls-tbody"></tbody>
+        <details class="dashboard-table-disclosure bm-panel-disclosure">
+          <summary class="dashboard-table-summary bm-panel-summary">
+            <span class="bm-panel-summary-copy">
+              <span>历史结果</span>
+              <small>默认收起，展开查看最近 Benchmark 历史表格</small>
+            </span>
+          </summary>
+          <div class="stats-table-wrap">
+            <table class="stats-table" id="bm-history-table">
+              {{ benchmark_history_table_html | safe }}
             </table>
           </div>
-        </section>
+        </details>
 
-        <section class="panel-shell bm-unit-tests-panel">
-          <div class="dashboard-log-head bm-unit-tests-head">
-            <span>单元 / 回归测试</span>
-            <div class="bm-unit-tests-toolbar">
-              <span id="bm-unit-tests-meta" class="dashboard-meta">在进程内运行 unittest 套件，无需调用 LLM，秒级完成</span>
-              <button id="bm-unit-tests-run" type="button">▶ 跑测试</button>
+        <details class="bm-quality-panel dashboard-table-disclosure bm-panel-disclosure">
+          <summary class="dashboard-table-summary bm-panel-summary">
+            <span class="bm-panel-summary-copy">
+              <span>终态质量与 Taxonomy Budget</span>
+              <small>最近一次包含当前模块的质量断言与 taxonomy 预算</small>
+            </span>
+          </summary>
+          <div class="bm-panel-body">
+            <div id="bm-quality-meta" class="dashboard-meta">显示最近一次包含当前模块的 Benchmark 的终态质量与 taxonomy 预算断言</div>
+            <div id="bm-quality-summary" class="bm-quality-summary">
+              <div class="trace-result-empty">暂无终态质量数据</div>
+            </div>
+            <div id="bm-quality-contract" class="dashboard-meta">最新 case contract 诊断将在这里显示</div>
+            <div class="stats-table-wrap">
+              <table class="stats-table bm-taxonomy-table" id="bm-taxonomy-table">
+                <tbody><tr><td colspan="8" style="text-align:center;color:#7a7f6f">暂无 taxonomy budget 数据</td></tr></tbody>
+              </table>
             </div>
           </div>
-          <div class="bm-unit-tests-suite-select">
-            <label class="benchmark-checkbox-label">
-              <input type="checkbox" class="bm-ut-suite" value="regression_router" checked> Router 回归
+        </details>
+
+        <details class="bm-case-trace-panel dashboard-table-disclosure bm-panel-disclosure">
+          <summary class="dashboard-table-summary bm-panel-summary">
+            <span class="bm-panel-summary-copy">
+              <span>当前最新单 Case Trace</span>
+              <small>显示正在运行或最近一次 Benchmark 的最新 trace 详情</small>
+            </span>
+          </summary>
+          <div class="bm-panel-body">
+            <div class="dashboard-log-head bm-panel-toolbar-head">
+              <span>当前最新单 Case Trace</span>
+              <button id="bm-case-trace-refresh" class="ghost" type="button">刷新当前最新</button>
+            </div>
+            <div id="bm-case-trace-meta" class="dashboard-meta">显示正在运行或最近一次 Benchmark 的最新 trace 详情</div>
+            <div id="bm-case-trace-list" class="bm-case-trace-list">
+              <div class="trace-result-empty">暂无 case trace 数据</div>
+            </div>
+          </div>
+        </details>
+
+        <details class="bm-router-cls-panel dashboard-table-disclosure bm-panel-disclosure">
+          <summary class="dashboard-table-summary bm-panel-summary">
+            <span class="bm-panel-summary-copy">
+              <span>Router 分类回归</span>
+              <small>默认收起，展开执行已知分类路径一致性验证</small>
+            </span>
+          </summary>
+          <div class="bm-panel-body">
+            <div class="dashboard-log-head bm-router-cls-head">
+              <span>Router 分类回归</span>
+              <div class="bm-router-cls-toolbar">
+                <span id="bm-router-cls-meta" class="dashboard-meta">已知分类路径一致性验证</span>
+                <button id="bm-router-cls-add" class="ghost" type="button">＋ 增加用例</button>
+                <button id="bm-router-cls-run" type="button">▶ 运行</button>
+              </div>
+            </div>
+            <div id="bm-router-cls-summary" class="bm-router-cls-summary hidden"></div>
+            <div id="bm-router-cls-table-wrap" class="stats-table-wrap">
+              <table class="stats-table bm-router-cls-table" id="bm-router-cls-table">
+                <thead>
+                  <tr>
+                    <th>Query</th>
+                    <th>期望 domain</th>
+                    <th>期望 arbitration</th>
+                    <th>实际 domain</th>
+                    <th>实际 arbitration</th>
+                    <th>结果</th>
+                    <th>备注</th>
+                    <th>操作</th>
+                  </tr>
+                </thead>
+                <tbody id="bm-router-cls-tbody"></tbody>
+              </table>
+            </div>
+          </div>
+        </details>
+
+        <details class="bm-unit-tests-panel dashboard-table-disclosure bm-panel-disclosure">
+          <summary class="dashboard-table-summary bm-panel-summary">
+            <span class="bm-panel-summary-copy">
+              <span>单元 / 回归测试</span>
+              <small>默认收起，展开选择 suite 并在进程内运行</small>
+            </span>
+          </summary>
+          <div class="bm-panel-body">
+            <div class="dashboard-log-head bm-unit-tests-head">
+              <span>单元 / 回归测试</span>
+              <div class="bm-unit-tests-toolbar">
+                <span id="bm-unit-tests-meta" class="dashboard-meta">进程内运行 unittest 套件</span>
+                <button id="bm-unit-tests-run" type="button">▶ 运行</button>
+              </div>
+            </div>
+            <div class="bm-unit-tests-suite-select">
+              <label class="benchmark-checkbox-label">
+                <input type="checkbox" class="bm-ut-suite" value="regression_router" checked> Router 回归
+              </label>
+              <label class="benchmark-checkbox-label">
+                <input type="checkbox" class="bm-ut-suite" value="post_retrieval" checked> PostRetrieval Policy
+              </label>
+              <label class="benchmark-checkbox-label">
+                <input type="checkbox" class="bm-ut-suite" value="answer" checked> Answer Policy
+              </label>
+              <label class="benchmark-checkbox-label">
+                <input type="checkbox" class="bm-ut-suite" value="agent_e2e" checked> Agent E2E Chain
+              </label>
+            </div>
+            <div id="bm-unit-tests-summary" class="bm-router-cls-summary hidden"></div>
+            <div id="bm-unit-tests-results" class="bm-unit-tests-results hidden"></div>
+          </div>
+        </details>
+      </div>
+    </section>
+
+    <section id="panel-authorization" class="panel tab-panel" role="tabpanel" aria-labelledby="tab-authorization">
+      <div class="stats-layout authorization-layout">
+        <section class="panel-shell authorization-hero-shell">
+          <div class="stats-toolbar">
+            <div>
+              <strong class="panel-heading">Authorization</strong>
+              <div id="authorization-meta" class="dashboard-meta">进入此页需要重新输入管理员密码。</div>
+            </div>
+            <button id="authorization-refresh-btn" class="ghost" type="button">刷新</button>
+          </div>
+        </section>
+
+        <section id="authorization-reauth-shell" class="panel-shell authorization-reauth-shell hidden">
+          <div class="dashboard-log-head">管理员确认</div>
+          <div class="authorization-copy">每次进入 Authorization 都需要重新输入管理员密码，本机访问也不例外。</div>
+          <div class="authorization-reauth-row">
+            <label class="authorization-field authorization-field-password">
+              <span>Admin Password</span>
+              <input id="authorization-password-input" type="password" autocomplete="current-password" />
             </label>
-            <label class="benchmark-checkbox-label">
-              <input type="checkbox" class="bm-ut-suite" value="post_retrieval" checked> PostRetrieval Policy
+            <button id="authorization-unlock-btn" type="button">解锁</button>
+          </div>
+          <div id="authorization-reauth-error" class="dashboard-error hidden"></div>
+        </section>
+
+        <section id="authorization-bootstrap-shell" class="panel-shell hidden">
+          <div class="dashboard-log-head">初始化管理员</div>
+          <div class="authorization-copy">当前还没有管理员账号。请先创建首个管理员，后续局域网访问将基于该账号鉴权。</div>
+          <div class="authorization-bootstrap-grid">
+            <label class="authorization-field">
+              <span>Username</span>
+              <input id="authorization-bootstrap-username" type="text" autocomplete="username" value="admin" />
             </label>
-            <label class="benchmark-checkbox-label">
-              <input type="checkbox" class="bm-ut-suite" value="answer" checked> Answer Policy
-            </label>
-            <label class="benchmark-checkbox-label">
-              <input type="checkbox" class="bm-ut-suite" value="agent_e2e" checked> Agent E2E Chain
+            <label class="authorization-field">
+              <span>Password</span>
+              <input id="authorization-bootstrap-password" type="password" autocomplete="new-password" />
             </label>
           </div>
-          <div id="bm-unit-tests-summary" class="bm-router-cls-summary hidden"></div>
-          <div id="bm-unit-tests-results" class="bm-unit-tests-results hidden"></div>
+          <div class="authorization-form-actions">
+            <button id="authorization-bootstrap-btn" type="button">创建管理员</button>
+          </div>
+          <div id="authorization-bootstrap-error" class="dashboard-error hidden"></div>
+        </section>
+
+        <section id="authorization-admin-shell" class="panel-shell hidden">
+          <div class="dashboard-log-head authorization-admin-head">
+            <span>账号与权限</span>
+            <span id="authorization-session-meta" class="dashboard-meta">已解锁</span>
+          </div>
+
+          <section class="authorization-card authorization-create-card" style="margin-top:14px;">
+            <h3>数据备份与恢复</h3>
+            <div id="data-backup-meta" class="dashboard-meta">最近备份: -</div>
+            <div class="dashboard-meta">当前覆盖主数据: library_tracker、property、journey、ai_conversations_summary 文档、nav_dashboard tickets。</div>
+            <div class="dashboard-meta">系统会在每周一自动生成一次备份快照。</div>
+            <div class="dashboard-meta">缓存、向量索引与 RAG 会话历史默认不包含在主数据备份内。</div>
+            <div style="display:flex;gap:10px;flex-wrap:wrap;margin-top:12px;">
+              <button id="data-backup-export-btn" type="button">导出数据包</button>
+              <button id="data-backup-create-btn" type="button">创建备份快照</button>
+              <button id="data-backup-restore-btn" type="button" class="ghost">恢复备份</button>
+            </div>
+            <div id="data-backup-summary" class="dashboard-meta" style="margin-top:12px;"></div>
+            <input id="data-backup-restore-input" type="file" accept="application/json,.json,application/zip,.zip" hidden />
+          </section>
+
+          <div class="authorization-grid">
+            <section class="authorization-card authorization-create-card">
+              <h3>新增账号</h3>
+              <div class="authorization-form-grid">
+                <label class="authorization-field">
+                  <span>Username</span>
+                  <input id="authorization-create-username" type="text" autocomplete="username" />
+                </label>
+                <label class="authorization-field">
+                  <span>Password</span>
+                  <input id="authorization-create-password" type="password" autocomplete="new-password" />
+                </label>
+                <label class="authorization-field">
+                  <span>Role</span>
+                  <select id="authorization-create-role">
+                    <option value="user">user</option>
+                    <option value="admin">admin</option>
+                  </select>
+                </label>
+                <label class="authorization-check inline">
+                  <input id="authorization-create-active" type="checkbox" checked />
+                  <span>启用账号</span>
+                </label>
+              </div>
+              <div class="authorization-apps-block">
+                <div class="authorization-section-label">应用权限</div>
+                <div id="authorization-create-apps" class="authorization-apps-grid"></div>
+              </div>
+              <div class="authorization-form-actions">
+                <button id="authorization-create-btn" type="button">创建账号</button>
+              </div>
+            </section>
+
+            <section class="authorization-card authorization-users-card">
+              <h3>现有账号</h3>
+              <div id="authorization-users-list" class="authorization-users-list"></div>
+            </section>
+          </div>
         </section>
       </div>
     </section>
@@ -345,9 +676,9 @@
             </div>
             <div class="tickets-toolbar-actions">
               <button id="tickets-refresh-btn" class="ghost" type="button">刷新</button>
-              <button id="tickets-new-btn" class="ghost" type="button">新建空白</button>
-              <button id="tickets-ai-draft-btn" type="button">AI 生成草稿</button>
-              <button id="tickets-save-btn" type="button">保存 Ticket</button>
+              <button id="tickets-ai-draft-btn" class="ghost" type="button">AI 生成草稿</button>
+              <button id="tickets-new-btn" class="button" type="button">新建空白</button>
+              <button id="tickets-save-btn" class="button" type="button">保存 Ticket</button>
               <button id="tickets-delete-btn" class="ghost danger-action" type="button" disabled>删除 Ticket</button>
             </div>
           </div>
@@ -360,7 +691,7 @@
             <label class="tickets-field compact">
               <span>Status</span>
               <select id="tickets-status-filter">
-                <option value="non_closed">非关闭</option>
+                <option value="non_closed" selected>非关闭</option>
                 <option value="all">全部</option>
               </select>
             </label>
@@ -384,17 +715,17 @@
             </label>
             <label class="tickets-field compact tickets-date-field">
               <span>From</span>
-              <input id="tickets-created-from" type="date" />
+              <input id="tickets-created-from" type="date" value="{{ tickets_created_from_value }}" />
             </label>
             <label class="tickets-field compact tickets-date-field">
               <span>To</span>
-              <input id="tickets-created-to" type="date" />
+              <input id="tickets-created-to" type="date" value="{{ tickets_created_to_value }}" />
             </label>
           </div>
         </section>
 
-        <div id="tickets-main-grid" class="tickets-main-grid">
-          <section id="tickets-list-shell" class="panel-shell tickets-list-shell">
+        <div id="tickets-main-grid" class="tickets-main-grid core-list-detail-shell">
+          <section id="tickets-list-shell" class="panel-shell tickets-list-shell core-list-pane">
             <div class="dashboard-log-head tickets-list-head">
               <span>Ticket 列表</span>
               <div class="tickets-list-head-actions">
@@ -407,7 +738,7 @@
             </div>
           </section>
 
-          <section id="tickets-detail-shell" class="panel-shell tickets-detail-shell">
+          <section id="tickets-detail-shell" class="panel-shell tickets-detail-shell core-detail-pane">
             <div class="dashboard-log-head tickets-detail-head">
               <span>Ticket 详情</span>
               <div id="tickets-detail-meta" class="dashboard-meta">可先用 trace_id 生成草稿，再人工编辑更新字段</div>
@@ -627,7 +958,7 @@
 
   <div id="ticket-delete-modal" class="card-modal hidden" aria-hidden="true">
     <div class="card-modal-backdrop" data-role="ticket-delete-backdrop"></div>
-    <div class="card-modal-panel ticket-delete-panel" role="dialog" aria-modal="true" aria-label="删除 Ticket">
+    <div class="card-modal-panel ticket-delete-panel core-review-modal-panel" role="dialog" aria-modal="true" aria-label="删除 Ticket">
       <div class="card-modal-head">
         <h3>删除 Ticket</h3>
         <div class="dashboard-meta" id="ticket-delete-meta"></div>
@@ -646,6 +977,25 @@
       </div>
     </div>
   </div>
+
+    <div id="dashboard-job-context-menu" class="dashboard-job-context-menu hidden" role="menu" aria-hidden="true">
+      <button id="dashboard-job-context-delete" class="dashboard-job-context-item" type="button" role="menuitem">删除任务</button>
+    </div>
+
+    <div id="task-delete-modal" class="card-modal hidden" aria-hidden="true">
+      <div class="card-modal-backdrop" data-role="task-delete-backdrop"></div>
+      <div class="card-modal-panel task-delete-panel" role="dialog" aria-modal="true" aria-label="删除任务">
+        <div class="card-modal-head">
+          <h3>删除任务</h3>
+          <div class="dashboard-meta" id="task-delete-meta"></div>
+        </div>
+        <p id="task-delete-hint" class="task-delete-hint">删除后会从任务历史中移除该条目。</p>
+        <div class="card-modal-actions">
+          <button id="task-delete-confirm-btn" type="button">确认删除</button>
+          <button id="task-delete-cancel-btn" type="button" class="ghost">取消</button>
+        </div>
+      </div>
+    </div>
 
   <div id="session-rename-modal" class="card-modal hidden" aria-hidden="true">
     <div class="card-modal-backdrop" data-role="session-rename-backdrop"></div>
@@ -681,7 +1031,7 @@
 
   <div id="trace-modal" class="card-modal hidden" aria-hidden="true">
     <div class="card-modal-backdrop" data-role="trace-backdrop"></div>
-    <div class="card-modal-panel" role="dialog" aria-modal="true" aria-label="Trace 详情">
+    <div class="card-modal-panel core-review-modal-panel core-review-modal-panel-wide" role="dialog" aria-modal="true" aria-label="Trace 详情">
       <div class="card-modal-head">
         <h3>Trace 详情</h3>
         <div class="dashboard-meta" id="trace-modal-meta"></div>
@@ -691,6 +1041,28 @@
       <div class="card-modal-actions">
         <button id="trace-modal-export-btn">导出 TXT</button>
         <button id="trace-modal-close-btn" class="ghost">关闭</button>
+      </div>
+    </div>
+  </div>
+
+  <div id="library-alias-modal" class="card-modal hidden" aria-hidden="true">
+    <div class="card-modal-backdrop" data-role="library-alias-backdrop"></div>
+    <div class="card-modal-panel library-alias-modal-panel core-review-modal-panel core-review-modal-panel-wide" role="dialog" aria-modal="true" aria-label="待审核媒体映射">
+      <div class="card-modal-head alias-proposal-modal-head">
+        <div>
+          <h3>Alias Proposal Review</h3>
+          <div class="alias-proposal-modal-subcopy">新增/修改后的 proposal 会 best effort 异步生成，不影响条目保存。</div>
+        </div>
+        <div class="alias-proposal-modal-stats" id="library-alias-modal-meta"></div>
+      </div>
+      <div id="library-alias-review-list" class="alias-proposal-review-list"></div>
+      <div class="library-alias-pagination">
+        <button id="library-alias-page-prev" type="button" class="ghost">上一页</button>
+        <div id="library-alias-page-info" class="dashboard-meta">1 / 1</div>
+        <button id="library-alias-page-next" type="button" class="ghost">下一页</button>
+      </div>
+      <div class="card-modal-actions">
+        <button id="library-alias-close-btn" type="button" class="ghost">关闭</button>
       </div>
     </div>
   </div>
@@ -746,6 +1118,79 @@
     </div>
   </div>
 
+  <div id="bm-router-cls-modal" class="card-modal hidden" aria-hidden="true">
+    <div class="card-modal-backdrop" data-role="bm-router-cls-backdrop"></div>
+    <div class="card-modal-panel bm-router-cls-modal-panel" role="dialog" aria-modal="true" aria-label="编辑 Router 分类回归用例">
+      <div class="card-modal-head">
+        <h3 id="bm-router-cls-modal-title">新增 Router 分类用例</h3>
+        <div id="bm-router-cls-modal-meta" class="dashboard-meta">保存后会进入基准回归用例库，运行按钮会直接使用这里的列表。</div>
+      </div>
+      <div class="bm-router-cls-form-grid">
+        <label class="bm-router-cls-form-span2">通过 trace_id 导入
+          <div class="bm-router-cls-import-row">
+            <input id="bm-router-cls-trace-id" type="text" autocomplete="off" spellcheck="false" placeholder="例如：trace_xxx，自动填充 query 和可推断的 mock 信号" />
+            <button id="bm-router-cls-import" type="button" class="ghost">导入</button>
+          </div>
+        </label>
+        <label class="bm-router-cls-form-span2">Query
+          <textarea id="bm-router-cls-query" rows="3" spellcheck="false" placeholder="例如：机器学习在电影推荐系统里的应用"></textarea>
+        </label>
+        <label>期望 domain
+          <select id="bm-router-cls-expected-domain">
+            <option value="tech">tech</option>
+            <option value="media">media</option>
+            <option value="general">general</option>
+          </select>
+        </label>
+        <label>期望 arbitration
+          <input id="bm-router-cls-expected-arbitration" type="text" autocomplete="off" spellcheck="false" placeholder="单值或用 | 分隔多个候选" />
+        </label>
+        <label class="bm-router-cls-form-span2">备注
+          <textarea id="bm-router-cls-note" rows="2" spellcheck="false" placeholder="记录这个 case 覆盖的规则或来源"></textarea>
+        </label>
+      </div>
+      <details class="bm-router-cls-advanced">
+        <summary>高级 mock 信号</summary>
+        <div class="bm-router-cls-form-grid">
+          <label>mock label
+            <select id="bm-router-cls-mock-label">
+              <option value="">自动推断</option>
+              <option value="TECH">TECH</option>
+              <option value="MEDIA">MEDIA</option>
+              <option value="OTHER">OTHER</option>
+            </select>
+          </label>
+          <label>mock domain
+            <select id="bm-router-cls-mock-domain">
+              <option value="">自动推断</option>
+              <option value="tech">tech</option>
+              <option value="media">media</option>
+              <option value="general">general</option>
+            </select>
+          </label>
+          <label>mock lookup_mode
+            <select id="bm-router-cls-mock-lookup-mode">
+              <option value="">自动推断</option>
+              <option value="general_lookup">general_lookup</option>
+              <option value="entity_lookup">entity_lookup</option>
+              <option value="concept_lookup">concept_lookup</option>
+              <option value="filter_search">filter_search</option>
+            </select>
+          </label>
+          <label class="bm-router-cls-form-span2">mock entities
+            <input id="bm-router-cls-mock-entities" type="text" autocomplete="off" spellcheck="false" placeholder="多个实体可用 | 或 , 分隔，例如：电影推荐系统" />
+          </label>
+        </div>
+      </details>
+      <div class="bm-router-cls-last-run" id="bm-router-cls-last-run-box"></div>
+      <div class="card-modal-actions">
+        <button id="bm-router-cls-save" type="button">保存</button>
+        <button id="bm-router-cls-delete" type="button" class="ghost hidden">删除</button>
+        <button id="bm-router-cls-cancel" type="button" class="ghost">取消</button>
+      </div>
+    </div>
+  </div>
+
   <script id="custom-cards-data" type="application/json">{{ custom_cards_json | safe }}</script>
   <script id="dashboard-prefill-data" type="application/json">{{ dashboard_prefill_json | safe }}</script>
   <script id="tickets-prefill-data" type="application/json">{{ tickets_prefill_json | safe }}</script>
@@ -755,51 +1200,61 @@
     <div class="card-modal-backdrop" data-role="usage-edit-backdrop"></div>
     <div class="card-modal-panel" role="dialog" aria-modal="true" aria-label="调整本月用量">
       <div class="card-modal-head">
-        <h3>调整本月用量</h3>
+        <h3>API 调用与最近 Trace</h3>
+        <div class="dashboard-meta" id="usage-modal-meta"></div>
       </div>
-      <label>本月 Web Search 调用数
-        <input id="usage-web-input" type="number" min="0" step="1" placeholder="请输入数值" />
+      <div class="usage-edit-grid">
+        <label>本月 Tavily 调用数
+          <input id="usage-web-input" type="number" min="0" step="1" placeholder="请输入数值" />
+        </label>
+        <label>本月 DeepSeek 调用数
+          <input id="usage-deepseek-input" type="number" min="0" step="1" placeholder="请输入数值" />
+        </label>
+      </div>
+      <p class="usage-modal-hint">上面是本月绝对值。下面展示最近 7 天调用明细，超过 7 天会自动过期。</p>
+      <label>明细筛选
+        <select id="usage-provider-select">
+          <option value="all">全部</option>
+          <option value="web_search">Tavily</option>
+          <option value="deepseek">DeepSeek</option>
+        </select>
       </label>
-      <label>本月 DeepSeek 调用数
-        <input id="usage-deepseek-input" type="number" min="0" step="1" placeholder="请输入数值" />
-      </label>
-      <p class="usage-modal-hint">直接设置本月已使用量（绝对值，不是增量）</p>
+      <ul id="usage-trace-list" class="warnings-list"></ul>
       <div class="card-modal-actions">
+        <button id="usage-export-btn" type="button" class="ghost">导出 CSV</button>
+        <button id="usage-clear-btn" type="button">清空列表</button>
         <button id="usage-save-btn" type="button">保存</button>
         <button id="usage-cancel-btn" type="button" class="ghost">取消</button>
       </div>
     </div>
   </div>
 
-  <script>
-    (() => {
-      const setTab = (name) => {
-        const target = String(name || "home");
-        document.querySelectorAll(".tab").forEach((tab) => {
-          const active = tab.dataset.tab === target;
-          tab.classList.toggle("active", active);
-          tab.setAttribute("aria-selected", String(active));
-        });
-        document.querySelectorAll(".tab-panel").forEach((panel) => {
-          panel.classList.toggle("active", panel.id === `panel-${target}`);
-        });
-      };
-
-      const bindEarlyTabSwitching = () => {
-        const tabsHost = document.querySelector(".tabs");
-        if (!tabsHost || tabsHost.dataset.earlyTabsBound === "1") return;
-        tabsHost.dataset.earlyTabsBound = "1";
-        tabsHost.addEventListener("click", (event) => {
-          const tab = event.target instanceof Element ? event.target.closest(".tab[data-tab]") : null;
-          if (!tab) return;
-          setTab(tab.dataset.tab || "home");
-        });
-      };
-
-      bindEarlyTabSwitching();
-    })();
-  </script>
-
+  <script src="/core-static/ui_bootstrap.js?v={{ core_ui_bootstrap_version }}" defer></script>
+  <script src="/core-static/app_shell.js?v={{ core_app_shell_version }}" defer></script>
+  <script src="https://cdn.jsdelivr.net/npm/echarts@5/dist/echarts.min.js" defer></script>
+  <script src="/static/dashboard_overview_meta.js?v={{ js_version }}" defer></script>
+  <script src="/static/shared/dom.js?v={{ js_version }}" defer></script>
+  <script src="/static/shared/modal.js?v={{ js_version }}" defer></script>
+  <script src="/static/shared/api.js?v={{ js_version }}" defer></script>
+  <script src="/static/shared/markdown.js?v={{ js_version }}" defer></script>
+  <script src="/static/shared/trace.js?v={{ js_version }}" defer></script>
+  <script src="/static/dashboard_overview_bootstrap.js?v={{ js_version }}" defer></script>
+  <script src="/static/dashboard_trace.js?v={{ js_version }}" defer></script>
+  <script src="/static/dashboard_trace_bootstrap.js?v={{ js_version }}" defer></script>
+  <script src="/static/dashboard_custom_cards_bootstrap.js?v={{ js_version }}" defer></script>
+  <script src="/static/dashboard_usage_bootstrap.js?v={{ js_version }}" defer></script>
+  <script src="/static/dashboard_modal_bootstrap.js?v={{ js_version }}" defer></script>
+  <script src="/static/dashboard_task_center_bootstrap.js?v={{ js_version }}" defer></script>
+  <script src="/static/dashboard_handlers_bootstrap.js?v={{ js_version }}" defer></script>
+  <script src="/static/agent_sessions_bootstrap.js?v={{ js_version }}" defer></script>
+  <script src="/static/agent_session_ui_bootstrap.js?v={{ js_version }}" defer></script>
+  <script src="/static/dashboard_library_alias.js?v={{ js_version }}" defer></script>
+  <script src="/static/dashboard_tickets.js?v={{ js_version }}" defer></script>
+  <script src="/static/dashboard_tickets_bootstrap.js?v={{ js_version }}" defer></script>
+  <script src="/static/dashboard_benchmark.js?v={{ js_version }}" defer></script>
+  <script src="/static/dashboard_benchmark_bootstrap.js?v={{ js_version }}" defer></script>
+  <script src="/static/dashboard_data_admin.js?v={{ js_version }}" defer></script>
+  <script src="/static/dashboard_data_admin_bootstrap.js?v={{ js_version }}" defer></script>
   <script src="/static/app.js?v={{ js_version }}" defer></script>
 </body>
 </html>

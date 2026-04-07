@@ -29,10 +29,10 @@ if str(_REPO_ROOT) not in sys.path:
 
 from tests.conftest import svc, _decide, _llm_stub, _make_runtime
 
-from nav_dashboard.web.services.routing_policy import RoutingPolicy
-from nav_dashboard.web.services.post_retrieval_policy import PostRetrievalPolicy, PostRetrievalOutcome
-from nav_dashboard.web.services.answer_policy import AnswerPolicy, AnswerStrategy
-from nav_dashboard.web.services.agent_types import (
+from nav_dashboard.web.services.planner.routing_policy import RoutingPolicy
+from nav_dashboard.web.services.retrieval.post_retrieval_policy import PostRetrievalPolicy, PostRetrievalOutcome
+from nav_dashboard.web.services.answer.answer_policy import AnswerPolicy, AnswerStrategy
+from nav_dashboard.web.services.agent.agent_types import (
     TOOL_QUERY_DOC_RAG,
     TOOL_QUERY_MEDIA,
     TOOL_SEARCH_TMDB,

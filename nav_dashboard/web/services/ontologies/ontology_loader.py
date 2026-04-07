@@ -272,7 +272,7 @@ def validate_ontology_payload(domain: str, payload: dict[str, Any]) -> None:
     """Public wrapper around ``_validate``.
 
     Raises ``ValueError`` when *payload* violates the schema for *domain*.
-    Used by external tools (e.g. ``scripts/ontology_review.py``) to share the
+    Used by external tools (e.g. ``scripts/data_maintenance/ontology_review.py``) to share the
     same validation logic as the runtime loader.
     """
     _validate(domain, payload)

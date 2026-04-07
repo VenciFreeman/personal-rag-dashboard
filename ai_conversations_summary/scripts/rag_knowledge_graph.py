@@ -12,7 +12,9 @@ WORKSPACE_ROOT = Path(__file__).resolve().parent.parent.parent
 if str(WORKSPACE_ROOT) not in sys.path:
     sys.path.insert(0, str(WORKSPACE_ROOT))
 
-from core_service.config import get_settings
+from ai_conversations_summary.runtime_paths import VECTOR_DB_DIR
+from core_service import get_settings
+from core_service.runtime_data import shared_vector_db_dir
 
 GRAPH_FILE_NAME = "knowledge_graph_rag.json"
 MAX_TAGS_PER_DOC = 12
@@ -476,7 +478,7 @@ def _parse_args() -> argparse.Namespace:
     root = Path(__file__).resolve().parent.parent
     default_index_dir = os.getenv(
         "AI_SUMMARY_VECTOR_DB_DIR",
-        str(root.parent / "core_service" / "data" / "vector_db"),
+        str(VECTOR_DB_DIR),
     )
     parser.add_argument("--index-dir", default=default_index_dir)
     parser.add_argument("--sync-missing", action="store_true")

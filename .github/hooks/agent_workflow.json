@@ -1,0 +1,49 @@
+{
+	"hooks": {
+		"SessionStart": [
+			{
+				"type": "command",
+				"command": "python scripts/dev/agent_workflow_hook.py",
+				"windows": ".\\.venv\\Scripts\\python.exe .\\scripts\\dev\\agent_workflow_hook.py",
+				"cwd": ".",
+				"timeout": 20
+			}
+		],
+		"UserPromptSubmit": [
+			{
+				"type": "command",
+				"command": "python scripts/dev/agent_workflow_hook.py",
+				"windows": ".\\.venv\\Scripts\\python.exe .\\scripts\\dev\\agent_workflow_hook.py",
+				"cwd": ".",
+				"timeout": 20
+			}
+		],
+		"PreToolUse": [
+			{
+				"type": "command",
+				"command": "python scripts/dev/agent_workflow_hook.py",
+				"windows": ".\\.venv\\Scripts\\python.exe .\\scripts\\dev\\agent_workflow_hook.py",
+				"cwd": ".",
+				"timeout": 20
+			}
+		],
+		"PostToolUse": [
+			{
+				"type": "command",
+				"command": "python scripts/dev/agent_workflow_hook.py",
+				"windows": ".\\.venv\\Scripts\\python.exe .\\scripts\\dev\\agent_workflow_hook.py",
+				"cwd": ".",
+				"timeout": 120
+			}
+		],
+		"Stop": [
+			{
+				"type": "command",
+				"command": "python scripts/dev/agent_workflow_hook.py",
+				"windows": ".\\.venv\\Scripts\\python.exe .\\scripts\\dev\\agent_workflow_hook.py",
+				"cwd": ".",
+				"timeout": 20
+			}
+		]
+	}
+}

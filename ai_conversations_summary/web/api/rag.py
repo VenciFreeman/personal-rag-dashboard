@@ -6,8 +6,8 @@ from fastapi import APIRouter, HTTPException, Request
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, Field
 
-from core_service.chat_feedback_store import append_feedback
-from web.services import rag_service
+from core_service.feedback import append_feedback
+from web.services import dashboard_service, rag_service
 from web.services.rag_service import RAGTaskAborted
 
 router = APIRouter(prefix="/api/rag", tags=["rag"])
@@ -64,6 +64,16 @@ def get_rag_config() -> dict[str, str]:
 @router.get("/sessions")
 def get_sessions() -> dict[str, object]:
     return {"sessions": rag_service.list_sessions_summary()}
+
+
+@router.get("/dashboard/overview")
+def get_dashboard_overview() -> dict[str, object]:
+    return dashboard_service.get_dashboard_overview()
+
+
+@router.get("/dashboard/missing-queries")
+def get_dashboard_missing_queries(days: int = 30, limit: int = 200, source: str = "") -> dict[str, object]:
+    return {"items": dashboard_service.list_missing_queries(days=days, limit=limit, source=source)}
 
 
 @router.get("/sessions/{session_id}")

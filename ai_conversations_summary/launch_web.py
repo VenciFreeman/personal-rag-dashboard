@@ -19,6 +19,13 @@ import webbrowser
 from pathlib import Path
 
 
+def _prepend_workspace_root() -> None:
+    workspace_root = Path(__file__).resolve().parent.parent
+    workspace_root_str = str(workspace_root)
+    if workspace_root_str not in sys.path:
+        sys.path.insert(0, workspace_root_str)
+
+
 def _load_workspace_env_local() -> None:
     """Load root env.local.ps1 and override stale inherited env vars for launcher use."""
     root = Path(__file__).resolve().parent.parent
@@ -67,6 +74,7 @@ def _maybe_reexec_into_venv() -> None:
 
 
 _maybe_reexec_into_venv()
+_prepend_workspace_root()
 _load_workspace_env_local()
 
 from web.config import HOST, PORT

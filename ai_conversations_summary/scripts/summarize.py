@@ -19,9 +19,17 @@ WORKSPACE_ROOT = Path(__file__).resolve().parent.parent.parent
 if str(WORKSPACE_ROOT) not in sys.path:
 	sys.path.insert(0, str(WORKSPACE_ROOT))
 
-from api_config import API_BASE_URL, API_KEY, MODEL, TIMEOUT
 try:
-	from core_service.llm_client import chat_completion_with_retry
+	from ai_conversations_summary.scripts.api_config import API_BASE_URL, API_KEY, MODEL, TIMEOUT
+except ImportError:
+	try:
+		from scripts.api_config import API_BASE_URL, API_KEY, MODEL, TIMEOUT
+	except ImportError:
+		from api_config import API_BASE_URL, API_KEY, MODEL, TIMEOUT  # type: ignore[no-redef]
+from core_service.observability import record_usage as notify_nav_dashboard_usage
+from ai_conversations_summary.runtime_paths import EXTRACTED_DIR, SUMMARIZE_DIR
+try:
+	from core_service.llm import chat_completion_with_retry
 except ModuleNotFoundError:
 	def chat_completion_with_retry(
 		*,
@@ -77,13 +85,14 @@ INVALID_FILENAME_CHARS_RE = re.compile(r'[<>:"/\\|?*\x00-\x1F]')
 MULTI_SPACE_RE = re.compile(r"\s+")
 FENCE_RE = re.compile(r"^```(?:markdown|md)?\s*\n([\s\S]*?)\n```\s*$", re.IGNORECASE)
 TITLE_LINE_RE = re.compile(r'^\s*>\s*-\s*\*\*title\*\*:\s*"?(.+?)"?\s*$', re.IGNORECASE)
+DATE_LINE_RE = re.compile(r'^(\s*>\s*-\s*\*\*date\*\*:\s*)"?([^"\n]+?)"?\s*$', re.IGNORECASE)
 FRONTMATTER_TITLE_RE = re.compile(r'^\s*title:\s*"?(.+?)"?\s*$', re.IGNORECASE)
 HEADING_RE = re.compile(r'^\s*#\s+(.+?)\s*$')
 UPDATED_AT_LINE_RE = re.compile(r'^\s*updated_at\s*:\s*(.+?)\s*$', re.IGNORECASE)
 DATE_RE = re.compile(r'(\d{4})-(\d{2})-(\d{2})')
 FILENAME_YYMMDD_RE = re.compile(r'^(\d{6})(?:[_-]|$)')
 FILENAME_YYYYMMDD_RE = re.compile(r'^(\d{8})(?:[_-]|$)')
-FILENAME_YYYY_MM_DD_RE = re.compile(r'^(\d{4})[-_](\d{2})[-_](\d{2})(?:[-_]\d{4,6})?$')
+FILENAME_YYYY_MM_DD_RE = re.compile(r'^(\d{4})[-_](\d{2})[-_](\d{2})(?:$|[-_].*)')
 
 
 def configure_stdio_utf8() -> None:
@@ -104,19 +113,18 @@ def parse_args() -> argparse.Namespace:
 	# Keep parameters CLI-friendly so GUI and terminal use the same behavior.
 	script_dir = Path(__file__).resolve().parent
 	root_dir = script_dir.parent
-	data_dir = root_dir / "data"
 
 	parser = argparse.ArgumentParser(
 		description="Summarize extracted documents with a fixed prompt via DeepSeek API."
 	)
 	parser.add_argument(
 		"--input-dir",
-		default=str(data_dir / "extracted_dir"),
+		default=str(EXTRACTED_DIR),
 		help="Input directory that contains extracted source files.",
 	)
 	parser.add_argument(
 		"--output-dir",
-		default=str(data_dir / "summarize_dir"),
+		default=str(SUMMARIZE_DIR),
 		help="Output directory for markdown summary files.",
 	)
 	parser.add_argument(
@@ -177,10 +185,22 @@ def request_chat_completion(
 	model: str,
 	system_prompt: str,
 	user_content: str,
+	source_filename_date: str,
+	source_filename: str,
 	timeout: int,
 	max_retries: int,
 	retry_delay: float,
 ) -> str:
+	date_instruction = (
+		"You must use the provided source_filename_date as the metadata date in the top quote block. "
+		"Do not infer or change it."
+	)
+	enriched_user_content = (
+		f"source_filename: {source_filename}\n"
+		f"source_filename_date: {source_filename_date}\n"
+		f"date_rule: {date_instruction}\n\n"
+		f"{user_content}"
+	)
 	return chat_completion_with_retry(
 		api_key=api_key,
 		base_url=base_url,
@@ -188,7 +208,7 @@ def request_chat_completion(
 		timeout=timeout,
 		messages=[
 			{"role": "system", "content": system_prompt},
-			{"role": "user", "content": user_content},
+			{"role": "user", "content": enriched_user_content},
 		],
 		temperature=0.2,
 		max_retries=max_retries,
@@ -201,37 +221,6 @@ def _is_deepseek_url(url: str) -> bool:
 	return "api.deepseek.com" in value
 
 
-def _notify_nav_dashboard_monthly_usage(*, deepseek_delta: int) -> None:
-	deepseek_inc = max(0, int(deepseek_delta or 0))
-	if deepseek_inc <= 0:
-		return
-
-	base = (os.getenv("NAV_DASHBOARD_QUOTA_RECORD_URL", "") or "").strip().rstrip("/")
-	if not base:
-		base = "http://127.0.0.1:8092"
-	url = f"{base}/api/dashboard/usage/record"
-	payload = json.dumps(
-		{
-			"web_search_delta": 0,
-			"deepseek_delta": deepseek_inc,
-			"count_daily": False,
-		},
-		ensure_ascii=False,
-	).encode("utf-8")
-	req = urllib_request.Request(
-		url,
-		data=payload,
-		headers={"Content-Type": "application/json"},
-		method="POST",
-	)
-	try:
-		opener = urllib_request.build_opener(urllib_request.ProxyHandler({}))
-		with opener.open(req, timeout=3):
-			pass
-	except Exception:
-		pass
-
-
 def normalize_markdown(md_text: str) -> str:
 	# Some providers wrap markdown in fenced blocks; strip them for clean file output.
 	text = md_text.strip()
@@ -239,6 +228,37 @@ def normalize_markdown(md_text: str) -> str:
 	if matched:
 		return matched.group(1).strip()
 	return text
+
+
+def format_date_prefix_as_iso(date_prefix: str) -> str:
+	value = str(date_prefix or "").strip()
+	if not value:
+		return datetime.now().strftime("%Y-%m-%d")
+	if re.fullmatch(r"\d{6}", value):
+		return f"20{value[0:2]}-{value[2:4]}-{value[4:6]}"
+	if re.fullmatch(r"\d{8}", value):
+		# YYYYMMDD -> YYYY-MM-DD
+		return f"{value[0:4]}-{value[4:6]}-{value[6:8]}"
+	if re.fullmatch(r"\d{4}-\d{2}-\d{2}", value):
+		return value
+	raise ValueError(f"Unsupported date prefix format: {date_prefix}")
+
+
+def enforce_summary_date(markdown_text: str, summary_date: str) -> str:
+	lines = markdown_text.splitlines()
+	replaced = False
+	for index, line in enumerate(lines):
+		if DATE_LINE_RE.match(line):
+			lines[index] = f'> - **date**: "{summary_date}"'
+			replaced = True
+			break
+
+	if replaced:
+		return "\n".join(lines)
+
+	insert_at = 1 if lines and TITLE_LINE_RE.match(lines[0]) else 0
+	lines.insert(insert_at, f'> - **date**: "{summary_date}"')
+	return "\n".join(lines)
 
 
 def extract_title(markdown_text: str) -> str:
@@ -279,23 +299,25 @@ def _extract_date_prefix_from_filename(file_path: Path) -> str:
 
 	m6 = FILENAME_YYMMDD_RE.match(stem)
 	if m6:
+		# return raw 6-digit prefix (YYMMDD) to preserve original filename style
 		return m6.group(1)
 
 	m8 = FILENAME_YYYYMMDD_RE.match(stem)
 	if m8:
-		yyyymmdd = m8.group(1)
-		return f"{yyyymmdd[2:4]}{yyyymmdd[4:6]}{yyyymmdd[6:8]}"
+		# return raw 8-digit prefix (YYYYMMDD) so output filename keeps original date chunk
+		return m8.group(1)
 
 	m_dash = FILENAME_YYYY_MM_DD_RE.match(stem)
 	if m_dash:
+		# return the dashed ISO-like prefix (YYYY-MM-DD)
 		yyyy, mm, dd = m_dash.groups()
-		return f"{yyyy[2:]}{mm}{dd}"
+		return f"{yyyy}-{mm}-{dd}"
 
 	return ""
 
 
 def extract_date_prefix_from_source(file_path: Path, source_text: str) -> str:
-	# Prefer source filename date (manual corrections), fallback to `updated_at`, then today.
+	# Prefer source filename date so summary metadata stays deterministic.
 	from_name = _extract_date_prefix_from_filename(file_path)
 	if from_name:
 		return from_name
@@ -309,9 +331,9 @@ def extract_date_prefix_from_source(file_path: Path, source_text: str) -> str:
 		date_match = DATE_RE.search(raw_value)
 		if date_match:
 			yyyy, mm, dd = date_match.groups()
-			return f"{yyyy[2:]}{mm}{dd}"
+			return f"{yyyy}-{mm}-{dd}"
 
-	return datetime.now().strftime("%y%m%d")
+	return datetime.now().strftime("%Y-%m-%d")
 
 
 def build_output_path(output_dir: Path, title: str, date_prefix: str) -> Path:
@@ -382,7 +404,6 @@ def main() -> None:
 	output_dir.mkdir(parents=True, exist_ok=True)
 
 	success_count = 0
-	api_call_count = 0
 	failed_items: list[tuple[str, str]] = []
 	failure_log_path = Path(__file__).resolve().parent / "summarize_failed.log"
 	for file_path in files:
@@ -392,9 +413,9 @@ def main() -> None:
 			print(f"Skipped empty file: {file_path.name}")
 			continue
 		date_prefix = extract_date_prefix_from_source(file_path, source_text)
+		summary_date = format_date_prefix_as_iso(date_prefix)
 
 		print(f"Summarizing: {file_path.name}")
-		api_call_count += 1
 		try:
 			result_markdown = request_chat_completion(
 				base_url=args.api_url,
@@ -402,15 +423,33 @@ def main() -> None:
 				model=args.model,
 				system_prompt=system_prompt,
 				user_content=source_text,
+				source_filename_date=summary_date,
+				source_filename=file_path.name,
 				timeout=args.timeout,
 				max_retries=args.max_retries,
 				retry_delay=args.retry_delay,
 			)
+			if _is_deepseek_url(args.api_url):
+				notify_nav_dashboard_usage(
+					deepseek_delta=1,
+					count_daily=False,
+					events=[
+						{
+							"provider": "deepseek",
+							"feature": "ai_conversations_summary.batch_summarize",
+							"page": "conversation_summary",
+							"source": "ai_conversations_summary",
+							"message": file_path.stem,
+						}
+					],
+					background=False,
+				)
 		except Exception as exc:  # noqa: BLE001
 			print(f"Failed: {file_path.name} ({exc})")
 			failed_items.append((file_path.name, str(exc)))
 			continue
 		result_markdown = normalize_markdown(result_markdown)
+		result_markdown = enforce_summary_date(result_markdown, summary_date)
 
 		title = extract_title(result_markdown)
 		output_path = build_output_path(output_dir, title, date_prefix)
@@ -419,8 +458,6 @@ def main() -> None:
 		print(f"Written: {output_path.name}")
 
 	write_failure_log(failure_log_path, failed_items)
-	if _is_deepseek_url(args.api_url):
-		_notify_nav_dashboard_monthly_usage(deepseek_delta=api_call_count)
 	if failed_items:
 		print(f"Failed items log: {failure_log_path}")
 		print(f"Completed. Written summaries: {success_count}, Failed: {len(failed_items)}")

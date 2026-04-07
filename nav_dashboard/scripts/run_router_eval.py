@@ -10,7 +10,8 @@ WORKSPACE_ROOT = Path(__file__).resolve().parents[2]
 if str(WORKSPACE_ROOT) not in sys.path:
     sys.path.insert(0, str(WORKSPACE_ROOT))
 
-from nav_dashboard.web.services.agent_service import RoutingPolicy, _build_router_decision, _resolve_query_profile
+from nav_dashboard.web.services.agent.domain.router_service import _build_router_decision, _resolve_query_profile
+from nav_dashboard.web.services.planner.routing_policy import RoutingPolicy
 
 
 DEFAULT_CASES_PATH = WORKSPACE_ROOT / "nav_dashboard" / "data" / "evals" / "router_eval_cases.json"

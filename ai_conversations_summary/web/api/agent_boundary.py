@@ -6,13 +6,13 @@ from typing import Any
 from fastapi import APIRouter, HTTPException, Query
 from pydantic import BaseModel, Field
 
+from ai_conversations_summary.runtime_paths import VECTOR_DB_DIR
 from scripts.cache_db import get_web_cache, log_no_context_query
 from scripts.rag_knowledge_graph import expand_query_by_graph
 
 router = APIRouter(prefix="/api/agent-boundary", tags=["agent-boundary"])
 
-_AI_SUMMARY_ROOT = Path(__file__).resolve().parents[2]
-_DOC_GRAPH_DIR = _AI_SUMMARY_ROOT / "data" / "vector_db"
+_DOC_GRAPH_DIR = VECTOR_DB_DIR
 
 
 class GraphExpandRequest(BaseModel):

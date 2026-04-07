@@ -1,4 +1,5 @@
-# Core runtime dependencies (GUI + Web + RAG)
+# Core web + RAG runtime dependencies.
+# Recommended install target in this monorepo: ../.venv
 # Note: sentence-transformers will install torch and related wheels,
 # so first-time installation may take significantly longer.
 openai>=1.0.0
@@ -6,7 +7,6 @@ numpy
 faiss-cpu
 sentence-transformers
 transformers>=4.37.0
-tkcalendar
 fastapi
 uvicorn
 jinja2
@@ -15,14 +15,9 @@ langchain-tavily
 # Optional in this subproject, but useful in shared workspace where
 # nav_dashboard exposes image-upload form endpoints.
 python-multipart
+argon2-cffi
 
 # Optional vector backend
 # chromadb
 
-# Optional packaging
-# pyinstaller
-
-# Tip:
-# One-click setup scripts are available at:
-# - setup.bat (Windows)
-# - setup.sh (Linux/macOS)
+# Tip: workspace bootstrap is handled from the repository root.

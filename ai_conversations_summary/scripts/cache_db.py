@@ -7,7 +7,7 @@ Provides:
   get_web_cache()      — Module-level singleton for WebSearchCache
   log_no_context_query()  — Append to shared no_context_queries.jsonl
 
-Data root: <scripts>/../data/cache/  (= ai_conversations_summary/data/cache/)
+Data root: data/ai_conversations_summary/cache/
 """
 from __future__ import annotations
 
@@ -18,11 +18,9 @@ import struct
 import threading
 import time
 from datetime import datetime
-from pathlib import Path
 from typing import Any
 
-_SCRIPTS_DIR = Path(__file__).resolve().parent
-CACHE_DIR = _SCRIPTS_DIR.parent / "data" / "cache"
+from ai_conversations_summary.runtime_paths import CACHE_DIR
 
 EMBED_CACHE_PATH = CACHE_DIR / "embed_cache.db"
 WEB_CACHE_PATH = CACHE_DIR / "web_cache.db"

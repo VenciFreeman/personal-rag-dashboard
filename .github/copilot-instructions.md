@@ -1,9 +1,20 @@
-# Project Guidelines
+# Agent Bootstrap
 
-## Build And Run
+- Workflow entrypoint: `.github/README.md`
+- Rule library: `.github/AGENT_RULES.md`
+- Always classify the task as `debug`, `feature`, or `refactor`.
+- Only apply `GLOBAL RULES` plus the active task section from `.github/AGENT_RULES.md`.
+- Hooks in `.github/hooks/agent_workflow.json` enforce task declaration, debug ticket search before coding, architecture guards for hotspot files, and post-check gates after edits.
+
+## Architecture Guard
+- For router / policy / benchmark hotspots, do not patch by matching exact repro questions or other full user literals.
+- Promote the fix into shared parsing, routing, or policy helpers so nearby phrasings improve together.
+- When a hotspot file changes, update the nearest regression tests in the same session.
+
+## Environment
 - Use the root `.venv` for Python work in this workspace.
 - Main entrypoints are `nav_dashboard/launch_web.bat`, `ai_conversations_summary/launch_web.bat`, and `library_tracker/launch_web.bat`.
-- Ticket records are stored in `nav_dashboard/data/tickets.jsonl` using the schema implemented in `core_service/ticket_store.py`.
+- Ticket records are stored in `data/nav_dashboard/tickets/tickets.jsonl` using the schema implemented in `core_service/ticket_store.py`.
 
 ## Bug Ticket Sync
 - When your work discovers or fixes one or more concrete bugs, add exactly one `BUG-TICKET:` line per bug in your final response.

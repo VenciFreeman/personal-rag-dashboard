@@ -1,28 +1,35 @@
-# Python cache
-/web/__pycache__/
+﻿# nav_dashboard module .gitignore
+# Inherits from root .gitignore, this file adds module-specific rules
+
+# Python
 __pycache__/
 *.py[cod]
+*.pyo
+.pytest_cache/
 
-# Virtual envs
+# Virtual environment
 .venv/
 venv/
 
-# Runtime state
-/data/agent_quota.json
-/data/agent_sessions/**
-
-# Editor / OS
+# IDE
 .vscode/
 .idea/
-.DS_Store
-Thumbs.db
-data/agent_metrics.json
-data/benchmark/results.json
-data/agent_quota_history.json
-data/agent_quota_history.json
-data/agent_quota_history.json
-data/trace_records.json
-data/dashboard_jobs.json
-data/trace_records.jsonl
-data/agent_quota_history.json
-/data
+
+# Runtime data and artifacts
+/data/
+/data.backup/
+*.db
+*.sqlite3
+
+# Module-specific caches
+web/static/dist/
+web/build/
+.next/
+.parcel-cache/
+
+# Logs
+*.log
+
+# Temporary files
+*.tmp
+*_temp_*

@@ -55,8 +55,14 @@ node_modules/
 .DS_Store
 Thumbs.db
 Desktop.ini
+
+# Local tooling and runtime state
+.claude/
 /core_service/data
 data/benchmark_results.json
+data/*.sqlite3
+data/*.db
+data/nav_dashboard_deploy.json
 env.local.ps1
 .gitmodules
 _tmp_run_two_rag_checks.ps1
@@ -76,3 +82,17 @@ ai_conversations_summary/LICENSE
 data/custom_cards.json
 /property
 /journey
+/data/_smoke_runs
+/data/ai_conversations_summary
+/data/core_service
+/data/journey
+/data/library_tracker
+/data/nav_dashboard
+/data/property
+/data/reports
+/nav_dashboard/web/services/ontologies
+/nav_dashboard/web/services/media
+/tests
+/tests
+/tests
+/tests

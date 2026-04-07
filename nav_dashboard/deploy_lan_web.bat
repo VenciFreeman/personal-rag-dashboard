@@ -15,6 +15,12 @@ set "AI_SUMMARY_WEB_HOST=0.0.0.0"
 set "AI_SUMMARY_WEB_PORT=8000"
 set "LIBRARY_WEB_HOST=0.0.0.0"
 set "LIBRARY_WEB_PORT=8091"
+set "PROPERTY_WEB_HOST=0.0.0.0"
+set "PROPERTY_WEB_PORT=8093"
+set "JOURNEY_WEB_HOST=0.0.0.0"
+set "JOURNEY_WEB_PORT=8094"
+set "NAV_DASHBOARD_PROPERTY_URL="
+set "NAV_DASHBOARD_JOURNEY_URL="
 
 set "TOPLEVEL_PY=..\.venv\Scripts\python.exe"
 set "LOCAL_PY=.venv\Scripts\python.exe"
@@ -36,6 +42,8 @@ echo [Nav Dashboard] Preparing LAN deployment ...
 echo   Nav Dashboard: %NAV_DASHBOARD_WEB_HOST%:%NAV_DASHBOARD_WEB_PORT%
 echo   AI Summary:    %AI_SUMMARY_WEB_HOST%:%AI_SUMMARY_WEB_PORT%
 echo   Library:       %LIBRARY_WEB_HOST%:%LIBRARY_WEB_PORT%
+echo   Property:      %PROPERTY_WEB_HOST%:%PROPERTY_WEB_PORT%
+echo   Journey:       %JOURNEY_WEB_HOST%:%JOURNEY_WEB_PORT%
 
 set "IS_ADMIN=0"
 rem Check admin rights. If missing, continue startup but skip firewall rule changes.
@@ -60,6 +68,10 @@ netsh advfirewall firewall delete rule name="AI Summary Web %AI_SUMMARY_WEB_PORT
 netsh advfirewall firewall add rule name="AI Summary Web %AI_SUMMARY_WEB_PORT%" dir=in action=allow protocol=TCP localport=%AI_SUMMARY_WEB_PORT% profile=any >nul 2>nul
 netsh advfirewall firewall delete rule name="Library Tracker Web %LIBRARY_WEB_PORT%" >nul 2>nul
 netsh advfirewall firewall add rule name="Library Tracker Web %LIBRARY_WEB_PORT%" dir=in action=allow protocol=TCP localport=%LIBRARY_WEB_PORT% profile=any >nul 2>nul
+netsh advfirewall firewall delete rule name="Property Web %PROPERTY_WEB_PORT%" >nul 2>nul
+netsh advfirewall firewall add rule name="Property Web %PROPERTY_WEB_PORT%" dir=in action=allow protocol=TCP localport=%PROPERTY_WEB_PORT% profile=any >nul 2>nul
+netsh advfirewall firewall delete rule name="Journey Web %JOURNEY_WEB_PORT%" >nul 2>nul
+netsh advfirewall firewall add rule name="Journey Web %JOURNEY_WEB_PORT%" dir=in action=allow protocol=TCP localport=%JOURNEY_WEB_PORT% profile=any >nul 2>nul
 if defined PY_FOR_FIREWALL (
     netsh advfirewall firewall delete rule name="Nav Dashboard Python Inbound" >nul 2>nul
     netsh advfirewall firewall add rule name="Nav Dashboard Python Inbound" dir=in action=allow program="%PY_FOR_FIREWALL%" profile=any >nul 2>nul
@@ -67,12 +79,14 @@ if defined PY_FOR_FIREWALL (
 
 :FIREWALL_DONE
 
-echo [Nav Dashboard] Stopping previous deployment instances on ports %AI_SUMMARY_WEB_PORT%, %LIBRARY_WEB_PORT%, %NAV_DASHBOARD_WEB_PORT% ...
+echo [Nav Dashboard] Stopping previous deployment instances on ports %AI_SUMMARY_WEB_PORT%, %LIBRARY_WEB_PORT%, %PROPERTY_WEB_PORT%, %JOURNEY_WEB_PORT%, %NAV_DASHBOARD_WEB_PORT% ...
 rem Attempt graceful shutdown of Nav Dashboard first (prevents Chrome SSE crash on active pages)
 powershell -NoProfile -Command "try { Invoke-RestMethod -Uri 'http://127.0.0.1:%NAV_DASHBOARD_WEB_PORT%/api/shutdown' -Method POST -TimeoutSec 1 2>$null | Out-Null } catch {}" >nul 2>nul
 timeout /t 2 /nobreak >nul
 call :STOP_PORT_LISTENERS %AI_SUMMARY_WEB_PORT%
 call :STOP_PORT_LISTENERS %LIBRARY_WEB_PORT%
+call :STOP_PORT_LISTENERS %PROPERTY_WEB_PORT%
+call :STOP_PORT_LISTENERS %JOURNEY_WEB_PORT%
 call :STOP_PORT_LISTENERS %NAV_DASHBOARD_WEB_PORT%
 echo [Nav Dashboard] Previous instances cleanup complete.
 echo.
@@ -89,6 +103,8 @@ for /f "tokens=2 delims=:" %%a in ('ipconfig ^| findstr /R /C:"IPv4 Address" /C:
             echo   Dashboard: http://!ip!:%NAV_DASHBOARD_WEB_PORT%/
             echo   AI Summary: http://!ip!:%AI_SUMMARY_WEB_PORT%/
             echo   Library:    http://!ip!:%LIBRARY_WEB_PORT%/
+            echo   Property:   http://!ip!:%PROPERTY_WEB_PORT%/
+            echo   Journey:    http://!ip!:%JOURNEY_WEB_PORT%/
             set "HAS_RECOMMENDED=1"
         )
     )
@@ -124,14 +140,22 @@ if defined PY_FOR_RUN (
     if not "%LIBRARY_WEB_PORT%"=="" (
         powershell -NoProfile -ExecutionPolicy Bypass -WindowStyle Hidden -Command "$env:PERSONAL_AI_STACK_DISABLE_BROWSER_OPEN='1'; Start-Process -WindowStyle Hidden -FilePath '%PY_FOR_RUN_ABS%' -WorkingDirectory '%CD%\..\library_tracker' -ArgumentList 'launch_web.py'"
     )
+    if not "%PROPERTY_WEB_PORT%"=="" (
+        powershell -NoProfile -ExecutionPolicy Bypass -WindowStyle Hidden -Command "$env:PERSONAL_AI_STACK_DISABLE_BROWSER_OPEN='1'; Start-Process -WindowStyle Hidden -FilePath '%PY_FOR_RUN_ABS%' -WorkingDirectory '%CD%\..\property' -ArgumentList 'launch_web.py'"
+    )
+    if not "%JOURNEY_WEB_PORT%"=="" (
+        powershell -NoProfile -ExecutionPolicy Bypass -WindowStyle Hidden -Command "$env:PERSONAL_AI_STACK_DISABLE_BROWSER_OPEN='1'; Start-Process -WindowStyle Hidden -FilePath '%PY_FOR_RUN_ABS%' -WorkingDirectory '%CD%\..\journey' -ArgumentList 'launch_web.py'"
+    )
     powershell -NoProfile -ExecutionPolicy Bypass -WindowStyle Hidden -Command "$env:PERSONAL_AI_STACK_DISABLE_BROWSER_OPEN='0'; Start-Process -WindowStyle Hidden -FilePath '%PY_FOR_RUN_ABS%' -WorkingDirectory '%CD%' -ArgumentList 'launch_web.py'"
     echo [Nav Dashboard] Started services in hidden mode.
     exit /b 0
 
     if not "%AI_SUMMARY_WEB_PORT%"=="" start "AI Summary Service" /min /d "..\ai_conversations_summary" "%PY_FOR_RUN%" "launch_web.py"
     if not "%LIBRARY_WEB_PORT%"=="" start "Library Tracker Service" /min /d "..\library_tracker" "%PY_FOR_RUN%" "launch_web.py"
+    if not "%PROPERTY_WEB_PORT%"=="" start "Property Service" /min /d "..\property" "%PY_FOR_RUN%" "launch_web.py"
+    if not "%JOURNEY_WEB_PORT%"=="" start "Journey Service" /min /d "..\journey" "%PY_FOR_RUN%" "launch_web.py"
 
-    echo [Nav Dashboard] Started AI Summary and Library Tracker in background.
+    echo [Nav Dashboard] Started all services in background.
     echo [Nav Dashboard] Opening only Nav Dashboard in browser...
     "%PY_FOR_RUN%" "launch_web.py"
     exit /b %errorlevel%
@@ -141,6 +165,8 @@ where py >nul 2>nul
 if %errorlevel%==0 (
     start "AI Summary Service" /min /d "..\ai_conversations_summary" py -3 "launch_web.py"
     start "Library Tracker Service" /min /d "..\library_tracker" py -3 "launch_web.py"
+    start "Property Service" /min /d "..\property" py -3 "launch_web.py"
+    start "Journey Service" /min /d "..\journey" py -3 "launch_web.py"
 
     echo [Nav Dashboard] Started AI Summary and Library Tracker in background.
     echo [Nav Dashboard] Opening only Nav Dashboard in browser...

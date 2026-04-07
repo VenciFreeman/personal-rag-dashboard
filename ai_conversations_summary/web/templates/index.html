@@ -3,17 +3,19 @@
 <head>
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, viewport-fit=cover" />
-  <title>Vincent's RAG System</title>
+  <title>RAG System</title>
   <link rel="apple-touch-icon" sizes="180x180" href="/static/favicon_logosc/apple-touch-icon.png" />
   <link rel="icon" type="image/png" sizes="32x32" href="/static/favicon_logosc/favicon-32x32.png" />
   <link rel="icon" type="image/png" sizes="16x16" href="/static/favicon_logosc/favicon-16x16.png" />
   <link rel="shortcut icon" href="/static/favicon_logosc/favicon.ico" />
   <link rel="manifest" href="/static/favicon_logosc/site.webmanifest" />
-  <link rel="stylesheet" href="/static/app.css?v=20260315d" />
+  <link rel="stylesheet" href="/static/app.css?v=20260403a" />
+  <link rel="stylesheet" href="/core-static/sidebar_shared.css?v=20260326a" />
+  <link rel="stylesheet" href="/core-static/markdown_shared.css?v=20260322b" />
 </head>
 <body>
   <header class="top">
-    <h1>Vincent's RAG System</h1>
+    <h1>RAG System</h1>
   </header>
 
   <main class="shell">
@@ -30,11 +32,13 @@
             <strong>历史会话</strong>
             <button id="rag-toggle-sidebar" class="ghost sidebar-toggle" title="收起/展开">☰</button>
           </div>
-          <div class="sidebar-actions">
-            <button id="rag-new-session">新建</button>
-            <button id="rag-delete-session" class="ghost">删除</button>
+          <div class="sidebar-body">
+            <div class="sidebar-actions">
+              <button id="rag-new-session">新建</button>
+              <button id="rag-delete-session" class="ghost">删除</button>
+            </div>
+            <ul id="rag-session-list" class="list"></ul>
           </div>
-          <ul id="rag-session-list" class="list"></ul>
         </aside>
 
         <div class="main-panel chat-layout">
@@ -77,16 +81,18 @@
             <strong>目录与搜索</strong>
             <button id="preview-toggle-sidebar" class="ghost sidebar-toggle" title="收起/展开">☰</button>
           </div>
-          <div class="search-wrap">
-            <div class="search-row">
-              <input id="kw" placeholder="关键词/向量检索" autocomplete="off" spellcheck="false" />
-              <button id="btn-kw">关键词</button>
-              <button id="btn-vs">向量</button>
-              <button id="btn-refresh" class="ghost">刷新</button>
+          <div class="sidebar-body">
+            <div class="search-wrap">
+              <div class="search-row">
+                <input id="kw" placeholder="关键词/向量检索" autocomplete="off" spellcheck="false" />
+                <button id="btn-kw">关键词</button>
+                <button id="btn-vs">向量</button>
+                <button id="btn-refresh" class="ghost">刷新</button>
+              </div>
             </div>
+            <h3 id="preview-list-title">目录</h3>
+            <ul id="preview-list" class="tree"></ul>
           </div>
-          <h3 id="preview-list-title">目录</h3>
-          <ul id="preview-list" class="tree"></ul>
         </aside>
 
         <div class="main-panel preview-layout">
@@ -141,7 +147,7 @@
             <input id="wf-model" type="text" autocomplete="off" spellcheck="false" />
           </label>
           <label class="wf-api-key-field">API_KEY
-            <input id="wf-api-key" type="password" autocomplete="off" spellcheck="false" />
+            <input id="wf-api-key" type="password" autocomplete="off" spellcheck="false" placeholder="留空则使用环境变量 DEEPSEEK_API_KEY" />
           </label>
           <div class="workflow-config-actions">
             <button id="wf-toggle-key" class="ghost">显示</button>
@@ -203,6 +209,9 @@
     </div>
   </div>
 
-  <script src="/static/app.js?v=20260315c"></script>
+  <script src="/core-static/ui_bootstrap.js?v=20260326c"></script>
+  <script src="/core-static/app_shell.js?v=20260326c"></script>
+  <script src="/core-static/markdown.js?v=20260403a"></script>
+  <script src="/static/app.js?v=20260405b"></script>
 </body>
 </html>

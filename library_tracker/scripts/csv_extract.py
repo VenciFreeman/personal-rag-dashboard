@@ -3,11 +3,20 @@ from __future__ import annotations
 import argparse
 import csv
 import json
+import sys
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
+WORKSPACE_ROOT = PROJECT_ROOT.parent
+if str(WORKSPACE_ROOT) not in sys.path:
+	sys.path.insert(0, str(WORKSPACE_ROOT))
+
+from core_service.runtime_data import app_runtime_root  # noqa: E402
+
+
+STRUCTURED_ENTITIES_DIR = app_runtime_root("library_tracker") / "structured" / "entities"
 
 
 @dataclass(frozen=True)
@@ -28,7 +37,7 @@ PROFILES: dict[str, ExtractProfile] = {
 		name="book",
 		media_type="book",
 		default_input=PROJECT_ROOT / "data" / "csv_data" / "阅读.csv",
-		default_output=PROJECT_ROOT / "data" / "structured" / "reading.json",
+		default_output=STRUCTURED_ENTITIES_DIR / "reading.json",
 		title_col="书名",
 		author_col="作者",
 		nationality_col="国籍",
@@ -39,7 +48,7 @@ PROFILES: dict[str, ExtractProfile] = {
 		name="video",
 		media_type="video",
 		default_input=PROJECT_ROOT / "data" / "csv_data" / "观影.csv",
-		default_output=PROJECT_ROOT / "data" / "structured" / "video.json",
+		default_output=STRUCTURED_ENTITIES_DIR / "video.json",
 		title_col="片名",
 		author_col="导演/主创",
 		nationality_col="国家",
@@ -50,7 +59,7 @@ PROFILES: dict[str, ExtractProfile] = {
 		name="music",
 		media_type="music",
 		default_input=PROJECT_ROOT / "data" / "csv_data" / "音乐.csv",
-		default_output=PROJECT_ROOT / "data" / "structured" / "music.json",
+		default_output=STRUCTURED_ENTITIES_DIR / "music.json",
 		title_col="专辑",
 		author_col="艺人",
 		nationality_col="国家",
@@ -61,7 +70,7 @@ PROFILES: dict[str, ExtractProfile] = {
 		name="game",
 		media_type="game",
 		default_input=PROJECT_ROOT / "data" / "csv_data" / "游戏.csv",
-		default_output=PROJECT_ROOT / "data" / "structured" / "game.json",
+		default_output=STRUCTURED_ENTITIES_DIR / "game.json",
 		title_col="名称",
 		author_col=None,
 		nationality_col="国家",

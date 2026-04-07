@@ -4,17 +4,13 @@ import ast
 import json
 import os
 import re
-import sys
 import threading
 from functools import lru_cache
 from pathlib import Path
 from typing import Any
 
-WORKSPACE_ROOT = Path(__file__).resolve().parents[3]
-if str(WORKSPACE_ROOT) not in sys.path:
-    sys.path.insert(0, str(WORKSPACE_ROOT))
-
-from core_service.config import get_settings
+from core_service import get_settings
+from ..settings import get_concept_ontology_path
 
 # Serialize concurrent writes to avoid WinError 5 (Access Denied) on Windows
 # when multiple threads race to rename the .tmp file.
@@ -62,7 +58,7 @@ NOTE_MARKER_TERMS = (
 
 @lru_cache(maxsize=1)
 def _load_concept_ontology() -> dict[str, Any]:
-    path = Path(__file__).resolve().parent / "library_concept_ontology.json"
+    path = get_concept_ontology_path()
     payload = _safe_read_json(path, default={})
     if not isinstance(payload, dict):
         return {}

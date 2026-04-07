@@ -257,6 +257,7 @@ textarea {
   border: 1px solid #4a4b42;
   border-radius: 6px;
   padding: 8px;
+  font: inherit;
   font-size: 16px;
 }
 textarea {
@@ -402,6 +403,31 @@ button:disabled { opacity: 0.6; cursor: not-allowed; }
   border-radius: 6px;
   padding: 8px;
   overflow: auto;
+}
+.markdown-body a {
+  color: #7bdff2;
+  text-decoration: underline;
+  text-underline-offset: 2px;
+}
+.markdown-body table {
+  width: 100%;
+  border-collapse: collapse;
+  margin: 10px 0;
+  border: 1px solid #4a4b42;
+  background: #1a1b17;
+}
+.markdown-body th,
+.markdown-body td {
+  padding: 8px 10px;
+  border: 1px solid #3b3d35;
+  vertical-align: top;
+}
+.markdown-body thead th {
+  background: #252720;
+  color: #eef1e6;
+}
+.markdown-body tbody tr:nth-child(even) {
+  background: #21231d;
 }
 .markdown-body ul,
 .markdown-body ol { padding-left: 20px; }
@@ -653,27 +679,33 @@ button:disabled { opacity: 0.6; cursor: not-allowed; }
   appearance: auto;
   -webkit-appearance: auto;
   color-scheme: dark;
+  color: #f2f2ea;
+  background-color: #1e201a;
   min-width: 0;
   width: 100%;
-  padding: 7px 8px;
-  padding-right: 34px;
+  padding: 8px 12px;
   cursor: pointer;
-  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='%23f2f2ea' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'%3E%3Crect x='3' y='4' width='18' height='18' rx='2' ry='2'/%3E%3Cline x1='16' y1='2' x2='16' y2='6'/%3E%3Cline x1='8' y1='2' x2='8' y2='6'/%3E%3Cline x1='3' y1='10' x2='21' y2='10'/%3E%3C/svg%3E");
-  background-repeat: no-repeat;
-  background-position: right 10px center;
-  background-size: 16px 16px;
-  position: relative;
+  font: inherit;
+  line-height: 1.4;
+  font-variant-numeric: tabular-nums;
 }
 
 .workflow-date-input::-webkit-calendar-picker-indicator {
-  position: absolute;
-  inset: 0;
-  width: 100%;
-  height: 100%;
-  margin: 0;
-  padding: 0;
+  width: 18px;
+  height: 18px;
+  margin: 0 0 0 8px;
   cursor: pointer;
-  opacity: 0;
+  opacity: 0.88;
+  filter: invert(0.94);
+}
+
+.workflow-date-input::-webkit-datetime-edit,
+.workflow-date-input::-webkit-datetime-edit-fields-wrapper,
+.workflow-date-input::-webkit-datetime-edit-text,
+.workflow-date-input::-webkit-datetime-edit-month-field,
+.workflow-date-input::-webkit-datetime-edit-day-field,
+.workflow-date-input::-webkit-datetime-edit-year-field {
+  color: #f2f2ea;
 }
 
 #wf-count {

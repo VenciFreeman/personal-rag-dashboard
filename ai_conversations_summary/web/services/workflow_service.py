@@ -17,19 +17,15 @@ from pathlib import Path
 from typing import Any
 from uuid import uuid4
 
-from web.config import DATA_DIR, DOCUMENTS_DIR, SCRIPTS_DIR, VECTOR_DB_DIR, WORKSPACE_ROOT
-if str(WORKSPACE_ROOT.parent) not in sys.path:
-    sys.path.insert(0, str(WORKSPACE_ROOT.parent))
+from ai_conversations_summary.embedding_runtime import resolve_embedding_model as resolve_runtime_embedding_model
+from ai_conversations_summary.runtime_paths import EXTRACTED_DIR, RAW_DIR, SPLIT_DIR, SUMMARIZE_DIR, WORKFLOW_STATE_PATH
+from web.config import DOCUMENTS_DIR, SCRIPTS_DIR, VECTOR_DB_DIR, WORKSPACE_ROOT
 
-from core_service.config import get_settings
+from core_service import get_settings
 
-RAW_DIR = DATA_DIR / "raw_dir"
-EXTRACTED_DIR = DATA_DIR / "extracted_dir"
-SUMMARIZE_DIR = DATA_DIR / "summarize_dir"
 CORE_CONFIG_PATH = WORKSPACE_ROOT.parent / "core_service" / "config.local.json"
 DEFAULT_TIMEOUT = int(os.getenv("DEEPSEEK_TIMEOUT", "120") or "120")
 REEMBED_QUEUE_PATH = VECTOR_DB_DIR / "reembed_queue.json"
-WORKFLOW_STATE_PATH = DATA_DIR / "workflow_state.json"
 AUTO_REEMBED_ENABLED = os.getenv("AI_SUMMARY_AUTO_REEMBED", "1") != "0"
 AUTO_REEMBED_INTERVAL_SECONDS = max(10, int(os.getenv("AI_SUMMARY_AUTO_REEMBED_INTERVAL", "20") or "20"))
 _AUTO_REEMBED_STARTED = False
@@ -323,9 +319,7 @@ def _run_auto_reembed_once() -> dict[str, Any]:
         "faiss",
         "--sync-missing",
         "--embedding-model",
-        os.getenv("LOCAL_EMBEDDING_MODEL", "").strip()
-        or os.getenv("DEEPSEEK_EMBEDDING_MODEL", "").strip()
-        or "BAAI/bge-base-zh-v1.5",
+        resolve_runtime_embedding_model(index_dir=VECTOR_DB_DIR),
         "--timeout",
         str(DEFAULT_TIMEOUT),
     ]
@@ -478,11 +472,7 @@ def _run_startup_integrity_check_and_repair() -> dict[str, Any]:
 
 def _run_startup_model_warmup() -> dict[str, Any]:
     _append_startup_log("启动预热开始（embedding + reranker）")
-    embedding_model = (
-        os.getenv("LOCAL_EMBEDDING_MODEL", "").strip()
-        or os.getenv("DEEPSEEK_EMBEDDING_MODEL", "").strip()
-        or "BAAI/bge-base-zh-v1.5"
-    )
+    embedding_model = resolve_runtime_embedding_model(index_dir=VECTOR_DB_DIR)
     reranker_model = os.getenv("AI_SUMMARY_RERANKER_MODEL", "BAAI/bge-reranker-v2-m3").strip() or "BAAI/bge-reranker-v2-m3"
 
     code = (
@@ -559,13 +549,56 @@ def _parse_date(value: str) -> datetime.date | None:
 
 
 def _extract_date_from_name(path: Path) -> datetime.date | None:
-    name = path.name
-    if len(name) < 10:
-        return None
+    stem = path.stem
+    match = re.search(r"(\d{4}-\d{2}-\d{2})", stem)
+    if match:
+        try:
+            return datetime.strptime(match.group(1), "%Y-%m-%d").date()
+        except ValueError:
+            pass
+
+    match = re.search(r"\b(\d{8})\b", stem)
+    if match:
+        try:
+            return datetime.strptime(match.group(1), "%Y%m%d").date()
+        except ValueError:
+            pass
+
+    match = re.search(r"\b(\d{6})\b", stem)
+    if match:
+        # Treat YYMMDD as 20YY-MM-DD for legacy/manual naming styles.
+        token = match.group(1)
+        try:
+            return datetime.strptime(f"20{token}", "%Y%m%d").date()
+        except ValueError:
+            pass
+
+    return None
+
+
+def _extract_date_from_content(path: Path) -> datetime.date | None:
     try:
-        return datetime.strptime(name[:10], "%Y-%m-%d").date()
-    except ValueError:
+        with path.open("r", encoding="utf-8") as fp:
+            for _ in range(20):
+                line = fp.readline()
+                if not line:
+                    break
+                match = re.search(r"updated_at\s*:\s*(\d{4}-\d{2}-\d{2})", line, flags=re.IGNORECASE)
+                if match:
+                    try:
+                        return datetime.strptime(match.group(1), "%Y-%m-%d").date()
+                    except ValueError:
+                        continue
+    except Exception:
         return None
+    return None
+
+
+def _extract_file_date(path: Path) -> datetime.date | None:
+    by_name = _extract_date_from_name(path)
+    if by_name is not None:
+        return by_name
+    return _extract_date_from_content(path)
 
 
 def _collect_extracted_files(start_date: str, end_date: str) -> tuple[list[Path], str | None]:
@@ -580,7 +613,7 @@ def _collect_extracted_files(start_date: str, end_date: str) -> tuple[list[Path]
 
     files: list[Path] = []
     for file_path in sorted(EXTRACTED_DIR.glob("*.md")):
-        file_date = _extract_date_from_name(file_path)
+        file_date = _extract_file_date(file_path)
         if file_date is None:
             continue
         if start <= file_date <= end:
@@ -698,12 +731,16 @@ def get_workflow_config() -> dict[str, str]:
     api_cfg = data.get("api", {}) if isinstance(data.get("api"), dict) else {}
     base_url = str(api_cfg.get("base_url", os.getenv("DEEPSEEK_BASE_URL", "https://api.deepseek.com")) or "").strip()
     model = str(api_cfg.get("chat_model", os.getenv("DEEPSEEK_MODEL", "deepseek-chat")) or "").strip()
-    api_key = str(api_cfg.get("api_key", os.getenv("DEEPSEEK_API_KEY", "")) or "").strip()
+    saved_api_key = str(api_cfg.get("api_key", "") or "").strip()
+    env_api_key = str(os.getenv("DEEPSEEK_API_KEY", "") or "").strip()
+    api_key_source = "env" if env_api_key else ("saved" if saved_api_key else "")
     source = "deepseek"
     return {
         "base_url": base_url,
         "model": model,
-        "api_key": api_key,
+        "api_key": "",
+        "api_key_configured": "1" if (env_api_key or saved_api_key) else "0",
+        "api_key_source": api_key_source,
         "source": source,
     }
 
@@ -712,8 +749,8 @@ def save_workflow_config(base_url: str, model: str, api_key: str) -> dict[str, A
     base_url = str(base_url or "").strip()
     model = str(model or "").strip()
     api_key = str(api_key or "").strip()
-    if not base_url or not model or not api_key:
-        raise ValueError("请完整填写 API_BASE_URL、MODEL、API_KEY。")
+    if not base_url or not model:
+        raise ValueError("请完整填写 API_BASE_URL、MODEL。")
 
     payload = {
         "api": {
@@ -735,8 +772,16 @@ def save_workflow_config(base_url: str, model: str, api_key: str) -> dict[str, A
     }
     CORE_CONFIG_PATH.parent.mkdir(parents=True, exist_ok=True)
     CORE_CONFIG_PATH.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
-    os.environ["DEEPSEEK_API_KEY"] = api_key
     return {"ok": True, "path": str(CORE_CONFIG_PATH)}
+
+
+def _resolve_workflow_api_credentials(base_url: str, model: str, api_key: str) -> tuple[str, str, str]:
+    data = _load_core_config()
+    api_cfg = data.get("api", {}) if isinstance(data.get("api"), dict) else {}
+    resolved_base_url = str(base_url or api_cfg.get("base_url") or os.getenv("DEEPSEEK_BASE_URL", "https://api.deepseek.com") or "").strip()
+    resolved_model = str(model or api_cfg.get("chat_model") or os.getenv("DEEPSEEK_MODEL", "deepseek-chat") or "").strip()
+    resolved_api_key = str(api_key or os.getenv("DEEPSEEK_API_KEY", "") or api_cfg.get("api_key") or "").strip()
+    return resolved_base_url, resolved_model, resolved_api_key
 
 
 def get_extracted_stats(start_date: str, end_date: str) -> dict[str, Any]:
@@ -884,18 +929,18 @@ def _run_job_worker(job: WorkflowJob, payload: dict[str, Any]) -> None:
 def _action_batch_process(job: WorkflowJob, payload: dict[str, Any]) -> dict[str, Any]:
     source = str(payload.get("source", "deepseek") or "").strip().lower()
     script_map = {
-        "deepseek": "for_deepseek.py",
-        "chatgpt": "for_chatgpt.py",
+        "deepseek": SCRIPTS_DIR / "export" / "for_deepseek.py",
+        "chatgpt": SCRIPTS_DIR / "export" / "for_chatgpt.py",
     }
-    script_name = script_map.get(source)
-    if not script_name:
+    script_path = script_map.get(source)
+    if script_path is None:
         raise RuntimeError(f"当前来源 {source} 暂不支持。")
 
     python_cmd = _resolve_python_executable()
     command = [
         python_cmd,
         "-u",
-        str(SCRIPTS_DIR / script_name),
+        str(script_path),
         "--input-dir",
         str(RAW_DIR),
         "--output-dir",
@@ -910,9 +955,11 @@ def _action_batch_process(job: WorkflowJob, payload: dict[str, Any]) -> dict[str
 def _action_ai_summary(job: WorkflowJob, payload: dict[str, Any]) -> dict[str, Any]:
     start_date = str(payload.get("start_date", "") or "").strip()
     end_date = str(payload.get("end_date", "") or "").strip()
-    base_url = str(payload.get("base_url", "") or "").strip()
-    model = str(payload.get("model", "") or "").strip()
-    api_key = str(payload.get("api_key", "") or "").strip()
+    base_url, model, api_key = _resolve_workflow_api_credentials(
+        str(payload.get("base_url", "") or "").strip(),
+        str(payload.get("model", "") or "").strip(),
+        str(payload.get("api_key", "") or "").strip(),
+    )
 
     if not base_url or not model or not api_key:
         raise RuntimeError("请先完整填写 API_BASE_URL、MODEL、API_KEY。")
@@ -921,7 +968,21 @@ def _action_ai_summary(job: WorkflowJob, payload: dict[str, Any]) -> dict[str, A
     if range_err:
         raise RuntimeError(range_err)
     if not selected_files:
-        raise RuntimeError("当前日期范围内无可总结文件。")
+        all_files = sorted(EXTRACTED_DIR.glob("*.md"))
+        if not all_files:
+            raise RuntimeError("当前无可总结文件：提取目录为空，请先执行“格式批处理”。")
+
+        recognized_dates = sum(1 for file_path in all_files if _extract_file_date(file_path) is not None)
+        if recognized_dates == 0:
+            raise RuntimeError(
+                f"当前日期范围内无可总结文件：共检测到 {len(all_files)} 个文件，但无法识别日期。"
+                "请将文件名改为 YYYY-MM-DD_序号.md，或在文件开头添加 updated_at: YYYY-MM-DD。"
+            )
+
+        raise RuntimeError(
+            f"当前日期范围内无可总结文件：共 {len(all_files)} 个文件，其中 {recognized_dates} 个可识别日期，"
+            f"但都不在 {start_date} 到 {end_date} 范围内。"
+        )
 
     temp_dir = tempfile.TemporaryDirectory(prefix="ai_summary_web_filtered_")
     try:
@@ -959,10 +1020,10 @@ def _action_split_topics(job: WorkflowJob, payload: dict[str, Any]) -> dict[str,
     command = [
         _resolve_python_executable(),
         "-u",
-        str(SCRIPTS_DIR / "batch_split_documents.py"),
+        str(SCRIPTS_DIR / "data_maintenance" / "batch_split_documents.py"),
         str(SUMMARIZE_DIR),
         "--output-dir",
-        str(DATA_DIR / "split_dir"),
+        str(SPLIT_DIR),
         "--move-originals",
         "--no-recursive",
     ]
@@ -976,13 +1037,13 @@ def _action_split_topics(job: WorkflowJob, payload: dict[str, Any]) -> dict[str,
 
 def _action_classify_archive(job: WorkflowJob, payload: dict[str, Any]) -> dict[str, Any]:
     dry_run = bool(payload.get("dry_run", False))
-    split_dir = DATA_DIR / "split_dir"
+    split_dir = SPLIT_DIR
     split_dir.mkdir(parents=True, exist_ok=True)
 
     command_split = [
         _resolve_python_executable(),
         "-u",
-        str(SCRIPTS_DIR / "move_summaries_by_category.py"),
+        str(SCRIPTS_DIR / "data_maintenance" / "move_summaries_by_category.py"),
         "--input-dir",
         str(split_dir),
         "--documents-dir",
@@ -997,7 +1058,7 @@ def _action_classify_archive(job: WorkflowJob, payload: dict[str, Any]) -> dict[
     command_summary = [
         _resolve_python_executable(),
         "-u",
-        str(SCRIPTS_DIR / "move_summaries_by_category.py"),
+        str(SCRIPTS_DIR / "data_maintenance" / "move_summaries_by_category.py"),
         "--input-dir",
         str(SUMMARIZE_DIR),
         "--documents-dir",
@@ -1039,12 +1100,7 @@ def _action_sync_embeddings(job: WorkflowJob, payload: dict[str, Any]) -> dict[s
     graph_nodes_before, graph_edges_before = _graph_counts()
     _append_startup_log(f"手动触发 RAG 同步 (job={job.id[:8]}) | 当前索引: {metadata_before} 条")
 
-    model = (
-        str(payload.get("embedding_model", "") or "").strip()
-        or os.getenv("LOCAL_EMBEDDING_MODEL", "").strip()
-        or os.getenv("DEEPSEEK_EMBEDDING_MODEL", "").strip()
-        or "BAAI/bge-base-zh-v1.5"
-    )
+    model = resolve_runtime_embedding_model(str(payload.get("embedding_model", "") or "").strip(), index_dir=VECTOR_DB_DIR)
     prune_command = [
         _resolve_python_executable(),
         "-u",

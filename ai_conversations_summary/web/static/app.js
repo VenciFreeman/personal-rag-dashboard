@@ -15,6 +15,7 @@ let workflowLogRenderedLines = 0;
 let workflowApiKeyVisible = false;
 let currentRenameSessionId = "";
 let suppressSessionClickUntil = 0;
+const AppShell = window.CoreUI?.get?.("appShell") || window.SharedAppShell || null;
 
 const LONG_PRESS_MS = 600;
 const sessionRenameModal = () => document.getElementById("rag-session-rename-modal");
@@ -85,26 +86,26 @@ function setTab(name) {
   }
 }
 
-function toggleSidebar(id) {
-  const el = document.getElementById(id);
-  if (!el) return;
-  el.classList.toggle("collapsed");
-  const workspace = el.closest(".workspace");
-  if (workspace) {
-    workspace.classList.toggle("sidebar-collapsed", el.classList.contains("collapsed"));
-  }
-  updateSidebarToggleButton(el);
-}
-
-function updateSidebarToggleButton(sidebar) {
-  const el = sidebar instanceof Element ? sidebar : document.getElementById(String(sidebar || ""));
-  if (!el) return;
-  const btn = el.querySelector(".sidebar-toggle");
-  if (!btn) return;
-  const isMobile = window.matchMedia("(max-width: 820px), (hover: none) and (pointer: coarse)").matches;
-  const isCollapsed = el.classList.contains("collapsed");
-  btn.textContent = isMobile ? (isCollapsed ? "v" : "^") : (isCollapsed ? ">" : "<");
-  btn.title = isMobile ? (isCollapsed ? "向下展开" : "向上折叠") : (isCollapsed ? "向右展开" : "向左折叠");
+function mountAppSidebarController(sidebarId, scope, options = {}) {
+  const key = String(sidebarId || "").trim();
+  const sidebarScope = String(scope || "").trim();
+  if (!key || !sidebarScope || !AppShell?.mountSidebarController) return null;
+  const registry = window.__aiConversationSidebarControllers || (window.__aiConversationSidebarControllers = new Map());
+  if (registry.has(key)) return registry.get(key);
+  const sidebar = document.getElementById(key);
+  const button = sidebar?.querySelector(".sidebar-toggle") || null;
+  const workspace = sidebar?.closest(".workspace") || null;
+  if (!sidebar || !button || !workspace) return null;
+  const controller = AppShell.mountSidebarController({
+    appId: "ai_conversations_summary",
+    scope: sidebarScope,
+    shell: workspace,
+    sidebar,
+    toggleButton: button,
+    storageKeyAliases: Array.isArray(options.storageKeyAliases) ? options.storageKeyAliases : [],
+  });
+  registry.set(key, controller);
+  return controller;
 }
 
 function setMode(mode) {
@@ -154,197 +155,10 @@ function normalizeMarkdown(source) {
 }
 
 function markdownToHtml(text) {
-  const source = normalizeMarkdown(text || "");
-  const codeBlocks = [];
-  const hrBlocks = [];
-  const mathBlocks = [];
-  const themeBlocks = [];
-  
-  // Protect HR blocks and code blocks early to prevent disruption
-  let protected = source.replace(/^-{3,}\s*$/gm, () => {
-    const idx = hrBlocks.length;
-    hrBlocks.push("<hr />");
-    return `__HR_BLOCK_${idx}__`;
-  });
-  
-  // Protect LaTeX block math: \[ ... \]
-  protected = protected.replace(/\\\[([\s\S]*?)\\\]/g, (_m, formula) => {
-    const idx = mathBlocks.length;
-    mathBlocks.push(`<div class="math-block">\\[${escapeHtml(String(formula || "").trim())}\\]</div>`);
-    return `__MATH_BLOCK_${idx}__`;
-  });
-  
-  // Protect LaTeX inline math: \( ... \)
-  protected = protected.replace(/\\\((.*?)\\\)/g, (_m, formula) => {
-    const idx = mathBlocks.length;
-    mathBlocks.push(`<span class="math-inline">\\(${escapeHtml(String(formula || "").trim())}\\)</span>`);
-    return `__MATH_BLOCK_${idx}__`;
-  });
-  
-  // Protect <theme> tags
-  protected = protected.replace(/<theme>(.*?)<\/theme>/gi, (_m, content) => {
-    const idx = themeBlocks.length;
-    themeBlocks.push(`<span class="theme-tag">${escapeHtml(String(content || "").trim())}</span>`);
-    return `__THEME_BLOCK_${idx}__`;
-  });
-  
-  const withCodeTokens = protected.replace(/```([\s\S]*?)```/g, (_m, code) => {
-    const idx = codeBlocks.length;
-    codeBlocks.push(`<pre><code>${escapeHtml(String(code || "").trim())}</code></pre>`);
-    return `__CODE_BLOCK_${idx}__`;
-  });
-
-  let html = escapeHtml(withCodeTokens);
-
-  html = html.replace(/^(#{1,6})\s+(.+)$/gm, (_m, hashes, title) => {
-    const level = hashes.length;
-    return `<h${level}>${title}</h${level}>`;
-  });
-  html = html.replace(/^&gt;\s?(.+)$/gm, "<blockquote>$1</blockquote>");
-  html = html.replace(/\*\*([^*]+)\*\*/g, "<strong>$1</strong>");
-  html = html.replace(/`([^`]+)`/g, "<code>$1</code>");
-  // Support one-level nested brackets in link label, e.g. [[PDF] 标题](https://...).
-  html = html.replace(/\[((?:[^\[\]]|\[[^\[\]]*\])+)]\(([^)]+)\)/g, (_m, label, url) => {
-    const href = String(url || "").trim().replace(/"/g, "%22");
-    const isExternal = /^https?:\/\//i.test(href);
-    if (isExternal) {
-      return `<a href="${href}" class="external-link" target="_blank" rel="noopener noreferrer">${label}<span class="ext-link-icon" aria-hidden="true">&#x2197;</span></a>`;
-    }
-    return `<a href="${href}">${label}</a>`;
-  });
-
-  const lines = html.split("\n");
-
-  function getListMeta(line) {
-    const normalizedLine = normalizeListWhitespace(stripZeroWidth(line));
-    // Exclude HR, code, math, and theme block placeholders from list detection
-    if (/^__HR_BLOCK_\d+__|^__CODE_BLOCK_\d+__|^__MATH_BLOCK_\d+__|^__THEME_BLOCK_\d+__/.test(normalizedLine.trim())) {
-      return null;
-    }
-    // Support more ordered-list markers: 1. / 1) / 1、 / 1．
-    const m = normalizedLine.match(/^(\s*)([-*+•·]|\d+[\.\)\u3001\uFF0E])\s+(.+)$/);
-    if (!m) return null;
-    const indent = m[1].replace(/\t/g, "    ").length;
-    const type = /^\d+/.test(m[2]) ? "ol" : "ul";
-    return { indent, type, text: m[3] };
+  if (window.CoreMarkdown?.render) {
+    return window.CoreMarkdown.render(text);
   }
-
-  const out = [];
-  let i = 0;
-  
-  // Collect consecutive list items
-  function collectListItems(startIdx) {
-    const items = [];
-    while (startIdx < lines.length) {
-      const raw = lines[startIdx];
-      if (!raw.trim()) {
-        // Allow blank lines inside lists if the next non-empty line is a list item.
-        let lookahead = startIdx + 1;
-        while (lookahead < lines.length && !String(lines[lookahead] || "").trim()) {
-          lookahead += 1;
-        }
-        const nextMeta = lookahead < lines.length ? getListMeta(lines[lookahead]) : null;
-        if (nextMeta) {
-          startIdx += 1;
-          continue;
-        }
-        break;
-      }
-      const meta = getListMeta(raw);
-      if (!meta) break;
-      items.push({ ...meta, lineIdx: startIdx });
-      startIdx += 1;
-    }
-    return { items, nextIdx: startIdx };
-  }
-  
-  // Render list items with nesting. Child indentation is based on actual next-line indent,
-  // not a fixed +2 spaces, so 2/4-space markdown styles both work.
-  function renderListTree(allItems, startIdx = 0, targetIndent = 0) {
-    if (!allItems || !allItems.length || startIdx >= allItems.length) {
-      return { html: "", nextIdx: startIdx };
-    }
-
-    let html = "";
-    let i = startIdx;
-    let currentListType = null;
-
-    while (i < allItems.length) {
-      let item = allItems[i];
-
-      if (item.indent < targetIndent) {
-        break;
-      }
-
-      // Do not drop malformed deeper items. Promote them to current level so content stays visible.
-      if (item.indent > targetIndent) {
-        item = { ...item, indent: targetIndent };
-      }
-
-      if (currentListType !== item.type) {
-        if (currentListType) html += `</${currentListType}>\n`;
-        html += `<${item.type}>\n`;
-        currentListType = item.type;
-      }
-
-      let itemContent = item.text;
-      i += 1;
-
-      if (i < allItems.length && allItems[i].indent > targetIndent) {
-        const childIndent = allItems[i].indent;
-        const child = renderListTree(allItems, i, childIndent);
-        if (child.html) {
-          itemContent += `\n${child.html}`;
-        }
-        i = child.nextIdx;
-      }
-
-      html += `<li>${itemContent}</li>\n`;
-    }
-
-    if (currentListType) {
-      html += `</${currentListType}>`;
-    }
-
-    return { html, nextIdx: i };
-  }
-  
-  while (i < lines.length) {
-    const raw = lines[i];
-    const trimmed = raw.trim();
-
-    if (!trimmed) {
-      out.push("");
-      i += 1;
-      continue;
-    }
-
-    const meta = getListMeta(raw);
-    
-    if (meta) {
-      // Collect all consecutive list items
-      const block = collectListItems(i);
-      const baseIndent = block.items.length ? block.items[0].indent : 0;
-      const result = renderListTree(block.items, 0, baseIndent);
-      out.push(result.html);
-      i = block.nextIdx;
-      continue;
-    }
-
-    if (/^<h\d|^<pre|^<blockquote|^__CODE_BLOCK_\d+__|^__HR_BLOCK_\d+__|^__MATH_BLOCK_\d+__|^__THEME_BLOCK_\d+__/.test(trimmed)) {
-      out.push(trimmed);
-    } else {
-      out.push(`<p>${raw}</p>`);
-    }
-    i += 1;
-  }
-
-  html = out.join("\n");
-  html = html.replace(/__CODE_BLOCK_(\d+)__/g, (_m, idx) => codeBlocks[Number(idx)] || "");
-  html = html.replace(/__HR_BLOCK_(\d+)__/g, (_m, idx) => hrBlocks[Number(idx)] || "");
-  html = html.replace(/__MATH_BLOCK_(\d+)__/g, (_m, idx) => mathBlocks[Number(idx)] || "");
-  html = html.replace(/__THEME_BLOCK_(\d+)__/g, (_m, idx) => themeBlocks[Number(idx)] || "");
-  return html;
+  return `<p>${escapeHtml(String(text || ""))}</p>`;
 }
 
 function streamTextToHtml(text) {
@@ -353,14 +167,10 @@ function streamTextToHtml(text) {
 }
 
 function markdownPreviewForStreaming(text) {
-  // During streaming, incomplete fenced blocks can suppress heading/list rendering.
-  // Add a temporary closing fence when needed, then let full markdown render on done.
-  let value = String(text || "");
-  const fenceCount = (value.match(/```/g) || []).length;
-  if (fenceCount % 2 === 1) {
-    value += "\n```";
+  if (window.CoreMarkdown?.previewForStreaming) {
+    return window.CoreMarkdown.previewForStreaming(text);
   }
-  return markdownToHtml(value);
+  return markdownToHtml(text);
 }
 
 function normalizeThinkText(text) {
@@ -673,6 +483,11 @@ function renderCurrentRagSessionView() {
   renderActiveRagStreamPreview();
 }
 
+function renderRagSessionLoadingState(message = "正在加载历史会话...") {
+  renderChat([]);
+  appendChatRow("system", message, false, "processing");
+}
+
 function renderSessions() {
   const ul = document.getElementById("rag-session-list");
   ul.innerHTML = "";
@@ -684,18 +499,20 @@ function renderSessions() {
     li.innerHTML = `<div class="title">${escapeHtml(session.title || "新会话")}</div><div class="meta">${escapeHtml(session.updated_at || "")}</div>`;
     li.onclick = async () => {
       if (Date.now() < suppressSessionClickUntil) return;
-      currentSessionId = session.id;
+      const selectedSessionId = String(session.id || "").trim();
+      currentSessionId = selectedSessionId;
       renderSessions();
       if (session.messages) {
         renderCurrentRagSessionView();
       } else {
+        renderRagSessionLoadingState();
         try {
-          const full = await apiGet(`/api/rag/sessions/${encodeURIComponent(session.id)}`);
-          const idx = sessionsCache.findIndex((s) => s.id === session.id);
+          const full = await apiGet(`/api/rag/sessions/${encodeURIComponent(selectedSessionId)}`);
+          const idx = sessionsCache.findIndex((s) => s.id === selectedSessionId);
           if (idx >= 0) sessionsCache[idx] = { ...sessionsCache[idx], messages: full.messages || [] };
-          renderCurrentRagSessionView();
+          if (currentSessionId === selectedSessionId) renderCurrentRagSessionView();
         } catch (_e) {
-          renderCurrentRagSessionView();
+          if (currentSessionId === selectedSessionId) renderCurrentRagSessionView();
         }
       }
     };
@@ -1032,6 +849,7 @@ async function ask(searchMode = "hybrid", forcedMode = null, confirmOverQuota = 
   const question = questionInput.value.trim();
   if (!question) return;
   const requestSessionId = String(currentSessionId || "").trim();
+  const isViewingRequestSession = () => String(currentSessionId || "").trim() === requestSessionId;
 
   questionInput.value = "";
   appendChat("user", question);
@@ -1069,6 +887,7 @@ async function ask(searchMode = "hybrid", forcedMode = null, confirmOverQuota = 
   }, 250);
   const streamRenderTimer = setInterval(() => {
     if (streamFinalized || !streamedText) return;
+    if (!isViewingRequestSession()) return;
     if (!assistantRow) {
       assistantRow = appendChatRow("assistant", "", true);
       assistantContent = assistantRow.querySelector(".content");
@@ -1094,7 +913,7 @@ async function ask(searchMode = "hybrid", forcedMode = null, confirmOverQuota = 
     const debugEnabled = !!(debugToggle && debugToggle.checked);
     const payload = { 
       question, 
-      session_id: currentSessionId, 
+      session_id: requestSessionId,
       mode: String(forcedMode || currentMode || "local"),
       search_mode: searchMode,
       top_k: 5,
@@ -1110,24 +929,30 @@ async function ask(searchMode = "hybrid", forcedMode = null, confirmOverQuota = 
 
     if (!response.ok || !response.body) {
       const answer = await apiPost("/api/rag/ask", payload);
-      currentSessionId = answer.session_id || currentSessionId;
+      if (isViewingRequestSession()) {
+        currentSessionId = answer.session_id || currentSessionId;
+      }
       if (answer.aborted) {
-        if (pendingContent) pendingContent.innerHTML = markdownToHtml("已中止");
-        pending.classList.remove("processing");
+        if (isViewingRequestSession()) {
+          if (pendingContent) pendingContent.innerHTML = markdownToHtml("已中止");
+          pending.classList.remove("processing");
+        }
       } else {
-        pending.remove();
+        if (isViewingRequestSession()) pending.remove();
         const parsed = splitThinkBlocks(answer.answer || "");
-        const assistantRow = appendChatRow("assistant", parsed.answer || answer.answer || "", true);
-        insertSystemRowsBefore(assistantRow, parsed.thoughts);
-        upsertTraceMetaRowBefore(assistantRow, formatTraceMeta(answer.trace_id));
-        addRagFeedbackForRow(assistantRow, {
-          question,
-          answer: parsed.answer || answer.answer || "",
-          traceId: answer.trace_id,
-          searchMode,
-          mode: answer.mode,
-          debugEnabled,
-        });
+        if (isViewingRequestSession()) {
+          const assistantRow = appendChatRow("assistant", parsed.answer || answer.answer || "", true);
+          insertSystemRowsBefore(assistantRow, parsed.thoughts);
+          upsertTraceMetaRowBefore(assistantRow, formatTraceMeta(answer.trace_id));
+          addRagFeedbackForRow(assistantRow, {
+            question,
+            answer: parsed.answer || answer.answer || "",
+            traceId: answer.trace_id,
+            searchMode,
+            mode: answer.mode,
+            debugEnabled,
+          });
+        }
       }
       await refreshSidebarTitles();
       return;
@@ -1159,7 +984,7 @@ async function ask(searchMode = "hybrid", forcedMode = null, confirmOverQuota = 
             activeRagStreamState.traceId = activeTraceId;
             activeRagStreamState.progressText = String(event.message || "API 配额已满，等待处理");
           }
-          pending.classList.remove("processing");
+          if (isViewingRequestSession()) pending.classList.remove("processing");
         } else if (event.type === "progress") {
           if (event.trace_id) activeTraceId = String(event.trace_id || "").trim();
           progressText = String(event.message || progressText);
@@ -1170,7 +995,7 @@ async function ask(searchMode = "hybrid", forcedMode = null, confirmOverQuota = 
         } else if (event.type === "chunk") {
           if (event.trace_id) activeTraceId = String(event.trace_id || "").trim();
           const chunk = String(event.text || "");
-          if (!assistantRow) {
+          if (isViewingRequestSession() && !assistantRow) {
             assistantRow = appendChatRow("assistant", "", true);
             assistantContent = assistantRow.querySelector(".content");
           }
@@ -1182,7 +1007,7 @@ async function ask(searchMode = "hybrid", forcedMode = null, confirmOverQuota = 
             }
             // Fast path: update immediately if enough time elapsed since last paint.
             const now = Date.now();
-            if (assistantContent && now - lastRenderAt >= 180) {
+            if (isViewingRequestSession() && assistantContent && now - lastRenderAt >= 180) {
               const parsed = stripThinkForPreview(streamedText);
               insertSystemRowsBefore(assistantRow, parsed.thoughts);
               upsertTraceMetaRowBefore(assistantRow, formatTraceMeta(activeTraceId));
@@ -1197,10 +1022,12 @@ async function ask(searchMode = "hybrid", forcedMode = null, confirmOverQuota = 
           if (activeRagStreamState && activeRagStreamState.sessionId === requestSessionId) {
             activeRagStreamState.traceId = activeTraceId;
           }
-          if (pendingContent) pendingContent.innerHTML = markdownToHtml("已中止");
-          pending.classList.remove("processing");
+          if (isViewingRequestSession()) {
+            if (pendingContent) pendingContent.innerHTML = markdownToHtml("已中止");
+            pending.classList.remove("processing");
+          }
           // Preserve any streamed content
-          if (streamedText && assistantContent) {
+          if (isViewingRequestSession() && streamedText && assistantContent) {
             const parsed = stripThinkForPreview(streamedText);
             insertSystemRowsBefore(assistantRow, parsed.thoughts);
             upsertTraceMetaRowBefore(assistantRow, formatTraceMeta(activeTraceId));
@@ -1213,15 +1040,17 @@ async function ask(searchMode = "hybrid", forcedMode = null, confirmOverQuota = 
             activeRagStreamState.traceId = activeTraceId;
           }
           const errorMsg = event.message || "请求失败";
-          if (pendingContent) pendingContent.innerHTML = markdownToHtml(`[错误] ${errorMsg}`);
-          pending.classList.remove("processing");
+          if (isViewingRequestSession()) {
+            if (pendingContent) pendingContent.innerHTML = markdownToHtml(`[错误] ${errorMsg}`);
+            pending.classList.remove("processing");
+          }
           // Preserve any streamed content before error
-          if (streamedText && assistantContent) {
+          if (isViewingRequestSession() && streamedText && assistantContent) {
             const parsed = stripThinkForPreview(streamedText);
             insertSystemRowsBefore(assistantRow, parsed.thoughts);
             upsertTraceMetaRowBefore(assistantRow, formatTraceMeta(activeTraceId));
             assistantContent.innerHTML = markdownToHtml(parsed.answer + `\n\n---\n\n**错误**: ${errorMsg}`);
-          } else if (!assistantRow) {
+          } else if (isViewingRequestSession() && !assistantRow) {
             // No content yet, just show error
             assistantRow = appendChatRow("assistant", `**错误**: ${errorMsg}`, true);
             upsertTraceMetaRowBefore(assistantRow, formatTraceMeta(activeTraceId));
@@ -1229,32 +1058,34 @@ async function ask(searchMode = "hybrid", forcedMode = null, confirmOverQuota = 
         } else if (event.type === "done") {
           if (event.trace_id) activeTraceId = String(event.trace_id || "").trim();
           streamFinalized = true;
-          removePending();
+          if (isViewingRequestSession()) removePending();
           finalPayload = event.payload || null;
           const answer = String(event.payload?.answer || streamedText || "");
           const resolvedSessionId = String(event.payload?.session_id || requestSessionId || "").trim();
-          if (currentSessionId === requestSessionId) currentSessionId = resolvedSessionId;
+          if (isViewingRequestSession()) currentSessionId = resolvedSessionId;
           appendMessageToRagSessionCache(resolvedSessionId, "助手", answer, activeTraceId || event.payload?.trace_id || "");
           activeRagStreamState = null;
-          if (!assistantRow) {
+          if (isViewingRequestSession() && !assistantRow) {
             assistantRow = appendChatRow("assistant", "", true);
             assistantContent = assistantRow.querySelector(".content");
           }
           const parsed = splitThinkBlocks(answer);
-          insertSystemRowsBefore(assistantRow, parsed.thoughts);
-          upsertTraceMetaRowBefore(assistantRow, formatTraceMeta(activeTraceId || event.payload?.trace_id));
-          if (assistantContent) {
+          if (isViewingRequestSession()) insertSystemRowsBefore(assistantRow, parsed.thoughts);
+          if (isViewingRequestSession()) upsertTraceMetaRowBefore(assistantRow, formatTraceMeta(activeTraceId || event.payload?.trace_id));
+          if (isViewingRequestSession() && assistantContent) {
             const fallback = stripThinkForPreview(answer);
             assistantContent.innerHTML = markdownToHtml(parsed.answer || fallback.answer || "");
           }
-          addRagFeedbackForRow(assistantRow, {
-            question,
-            answer: parsed.answer || answer,
-            traceId: activeTraceId || event.payload?.trace_id,
-            searchMode,
-            mode: event.payload?.mode,
-            debugEnabled,
-          });
+          if (isViewingRequestSession()) {
+            addRagFeedbackForRow(assistantRow, {
+              question,
+              answer: parsed.answer || answer,
+              traceId: activeTraceId || event.payload?.trace_id,
+              searchMode,
+              mode: event.payload?.mode,
+              debugEnabled,
+            });
+          }
           if (currentSessionId === resolvedSessionId) renderCurrentRagSessionView();
         }
       }
@@ -1277,18 +1108,18 @@ async function ask(searchMode = "hybrid", forcedMode = null, confirmOverQuota = 
     // finalize the UI so the user isn't stuck with a spinning indicator.
     if (!streamFinalized && !quotaExceededEvent) {
       streamFinalized = true;
-      removePending();
-      if (streamedText && assistantContent) {
+      if (isViewingRequestSession()) removePending();
+      if (isViewingRequestSession() && streamedText && assistantContent) {
         const parsed = stripThinkForPreview(streamedText);
         insertSystemRowsBefore(assistantRow, parsed.thoughts);
         upsertTraceMetaRowBefore(assistantRow, formatTraceMeta(activeTraceId || finalPayload?.trace_id));
         assistantContent.innerHTML = markdownToHtml(parsed.answer);
-      } else if (streamedText && !assistantRow) {
+      } else if (isViewingRequestSession() && streamedText && !assistantRow) {
         const parsed = stripThinkForPreview(streamedText);
         assistantRow = appendChatRow("assistant", parsed.answer, true);
         upsertTraceMetaRowBefore(assistantRow, formatTraceMeta(activeTraceId || finalPayload?.trace_id));
         assistantContent = assistantRow.querySelector(".content");
-      } else if (!assistantRow) {
+      } else if (isViewingRequestSession() && !assistantRow) {
         // No content was received at all
         appendChatRow("assistant", "**\u9519\u8BEF**: \u670D\u52A1\u5668\u8FDE\u63A5\u5F02\u5E38\u4E2D\u65AD\uFF0C\u8BF7\u91CD\u8BD5", true);
       }
@@ -1327,13 +1158,13 @@ async function ask(searchMode = "hybrid", forcedMode = null, confirmOverQuota = 
   } catch (err) {
     streamFinalized = true;
     const errorMsg = err.message || "请求失败";
-    removePending();
+      if (isViewingRequestSession()) removePending();
     // Preserve any streamed content before network/parsing error
-    if (streamedText && assistantContent) {
+    if (isViewingRequestSession() && streamedText && assistantContent) {
       const parsed = stripThinkForPreview(streamedText);
       insertSystemRowsBefore(assistantRow, parsed.thoughts);
       assistantContent.innerHTML = markdownToHtml(parsed.answer + `\n\n---\n\n**错误**: ${errorMsg}`);
-    } else if (!assistantRow) {
+    } else if (isViewingRequestSession() && !assistantRow) {
       appendChatRow("assistant", `**错误**: ${errorMsg}`, true);
     }
     appendMessageToRagSessionCache(requestSessionId, "助手", `**错误**: ${errorMsg}`);
@@ -1419,7 +1250,14 @@ async function loadWorkflowConfig() {
   const source = document.getElementById("wf-source");
   if (baseUrl) baseUrl.value = String(cfg.base_url || "");
   if (model) model.value = String(cfg.model || "");
-  if (apiKey) apiKey.value = String(cfg.api_key || "");
+  if (apiKey) {
+    apiKey.value = "";
+    const keyConfigured = String(cfg.api_key_configured || "0") === "1";
+    const keySource = String(cfg.api_key_source || "");
+    apiKey.placeholder = keyConfigured
+      ? (keySource === "env" ? "留空则使用环境变量 DEEPSEEK_API_KEY" : "已保存密钥，留空优先使用环境变量")
+      : "留空则使用环境变量 DEEPSEEK_API_KEY";
+  }
   if (source) source.value = String(cfg.source || "deepseek");
 
   const end = new Date();
@@ -1710,13 +1548,11 @@ async function init() {
   document.getElementById("mode-reasoner").onclick = () => setMode("reasoner");
   setMode("local");
 
-  document.getElementById("rag-toggle-sidebar").onclick = () => toggleSidebar("rag-sidebar");
-  document.getElementById("preview-toggle-sidebar").onclick = () => toggleSidebar("preview-sidebar");
-  updateSidebarToggleButton("rag-sidebar");
-  updateSidebarToggleButton("preview-sidebar");
-  window.addEventListener("resize", () => {
-    updateSidebarToggleButton("rag-sidebar");
-    updateSidebarToggleButton("preview-sidebar");
+  mountAppSidebarController("rag-sidebar", "rag", {
+    storageKeyAliases: ["sidebar:rag_system:rag:v2"],
+  });
+  mountAppSidebarController("preview-sidebar", "preview", {
+    storageKeyAliases: ["sidebar:rag_system:preview:v2"],
   });
   document.getElementById("rag-new-session").onclick = createSession;
   document.getElementById("rag-delete-session").onclick = deleteCurrentSession;

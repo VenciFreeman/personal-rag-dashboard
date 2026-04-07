@@ -20,8 +20,10 @@ from typing import Any, Callable
 
 try:
     from core_service.config import get_settings
+    from core_service.runtime_data import iter_core_runtime_data_roots, shared_vector_db_dir
 except ModuleNotFoundError:
     from config import get_settings
+    from runtime_data import iter_core_runtime_data_roots, shared_vector_db_dir
 
 _SETTINGS = get_settings()
 EMBEDDING_MODEL = _SETTINGS.embedding_model
@@ -53,8 +55,15 @@ _STDIO_FALLBACK_STREAMS: list[io.TextIOBase] = []
 def _data_roots() -> list[Path]:
     core_service_root = Path(__file__).resolve().parent
     legacy_root = core_service_root.parent / "ai_conversations_summary" / "data"
-    # Prefer shared core_service data first, then legacy ai_conversations_summary data.
-    return [core_service_root / "data", legacy_root]
+    roots: list[Path] = []
+    seen: set[str] = set()
+    for root in [*iter_core_runtime_data_roots(), legacy_root]:
+        key = str(root)
+        if key in seen:
+            continue
+        seen.add(key)
+        roots.append(root)
+    return roots
 
 
 def _ensure_stdio_streams() -> None:
@@ -1197,7 +1206,7 @@ def _parse_args() -> argparse.Namespace:
 
     parser = argparse.ArgumentParser(description="Build/search RAG vector index from documents")
     parser.add_argument("--documents-dir", default=str(root_dir / "documents"), help="Documents directory")
-    parser.add_argument("--index-dir", default=str(root_dir / "data" / "vector_db"), help="Vector index directory")
+    parser.add_argument("--index-dir", default=str(shared_vector_db_dir()), help="Vector index directory")
     parser.add_argument("--backend", default="auto", choices=["auto", "faiss", "chroma"], help="Vector backend")
     parser.add_argument("--query", default="", help="Optional query text to run vector search")
     parser.add_argument("--sync-missing", action="store_true", help="Only embed and append documents missing from FAISS metadata")

@@ -1,8 +1,10 @@
 # Core web runtime dependencies
-# Recommended install target in this monorepo: ../.venv
+# Recommended install target in this monorepo: ../.venv shared by launch_web / benchmark / maintenance scripts.
 fastapi
 uvicorn
 jinja2
 openai
 python-multipart
 Pillow
+argon2-cffi
+Send2Trash

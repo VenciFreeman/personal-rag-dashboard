@@ -73,7 +73,10 @@
 
 ### **date**
 
-- 优先识别输入内容中最早的updated_at字段的日期，如果缺失则使用当前日期（YYYY-MM-DD）
+- 优先使用输入中明确提供的 source_filename_date 字段，该字段来自源文件名开头日期
+- 支持两种文件名日期格式：`YYYY-MM-DD` 与 `YYMMDD`
+- 当 `source_filename_date` 存在时，必须原样输出为 `YYYY-MM-DD`
+- 仅当 `source_filename_date` 缺失时，才回退到识别输入内容中最早的 `updated_at` 字段日期；若仍缺失，则使用当前日期（YYYY-MM-DD）
 
 ### **tags**
 

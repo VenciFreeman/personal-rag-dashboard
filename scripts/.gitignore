@@ -1,0 +1,17 @@
+﻿# scripts directory .gitignore
+# Scripts may generate temporary outputs
+
+# Python cache
+__pycache__/
+*.py[cod]
+.pytest_cache/
+
+# Output and temp files
+*.log
+*.tmp
+output/
+results/
+*.backup
+
+# OS/IDE
+.DS_Store

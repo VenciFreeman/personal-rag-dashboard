@@ -1,0 +1,157 @@
+:root {
+  --shared-sidebar-expanded-width: 280px;
+  --shared-sidebar-collapsed-width: 60px;
+  --shared-sidebar-header-height: 48px;
+  --shared-sidebar-radius: 12px;
+  --shared-sidebar-border: 1px solid #42443a;
+  --shared-sidebar-bg: #252720;
+  --shared-sidebar-header-bg: #2b2d26;
+  --shared-sidebar-title-color: #d7d7c9;
+  --shared-sidebar-meta-color: #9ea38f;
+  --shared-sidebar-transition: 200ms ease;
+  --shared-sidebar-gap: 12px;
+  --shared-sidebar-padding: 10px;
+  --shared-sidebar-collapsed-padding: 10px 6px;
+}
+
+.shared-sidebar-layout,
+.analysis-workspace {
+  --sidebar-width: var(--shared-sidebar-expanded-width);
+  --sidebar-collapsed-width: var(--shared-sidebar-collapsed-width);
+  gap: var(--shared-sidebar-gap);
+}
+
+.shared-sidebar-shell,
+.analysis-sidebar {
+  background: var(--shared-sidebar-bg);
+  border: var(--shared-sidebar-border);
+  border-radius: var(--shared-sidebar-radius);
+  transition:
+    width var(--shared-sidebar-transition),
+    padding var(--shared-sidebar-transition),
+    max-height var(--shared-sidebar-transition),
+    border-color var(--shared-sidebar-transition),
+    background var(--shared-sidebar-transition);
+}
+
+.shared-sidebar-header,
+.analysis-sidebar .sidebar-head {
+  min-height: var(--shared-sidebar-header-height);
+  margin-bottom: 8px;
+  padding: 0 2px 8px;
+  border-bottom: 1px solid rgba(215, 215, 201, 0.08);
+  align-items: center;
+}
+
+.shared-sidebar-title,
+.analysis-sidebar .sidebar-head strong {
+  font-size: 13px;
+  font-weight: 700;
+  color: var(--shared-sidebar-title-color);
+  letter-spacing: 0.01em;
+}
+
+.shared-sidebar-toggle,
+.analysis-sidebar .sidebar-toggle {
+  min-width: 36px;
+  min-height: 36px;
+  padding: 6px 8px;
+  border-radius: 10px;
+  transition:
+    background var(--shared-sidebar-transition),
+    border-color var(--shared-sidebar-transition),
+    color var(--shared-sidebar-transition),
+    transform var(--shared-sidebar-transition);
+}
+
+.shared-sidebar-toggle:hover,
+.analysis-sidebar .sidebar-toggle:hover {
+  background: rgba(255, 255, 255, 0.05);
+}
+
+.shared-sidebar-toggle:active,
+.analysis-sidebar .sidebar-toggle:active {
+  transform: translateY(1px);
+}
+
+.shared-sidebar-body,
+.analysis-sidebar .sidebar-body {
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow-y: auto;
+  overflow-x: hidden;
+  scrollbar-width: thin;
+  scrollbar-color: #5a5d50 transparent;
+}
+
+.shared-sidebar-body::-webkit-scrollbar,
+.analysis-sidebar .sidebar-body::-webkit-scrollbar {
+  width: 8px;
+}
+
+.shared-sidebar-body::-webkit-scrollbar-thumb,
+.analysis-sidebar .sidebar-body::-webkit-scrollbar-thumb {
+  background: #4d5045;
+  border-radius: 999px;
+}
+
+.shared-sidebar-layout.sidebar-collapsed,
+.analysis-workspace.sidebar-collapsed {
+  grid-template-columns: var(--sidebar-collapsed-width) minmax(0, 1fr);
+}
+
+.shared-sidebar-shell.collapsed,
+.analysis-sidebar.collapsed {
+  width: var(--sidebar-collapsed-width);
+  padding: var(--shared-sidebar-collapsed-padding);
+}
+
+.shared-sidebar-shell.collapsed > *:not(.shared-sidebar-header):not(.sidebar-head),
+.analysis-sidebar.collapsed > *:not(.sidebar-head) {
+  display: none;
+}
+
+.shared-sidebar-shell.collapsed .shared-sidebar-header,
+.analysis-sidebar.collapsed .sidebar-head {
+  justify-content: center;
+}
+
+.shared-sidebar-shell.collapsed .shared-sidebar-title,
+.analysis-sidebar.collapsed .sidebar-head strong {
+  display: none;
+}
+
+@media (max-width: 820px), (hover: none) and (pointer: coarse) {
+  .shared-sidebar-layout,
+  .shared-sidebar-layout.sidebar-collapsed,
+  .analysis-workspace,
+  .analysis-workspace.sidebar-collapsed {
+    grid-template-columns: 1fr;
+    grid-template-rows: auto minmax(0, 1fr);
+  }
+
+  .shared-sidebar-shell,
+  .analysis-sidebar {
+    width: 100%;
+    max-height: min(52vh, 520px);
+    padding: var(--shared-sidebar-padding);
+  }
+
+  .shared-sidebar-shell.collapsed,
+  .analysis-sidebar.collapsed {
+    width: 100%;
+    max-height: var(--shared-sidebar-header-height);
+    padding: 8px 10px;
+    overflow: hidden;
+  }
+
+  .shared-sidebar-shell.collapsed .shared-sidebar-header,
+  .analysis-sidebar.collapsed .sidebar-head {
+    justify-content: space-between;
+  }
+
+  .shared-sidebar-shell.collapsed .shared-sidebar-title,
+  .analysis-sidebar.collapsed .sidebar-head strong {
+    display: inline;
+  }
+}

@@ -3,23 +3,27 @@
 <head>
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, viewport-fit=cover" />
-  <title>Vincent's Library Tracker</title>
+  <title>Library Tracker</title>
   <link rel="apple-touch-icon" sizes="180x180" href="/static/favicon_logosc/apple-touch-icon.png" />
   <link rel="icon" type="image/png" sizes="32x32" href="/static/favicon_logosc/favicon-32x32.png" />
   <link rel="icon" type="image/png" sizes="16x16" href="/static/favicon_logosc/favicon-16x16.png" />
   <link rel="shortcut icon" href="/static/favicon_logosc/favicon.ico" />
   <link rel="manifest" href="/static/favicon_logosc/site.webmanifest" />
-  <link rel="stylesheet" href="/static/app.css?v=20260319c" />
+  <link rel="stylesheet" href="/static/app.css?v={{ local_asset_version }}" />
+  <link rel="stylesheet" href="/core-static/sidebar_shared.css?v=20260326a" />
+  <link rel="stylesheet" href="/core-static/analysis_shared.css?v=20260323e" />
+  <link rel="stylesheet" href="/core-static/markdown_shared.css?v=20260322b" />
 </head>
 <body>
   <header class="top">
-    <h1>Vincent's Library Tracker</h1>
+    <h1>Library Tracker</h1>
   </header>
 
   <main class="shell">
     <nav class="tabs" role="tablist" aria-label="Library tabs">
       <button class="tab active" id="tab-query" data-tab="query" role="tab" aria-selected="true">查询</button>
       <button class="tab" id="tab-stats" data-tab="stats" role="tab" aria-selected="false">统计</button>
+      <button class="tab" id="tab-analysis" data-tab="analysis" role="tab" aria-selected="false">分析报告</button>
     </nav>
 
     <section id="panel-query" class="panel tab-panel active" role="tabpanel" aria-labelledby="tab-query">
@@ -96,27 +100,88 @@
           <table class="stats-table" id="stats-overview-table"></table>
         </div>
 
-        <div class="stats-charts-grid">
-          <div class="chart-card">
-            <h3>Book</h3>
-            <div class="chart-canvas-wrap"><canvas id="stats-chart-book"></canvas></div>
-            <div class="chart-legend" id="stats-legend-book"></div>
+        <div class="chart-grid-4 stats-chart-grid">
+          <div class="chart-box overview-chart-card">
+            <div class="chart-title">Book</div>
+            <div id="stats-chart-book" class="chart-host"></div>
           </div>
-          <div class="chart-card">
-            <h3>Video</h3>
-            <div class="chart-canvas-wrap"><canvas id="stats-chart-video"></canvas></div>
-            <div class="chart-legend" id="stats-legend-video"></div>
+          <div class="chart-box overview-chart-card">
+            <div class="chart-title">Video</div>
+            <div id="stats-chart-video" class="chart-host"></div>
           </div>
-          <div class="chart-card">
-            <h3>Music</h3>
-            <div class="chart-canvas-wrap"><canvas id="stats-chart-music"></canvas></div>
-            <div class="chart-legend" id="stats-legend-music"></div>
+          <div class="chart-box overview-chart-card">
+            <div class="chart-title">Music</div>
+            <div id="stats-chart-music" class="chart-host"></div>
           </div>
-          <div class="chart-card">
-            <h3>Game</h3>
-            <div class="chart-canvas-wrap"><canvas id="stats-chart-game"></canvas></div>
-            <div class="chart-legend" id="stats-legend-game"></div>
+          <div class="chart-box overview-chart-card">
+            <div class="chart-title">Game</div>
+            <div id="stats-chart-game" class="chart-host"></div>
           </div>
+        </div>
+
+        <div class="chart-box-full stats-chart-panel">
+          <div class="chart-title">记录总量走势</div>
+          <div id="stats-chart-area" class="chart-host chart-host-large"></div>
+        </div>
+
+        <div class="chart-box-full stats-chart-panel">
+          <div class="chart-title">维度标签走势</div>
+          <div class="component-selector">
+            <label for="stats-trend-label">媒介</label>
+            <select id="stats-trend-label"></select>
+          </div>
+          <div id="stats-chart-trend" class="chart-host chart-host-large"></div>
+        </div>
+      </div>
+    </section>
+
+    <section id="panel-analysis" class="tab-panel" role="tabpanel" aria-labelledby="tab-analysis">
+      <div class="workspace analysis-workspace" id="analysis-shell">
+        <aside class="sidebar analysis-sidebar" id="analysis-sidebar">
+          <div class="sidebar-head">
+            <strong>分析报告</strong>
+            <button id="btn-analysis-sidebar-toggle" class="sidebar-toggle ghost" type="button" title="收起或展开侧栏">&lt;</button>
+          </div>
+          <div class="sidebar-body">
+            <div class="analysis-side-tabs" role="tablist">
+              <button class="analysis-side-tab active" type="button" data-analysis-view="quarterly" aria-selected="true">季度报告</button>
+              <button class="analysis-side-tab" type="button" data-analysis-view="yearly" aria-selected="false">年度报告</button>
+            </div>
+            <div class="analysis-sidebar-section-title" id="analysis-sidebar-section-title">报告目录</div>
+            <ul class="list analysis-report-list" id="analysis-sidebar-report-list"></ul>
+          </div>
+        </aside>
+
+        <div class="main-panel analysis-main">
+          <section class="analysis-view active" id="analysis-quarterly-view">
+            <div class="analysis-toolbar-row">
+              <label class="analysis-select-field" for="analysis-quarterly-period-select">
+                <span>季度</span>
+                <select id="analysis-quarterly-period-select"></select>
+              </label>
+              <div class="analysis-toolbar-actions">
+                <button id="btn-analysis-quarterly-local" class="accent-btn" type="button">本地生成</button>
+                <button id="btn-analysis-quarterly-deepseek" class="primary" type="button">DeepSeek</button>
+              </div>
+            </div>
+            <div class="analysis-meta-row" id="analysis-quarterly-meta"></div>
+            <article id="analysis-quarterly-doc" class="analysis-doc markdown-body"></article>
+          </section>
+
+          <section class="analysis-view" id="analysis-yearly-view">
+            <div class="analysis-toolbar-row">
+              <label class="analysis-select-field" for="analysis-yearly-period-select">
+                <span>年份</span>
+                <select id="analysis-yearly-period-select"></select>
+              </label>
+              <div class="analysis-toolbar-actions">
+                <button id="btn-analysis-yearly-local" class="accent-btn" type="button">本地生成</button>
+                <button id="btn-analysis-yearly-deepseek" class="primary" type="button">DeepSeek</button>
+              </div>
+            </div>
+            <div class="analysis-meta-row" id="analysis-yearly-meta"></div>
+            <article id="analysis-yearly-doc" class="analysis-doc markdown-body"></article>
+          </section>
         </div>
       </div>
     </section>
@@ -196,6 +261,20 @@
     </div>
   </dialog>
 
-  <script src="/static/app.js?v=20260319d"></script>
+  <div id="analysis-context-menu" class="analysis-context-menu hidden" role="menu" aria-hidden="true">
+    <button id="btn-analysis-open-report-location" class="analysis-context-menu-item" type="button" role="menuitem">打开报告所在位置</button>
+    <button id="btn-analysis-delete-report" class="analysis-context-menu-item" type="button" role="menuitem">删除报告</button>
+  </div>
+
+  <script src="https://cdn.jsdelivr.net/npm/echarts@5.5.1/dist/echarts.min.js"></script>
+  <script src="/core-static/markdown.js?v=20260403a"></script>
+  <script src="/core-static/ui_bootstrap.js?v=20260326c"></script>
+  <script src="/core-static/app_shell.js?v=20260326c"></script>
+  <script src="/core-static/report_shell.js?v=20260326b"></script>
+  <script src="/static/modules/query_workspace.js?v={{ local_asset_version }}"></script>
+  <script src="/static/modules/editor.js?v={{ local_asset_version }}"></script>
+  <script src="/static/modules/stats.js?v={{ local_asset_version }}"></script>
+  <script src="/static/app.js?v={{ local_asset_version }}"></script>
+  <script src="/static/analysis.js?v={{ local_asset_version }}"></script>
 </body>
 </html>

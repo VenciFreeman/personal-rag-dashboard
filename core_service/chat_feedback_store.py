@@ -3,13 +3,13 @@ from __future__ import annotations
 import json
 import threading
 from datetime import datetime
-from pathlib import Path
 from typing import Any
 from uuid import uuid4
 
+from core_service.runtime_data import app_runtime_root
 
-WORKSPACE_ROOT = Path(__file__).resolve().parent.parent
-FEEDBACK_FILE = WORKSPACE_ROOT / "nav_dashboard" / "data" / "chat_feedback.json"
+
+FEEDBACK_FILE = app_runtime_root("nav_dashboard") / "chat_feedback.json"
 FEEDBACK_MAX = 2000
 _LOCK = threading.Lock()
 

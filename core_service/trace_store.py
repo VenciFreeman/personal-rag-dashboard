@@ -2,17 +2,14 @@ from __future__ import annotations
 
 from datetime import datetime
 import json
-import os
 import threading
 from pathlib import Path
 from typing import Any
 
+from core_service.runtime_data import app_runtime_root
 
-WORKSPACE_ROOT = Path(__file__).resolve().parent.parent
-TRACE_RECORDS_DIR = WORKSPACE_ROOT / "nav_dashboard" / "data"
-TRACE_RECORDS_LEGACY_FILE = TRACE_RECORDS_DIR / "trace_records.jsonl"
-TRACE_RECORDS_JSON_FILE = TRACE_RECORDS_DIR / "trace_records.json"
-TRACE_RECORDS_MAX = max(100, int(os.getenv("TRACE_RECORDS_MAX", "2000") or "2000"))
+
+TRACE_RECORDS_DIR = app_runtime_root("nav_dashboard") / "trace_records"
 _LOCK = threading.Lock()
 
 
@@ -45,29 +42,17 @@ def _trace_records_file_for_month(month_key: str) -> Path:
 
 
 def list_trace_record_paths() -> list[Path]:
-    monthly = sorted(
+    return sorted(
         [path for path in TRACE_RECORDS_DIR.glob("trace_records_*.jsonl") if path.is_file()],
         key=lambda path: path.name,
     )
-    paths: list[Path] = []
-    if TRACE_RECORDS_LEGACY_FILE.exists():
-        paths.append(TRACE_RECORDS_LEGACY_FILE)
-    paths.extend(monthly)
-    if TRACE_RECORDS_JSON_FILE.exists() or paths:
-        paths.append(TRACE_RECORDS_JSON_FILE)
-    return paths
 
 
 def _iter_trace_jsonl_files_locked() -> list[Path]:
-    monthly = sorted(
+    return sorted(
         [path for path in TRACE_RECORDS_DIR.glob("trace_records_*.jsonl") if path.is_file()],
         key=lambda path: path.name,
     )
-    files: list[Path] = []
-    if TRACE_RECORDS_LEGACY_FILE.exists():
-        files.append(TRACE_RECORDS_LEGACY_FILE)
-    files.extend(monthly)
-    return files
 
 
 def write_trace_record(record: dict[str, Any]) -> None:
@@ -85,11 +70,6 @@ def write_trace_record(record: dict[str, Any]) -> None:
         trace_file.parent.mkdir(parents=True, exist_ok=True)
         with trace_file.open("a", encoding="utf-8") as handle:
             handle.write(json.dumps(payload, ensure_ascii=False) + "\n")
-        records = _load_recent_trace_records_locked(limit=TRACE_RECORDS_MAX)
-        records.append(payload)
-        if len(records) > TRACE_RECORDS_MAX:
-            records = records[-TRACE_RECORDS_MAX:]
-        _write_trace_snapshot_locked(records)
 
 
 def get_trace_record(trace_id: str) -> dict[str, Any] | None:
@@ -98,10 +78,6 @@ def get_trace_record(trace_id: str) -> dict[str, Any] | None:
         return None
 
     with _LOCK:
-        records = _load_trace_records_from_snapshot_locked()
-        for row in reversed(records):
-            if isinstance(row, dict) and str(row.get("trace_id", "") or "").strip() == value:
-                return row
         for path in reversed(_iter_trace_jsonl_files_locked()):
             for row in reversed(_load_trace_records_from_jsonl_path_locked(path)):
                 if isinstance(row, dict) and str(row.get("trace_id", "") or "").strip() == value:
@@ -122,8 +98,18 @@ def render_trace_export(record: dict[str, Any]) -> str:
     ranking = record.get("ranking") if isinstance(record.get("ranking"), dict) else {}
     llm = record.get("llm") if isinstance(record.get("llm"), dict) else {}
     result = record.get("result") if isinstance(record.get("result"), dict) else {}
+    answer_guardrail_mode = record.get("answer_guardrail_mode") if isinstance(record.get("answer_guardrail_mode"), dict) else {}
     tools = record.get("tools") if isinstance(record.get("tools"), list) else []
     stages = record.get("stages") if isinstance(record.get("stages"), dict) else {}
+    media_timing_breakdown = retrieval.get("media_timing_breakdown") if isinstance(retrieval.get("media_timing_breakdown"), dict) else {}
+    layer_breakdown = retrieval.get("layer_breakdown") if isinstance(retrieval.get("layer_breakdown"), dict) else {}
+    trace_sections = {
+        "planner": record.get("planner") if isinstance(record.get("planner"), dict) else {},
+        "execution": record.get("execution") if isinstance(record.get("execution"), dict) else {},
+        "answer": record.get("answer") if isinstance(record.get("answer"), dict) else {},
+        "observability": record.get("observability") if isinstance(record.get("observability"), dict) else {},
+        "system": record.get("system") if isinstance(record.get("system"), dict) else {},
+    }
 
     total = _to_float(record.get("total_elapsed_seconds"))
     if total <= 0:
@@ -173,6 +159,7 @@ def render_trace_export(record: dict[str, Any]) -> str:
             status = str(tool.get("status", "") or "")
             latency_ms = _format_ms(tool.get("latency_ms"))
             result_count = tool.get("result_count")
+            mention_count = int(tool.get("mention_count", 0) or 0)
             source_counts = tool.get("source_counts") if isinstance(tool.get("source_counts"), dict) else {}
             source_suffix = ""
             if source_counts:
@@ -183,7 +170,8 @@ def render_trace_export(record: dict[str, Any]) -> str:
                 source_suffix = f" | sources={ordered}"
             elif str(tool.get("per_item_source", "") or "").strip():
                 source_suffix = f" | source={str(tool.get('per_item_source') or '').strip()}"
-            lines.append(f"- {display_name} | {status} | latency={latency_ms} | results={result_count if result_count is not None else ''}{source_suffix}")
+            mention_suffix = f" | mentions={mention_count}" if mention_count > 0 else ""
+            lines.append(f"- {display_name} | {status} | latency={latency_ms} | results={result_count if result_count is not None else ''}{mention_suffix}{source_suffix}")
     else:
         lines.append("- none")
 
@@ -196,6 +184,9 @@ def render_trace_export(record: dict[str, Any]) -> str:
         f"Query Rewrite Status: {retrieval.get('query_rewrite_status', '')}",
         f"Query Rewrite Count: {retrieval.get('query_rewrite_count', '')}",
         f"Graph Expansion Batches: {retrieval.get('graph_expansion_batches', '')}",
+        f"Main Result Count: {layer_breakdown.get('main_count', retrieval.get('returned_result_count', ''))}",
+        f"Mention Result Count: {layer_breakdown.get('mention_count', retrieval.get('mention_result_count', ''))}",
+        f"Strict Scope Active: {layer_breakdown.get('strict_scope_active', '')}",
         "",
         "[Ranking]",
         f"Method: {ranking.get('method', '')}",
@@ -222,24 +213,46 @@ def render_trace_export(record: dict[str, Any]) -> str:
         f"Guard Reason: {ranking.get('guard_reason', '')}",
         "",
         "[LLM]",
-        f"Backend: {llm.get('backend', '')}",
-        f"Model: {llm.get('model', '')}",
-        f"Latency: {_format_seconds(llm.get('latency_seconds'))}",
-        f"Input Tokens Est: {llm.get('input_tokens_est', '')}",
-        f"Prompt Tokens Est: {llm.get('prompt_tokens_est', '')}",
-        f"Context Tokens Est: {llm.get('context_tokens_est', '')}",
-        f"Output Tokens Est: {llm.get('output_tokens_est', '')}",
-        f"Calls: {llm.get('calls', '')}",
-        "",
-        "[Stages]",
     ])
 
-    for key, value in stages.items():
-        seconds = _to_float(value)
-        ratio = ""
-        if total > 0 and seconds >= 0:
-            ratio = f" ({(seconds / total) * 100:.1f}%)"
-        lines.append(f"- {key}: {_format_seconds(seconds)}{ratio}")
+    if isinstance(llm.get("total"), dict):
+        for label in ("planner", "answer", "total"):
+            stats = llm.get(label) if isinstance(llm.get(label), dict) else {}
+            lines.extend(_render_llm_stats_block(label.title(), stats))
+    else:
+        lines.extend(
+            [
+                f"Backend: {llm.get('backend', '')}",
+                f"Model: {llm.get('model', '')}",
+                f"Latency: {_format_seconds(llm.get('latency_seconds'))}",
+                f"Input Tokens Est: {llm.get('input_tokens_est', '')}",
+                f"Prompt Tokens Est: {llm.get('prompt_tokens_est', '')}",
+                f"Context Tokens Est: {llm.get('context_tokens_est', '')}",
+                f"Output Tokens Est: {llm.get('output_tokens_est', '')}",
+                f"Calls: {llm.get('calls', '')}",
+            ]
+        )
+
+    lines.extend(["", "[Stages]"])
+
+    if media_timing_breakdown:
+        lines.extend(["", "[Media Timing]"])
+        for key, value in media_timing_breakdown.items():
+            lines.append(f"- {key}: {_format_seconds(value)}")
+
+    if any(trace_sections.values()):
+        for section_name in ("planner", "execution", "answer", "observability", "system"):
+            section = trace_sections.get(section_name) if isinstance(trace_sections.get(section_name), dict) else {}
+            if not section:
+                continue
+            lines.extend(_render_timing_section(section_name, section, total=total))
+    else:
+        for key, value in stages.items():
+            seconds = _to_float(value)
+            ratio = ""
+            if total > 0 and seconds >= 0:
+                ratio = f" ({(seconds / total) * 100:.1f}%)"
+            lines.append(f"- {key}: {_format_seconds(seconds)}{ratio}")
 
     lines.extend([
         "",
@@ -248,31 +261,53 @@ def render_trace_export(record: dict[str, Any]) -> str:
         f"No Context: {result.get('no_context', '')}",
         f"No Context Reason: {result.get('no_context_reason', '')}",
         f"Degraded To Retrieval: {result.get('degraded_to_retrieval', '')}",
+        f"Answer Guardrail Mode: {answer_guardrail_mode.get('mode', '')}",
     ])
     return "\n".join(lines).strip() + "\n"
 
 
-def _load_recent_trace_records_locked(limit: int = TRACE_RECORDS_MAX) -> list[dict[str, Any]]:
-    records = _load_trace_records_from_snapshot_locked()
-    if records:
-        return records[-max(1, int(limit)):]
-    return _load_trace_records_from_all_jsonl_locked(limit=limit)
+def _render_llm_stats_block(label: str, stats: dict[str, Any]) -> list[str]:
+    coverage = str(stats.get("coverage") or "").strip()
+    lines = [f"{label}:"]
+    lines.append(f"  Backend: {stats.get('backend', '')}")
+    lines.append(f"  Model: {stats.get('model', '')}")
+    lines.append(f"  Latency: {_format_seconds(stats.get('latency_seconds'))}")
+    lines.append(f"  Calls: {stats.get('calls', '')}")
+    if "input_tokens_est" in stats:
+        lines.append(f"  Input Tokens Est: {stats.get('input_tokens_est', '')}")
+        lines.append(f"  Prompt Tokens Est: {stats.get('prompt_tokens_est', '')}")
+        lines.append(f"  Context Tokens Est: {stats.get('context_tokens_est', '')}")
+        lines.append(f"  Output Tokens Est: {stats.get('output_tokens_est', '')}")
+    if coverage:
+        lines.append(f"  Coverage: {coverage}")
+    return lines
 
 
-def _load_trace_records_from_snapshot_locked() -> list[dict[str, Any]]:
-    if not TRACE_RECORDS_JSON_FILE.exists():
-        return []
-    try:
-        payload = json.loads(TRACE_RECORDS_JSON_FILE.read_text(encoding="utf-8"))
-    except Exception:
-        return []
-    if isinstance(payload, dict):
-        rows = payload.get("records")
-        if isinstance(rows, list):
-            return [row for row in rows if isinstance(row, dict)]
-    if isinstance(payload, list):
-        return [row for row in payload if isinstance(row, dict)]
-    return []
+def _render_timing_section(name: str, section: dict[str, Any], *, total: float, depth: int = 0) -> list[str]:
+    indent = "  " * depth
+    label = str(name or "section").replace("_", " ")
+    section_total = _to_float(section.get("total_seconds"))
+    ratio = f" ({(section_total / total) * 100:.1f}%)" if total > 0 and section_total >= 0 else ""
+    lines = [f"{indent}- {label}: {_format_seconds(section_total)}{ratio}"]
+    accounting_basis = str(section.get("accounting_basis") or "").strip()
+    if accounting_basis:
+        lines.append(f"{indent}  accounting_basis: {accounting_basis}")
+    breakdown = section.get("breakdown") if isinstance(section.get("breakdown"), dict) else {}
+    for key, value in breakdown.items():
+        seconds = _to_float(value)
+        child_ratio = f" ({(seconds / total) * 100:.1f}%)" if total > 0 and seconds >= 0 else ""
+        lines.append(f"{indent}  - {key}: {_format_seconds(seconds)}{child_ratio}")
+    llm_stats = section.get("llm_stats") if isinstance(section.get("llm_stats"), dict) else {}
+    if llm_stats:
+        lines.append(f"{indent}  llm_stats:")
+        for stat_line in _render_llm_stats_block("section", llm_stats):
+            lines.append(f"{indent}    {stat_line}")
+    for child_name, child_value in section.items():
+        if child_name in {"contract_version", "total_seconds", "breakdown", "llm_stats", "accounting_basis"}:
+            continue
+        if isinstance(child_value, dict) and "total_seconds" in child_value:
+            lines.extend(_render_timing_section(child_name, child_value, total=total, depth=depth + 1))
+    return lines
 
 
 def _load_trace_records_from_jsonl_path_locked(path: Path) -> list[dict[str, Any]]:
@@ -303,18 +338,6 @@ def _load_trace_records_from_all_jsonl_locked(limit: int | None = None) -> list[
     if limit is not None and len(records) > max(1, int(limit)):
         return records[-max(1, int(limit)):]
     return records
-
-
-def _write_trace_snapshot_locked(records: list[dict[str, Any]]) -> None:
-    payload = {
-        "updated_at": datetime.now().isoformat(timespec="seconds"),
-        "max_records": TRACE_RECORDS_MAX,
-        "records": [_json_safe(item) for item in records if isinstance(item, dict)],
-    }
-    try:
-        TRACE_RECORDS_JSON_FILE.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
-    except Exception:
-        return
 
 
 def _to_float(value: Any) -> float:

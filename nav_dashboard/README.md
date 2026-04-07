@@ -1,90 +1,100 @@
-﻿# Nav Dashboard
+# Nav Dashboard
 
-`nav_dashboard` 是整个工作台的统一入口，负责聚合多个后端服务并提供跨域 Agent 问答、系统概览与基准测试。
+`nav_dashboard` 是整个工作台的统一入口。它既是一个 Web 门户，也是跨服务 Agent 编排层，负责把文档 RAG、媒体库、本地分析页和观测能力聚合到一处。
 
-## 1. 服务定位
+默认地址：`http://127.0.0.1:8092/`
 
-- 对外入口：`http://127.0.0.1:8092/`
-- 聚合目标：
-  - AI Conversations Summary（文档 RAG）
-  - Library Tracker（媒体库检索）
-- 扩展能力：可选 Tavily 联网检索
+## 角色
 
-## 2. 架构与实现
+- 为用户提供统一聊天入口和多应用导航
+- 对接 `ai_conversations_summary` 文档检索能力
+- 对接 `library_tracker` 媒体库搜索与结构化结果
+- 聚合 `property` 和 `journey` 的统计、报告与任务状态
+- 提供 Trace、Ticket、Benchmark、任务中心和反馈管理
 
-### 2.1 组件划分
+## 当前能力
 
-- `web/main.py`：FastAPI 应用入口与页面路由
-- `web/api/agent.py`：Agent 对话接口
-- `web/api/benchmark.py`：基准测试与 SSE 进度流
-- `web/services/agent_service.py`：工具规划、并行执行、上下文组装、会话落盘
-- `data/`：会话、配额、benchmark 结果等运行态数据
+### Agent
 
-### 2.2 Agent 链路
+- Router 使用 `LLM understanding + follow-up policy + schema projection + deterministic routing policy` 的混合链路
+- 根据问题在以下工具间规划：
+  - `query_document_rag`
+  - `query_media_record`
+  - `search_web`
+  - `expand_mediawiki_concept`
+  - `search_tmdb_media`
+- 支持 follow-up 继承、媒体实体解析、工具计划、结果分层和 guardrail 模式切换
+- 媒体问答优先使用本地结构化字段直接生成答案，而不是把所有结果丢给 LLM 再自由概括
 
-1. 接收问题并做请求级限流与配额校验。
-2. 先做混合路由判断：LLM 分类、embedding 相似度、媒体实体识别、follow-up 上下文继承共同参与。
-3. 再规划工具调用（失败时回退到规则规划）。
-4. 并行调用文档检索、媒体检索、联网搜索、概念扩展等工具；文档检索默认最多改写 2 条 query，并保留原 query 的更高优先级。
-5. 过滤低相关结果并按引用上限截断。
-6. 对纯本地媒体 filter/evaluation 查询优先走 deterministic structured answer，直接展开评分、短评和细节字段。
-7. 拼装上下文并生成最终回答。
-8. 写入会话、trace、指标与调试信息。
+### Dashboard
 
-### 2.3 路由模型现状
+- 系统总览：RAG 文档数、Library 条目数、图谱质量、API 用量、Agent / RAG 会话数
+- 启动状态：读取 RAG 服务 `startup-status`，展示一致性检查与预热日志
+- 任务中心：展示后台分析/刷新任务并支持移动端展开
+- Trace：查询、导出、定位阶段耗时、查看 router / planner / guardrail 细节
+- Tickets：列表、详情、创建、AI draft、更新、软删除、Trace 跳转、按周趋势图
+- Benchmark：固定 case set、历史结果、router 分类回归、单项测试入口
+  - Benchmark case 支持 planner contract 字段以及可选的 `quality_assertions`，可直接断言终态 answer / rewrite / guardrail / reference 顺序等用户感知结果
+  - Benchmark 结果同时输出 taxonomy 级聚合与断言，可对污染回放、strict-scope、compare 终态质量分别设预算并在 Dashboard 直接盯盘
+  - `session_contamination_v1` 会回放真实多轮污染 / 串题 / strict-scope 漏判 Trace，优先覆盖真实用户可见回归
+- Chat Feedback：导出、清空、查看原始问题与 Trace 详情
 
-- 当前实现是 `LLM + 算法/规则` 的混合路由，不是纯算法。
-- 主要信号包括：LLM classifier、doc embedding similarity、media entity confidence、query intent cues、follow-up 继承状态。
-- 当前还不是自动在线学习系统；优化主要通过 trace、feedback、tickets、evals 做离线迭代。
-- 这套结构的目的是让路由策略可以持续演进，同时保留可解释性和可回放能力。
+## 关键目录
 
-### 2.4 Dashboard 指标来源
+- `web/main.py`：FastAPI 应用入口、SSR 页面、静态资源版本注入与路由装配
+- `web/api/agent.py`：聊天接口
+- `web/api/dashboard.py`：Dashboard / Trace / Ticket / Usage / Runtime Data 等聚合 API
+- `web/api/benchmark.py`：Benchmark API 与流式进度
+- `web/services/benchmark_case_catalog.py`：Benchmark case catalog 加载与 case-level 质量断言元数据
+- `web/api/response_models.py`：版本化 API response model（`api_schema_version`）
+- `web/services/agent_service.py`：Agent 主编排入口
+- `web/services/`：router、planner、answer、entity resolve、post-retrieval 等服务模块
+- `web/static/`：Dashboard 与聊天前端资源；trace / tickets / benchmark / data-admin 已拆为独立 controller + bootstrap 模块
+- `web/templates/`：主页面模板
+- `data/`：会话、Trace、Benchmark 结果等运行态数据，以及 `tickets/` 下需要长期保留并纳入备份的 Ticket 核心资产
 
-- 文档侧：从 RAG 服务读取文档量与检索统计。
-- 媒体侧：从 Library 服务读取条目与图谱统计。
-- Agent 侧：基于本地会话和调用计数汇总。
-- Tickets 侧：从 append-only 事件日志聚合列表、详情和按周提交/关闭趋势。
-- 观测侧：Trace 支持按月滚动存储，并可在 Dashboard 中查询、导出、转 Ticket。
+## 启动
 
-## 3. 安装（Windows）
-
-推荐使用仓库根目录统一 `.venv`：
-
-```powershell
-cd nav_dashboard
-..\.venv\Scripts\python.exe -m pip install -r requirements.txt
-```
-
-如果需要通过本项目一键拉起三站，请确保同时安装：
-
-```powershell
-..\.venv\Scripts\python.exe -m pip install -r ..\ai_conversations_summary\requirements.txt
-..\.venv\Scripts\python.exe -m pip install -r ..\library_tracker\requirements.txt
-```
-
-## 4. 启动
-
-### 4.1 本地单服务启动
+### 本地启动
 
 ```powershell
 ..\.venv\Scripts\python.exe launch_web.py
 ```
 
-或双击：
+或直接运行：
 
 ```text
 launch_web.bat
 ```
 
-说明：launcher 会在导入配置前自动读取仓库根目录的 `env.local.ps1`。
+`launch_web.py` 会自动：
 
-### 4.2 局域网一键部署（三站）
+- 读取仓库根目录 `env.local.ps1`
+- 尝试重启到根 `.venv`
+- 清理占用 8092 端口的旧进程
+- 服务可用后打开浏览器
+
+### 局域网部署
 
 ```text
 deploy_lan_web.bat
 ```
 
-## 5. 常用环境变量
+该脚本会连同 `ai_conversations_summary`、`library_tracker`、`property`、`journey` 一起拉起。
+
+## 依赖安装
+
+推荐在仓库根目录完成安装：
+
+```powershell
+..\.venv\Scripts\python.exe -m pip install -r requirements.txt
+..\.venv\Scripts\python.exe -m pip install -r ..\ai_conversations_summary\requirements.txt
+..\.venv\Scripts\python.exe -m pip install -r ..\library_tracker\requirements.txt
+```
+
+如果需要完整联动，也建议安装 `property` 和 `journey` 的依赖。
+
+## 常用环境变量
 
 - `NAV_DASHBOARD_WEB_HOST`
 - `NAV_DASHBOARD_WEB_PORT`
@@ -94,28 +104,29 @@ deploy_lan_web.bat
 - `NAV_DASHBOARD_LOCAL_LLM_MODEL`
 - `NAV_DASHBOARD_QUERY_REWRITE_COUNT`
 - `NAV_DASHBOARD_PRIMARY_QUERY_SCORE_BONUS`
+- `NAV_DASHBOARD_TMDB_API_KEY`
+- `NAV_DASHBOARD_TMDB_READ_ACCESS_TOKEN`
 - `TAVILY_API_KEY`
 
-## 6. 运行数据说明
+## 数据落盘
 
-以下目录/文件属于运行态数据，通常不建议作为源码变更提交：
+以下路径通常属于运行态数据，不建议和源码改动一起提交：
 
-- `data/agent_sessions/`
-- `data/agent_quota.json`
-- `data/agent_quota_history.json`
-- `data/benchmark_results.json`
-- `data/trace_records.json` 与 `data/trace_records_YYYY_MM.jsonl`
-- `data/tickets.jsonl`
-- `data/chat_feedback.json`
+- `../data/nav_dashboard/agent_sessions/`
+- `../data/nav_dashboard/config/custom_cards.json`
+- `../data/nav_dashboard/state/agent_quota.json`
+- `../data/nav_dashboard/state/agent_quota_history.json`
+- `../data/nav_dashboard/benchmark/results.json`
+- `../data/nav_dashboard/trace_records/trace_records_YYYY_MM.jsonl`
+- `../data/nav_dashboard/observability/chat_feedback.json`
 
-## 7. 当前 Dashboard 能力
+以下路径属于需要长期保留的核心业务资产：
 
-- Dashboard tab：系统总览卡片、检索/观测表、Trace 查询、任务中心、Ticket 周趋势图。
-- Tickets tab：筛选、创建、AI draft、更新、软删除、trace 关联跳转。
-- 聊天反馈：支持导出、清空、长按查看原始问题与 trace 详情，使用站内浮窗而不是浏览器原生提示。
-- Agent 会话标题：后端持久化完整标题，前端按侧边栏宽度自然单行省略。
+- `../data/nav_dashboard/tickets/tickets.jsonl`
 
-## 8. 健康检查
+Ticket 事件日志不会被归入运行时清理目标，并会进入 Dashboard 数据备份/恢复链路。自动备份频率为每周一一次。
+
+## 健康检查
 
 ```powershell
 Invoke-WebRequest -Uri "http://127.0.0.1:8092/healthz" -UseBasicParsing
