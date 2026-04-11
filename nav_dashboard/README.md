@@ -92,6 +92,8 @@ deploy_lan_web.bat
 ..\.venv\Scripts\python.exe -m pip install -r ..\library_tracker\requirements.txt
 ```
 
+如果是首次搭工作区，优先直接运行仓库根 `setup_workspace.bat` 或 `scripts\install_workspace.bat`，再启动 Dashboard。
+
 如果需要完整联动，也建议安装 `property` 和 `journey` 的依赖。
 
 ## 常用环境变量

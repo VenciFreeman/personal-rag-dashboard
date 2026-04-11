@@ -565,7 +565,7 @@ def _handle_session_start() -> dict[str, Any]:
         "hookSpecificOutput": {
             "hookEventName": "SessionStart",
             "additionalContext": (
-                "Workflow entrypoint: .github/README.md | "
+                "Workflow entrypoint: .github/AGENT_WORKFLOW.md | "
                 "Rule library: .github/AGENT_RULES.md | "
                 "Hooks enforce TASK_TYPE declaration, debug ticket search before coding, and post-check gates after edits."
             ),

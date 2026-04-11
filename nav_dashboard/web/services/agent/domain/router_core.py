@@ -25,6 +25,7 @@ from .media_helpers import (
     _extract_media_entities,
     _is_creator_collection_media_query,
     _looks_like_generic_media_scope,
+    _normalize_router_media_entity_candidate,
     _normalize_media_entities_and_filters,
     _resolve_library_aliases,
 )
@@ -246,7 +247,9 @@ def _should_skip_llm_tool_rewrite(question: str, decision: RouterDecision) -> bo
         return True
     evidence = decision.evidence if isinstance(decision.evidence, dict) else {}
     alias_resolution = evidence.get("router_alias_resolution") if isinstance(evidence.get("router_alias_resolution"), dict) else {}
+    creator_resolution = evidence.get("creator_resolution") if isinstance(evidence.get("creator_resolution"), dict) else {}
     has_alias_anchor = bool(list(alias_resolution.get("canonical_terms") or []))
+    has_creator_anchor = bool(str(creator_resolution.get("canonical") or "").strip())
     if evidence.get("title_anchored_version_compare_query") and decision.entities:
         return True
     if decision.lookup_mode == "entity_lookup" and decision.entities and (
@@ -255,10 +258,22 @@ def _should_skip_llm_tool_rewrite(question: str, decision: RouterDecision) -> bo
         or _question_requests_personal_evaluation(question)
     ):
         return True
+    if evidence.get("creator_collection_query") and (has_alias_anchor or has_creator_anchor):
+        return True
     if decision.query_class in {
         planner_contracts.ROUTER_QUERY_CLASS_PERSONAL_MEDIA_REVIEW_COLLECTION,
         planner_contracts.ROUTER_QUERY_CLASS_MUSIC_WORK_VERSIONS_COMPARE,
     } and decision.entities and has_alias_anchor:
+        return True
+    if (
+        decision.lookup_mode == "filter_search"
+        and decision.followup_mode == "inherit_filters"
+        and not decision.entities
+        and (
+            len([str(item).strip() for item in list(decision.date_range or []) if str(item).strip()]) == 2
+            or _has_specific_media_constraints(decision.filters)
+        )
+    ):
         return True
     if (
         decision.lookup_mode == "filter_search"
@@ -619,8 +634,9 @@ def _apply_router_semantic_repairs(
     if (
         decision.domain == "media"
         and decision.followup_mode == "none"
-        and not decision.entities
         and creator_anchor_entries
+        and not title_alias_terms
+        and not bool(ev.get("media_title_marked"))
         and any(token in str(question or "") for token in ("我", "我的", "自己", "记录"))
         and any(cue in str(question or "") for cue in ranking_compare_cues)
     ):
@@ -844,11 +860,17 @@ def _resolve_router_context(
     resolved_question = _render_trace_resolved_question(decision, previous_state)
     resolved_query_state = _build_resolved_query_state_from_decision(decision)
 
-    previous_trace = resolved_deps.find_previous_trace_context(history)
-    previous_trace_state = previous_trace.get("conversation_state_after") if isinstance(previous_trace.get("conversation_state_after"), dict) else {}
-    previous_trace_resolved_question = ""
-    if isinstance(previous_trace.get("query_understanding"), dict):
-        previous_trace_resolved_question = str(previous_trace.get("query_understanding", {}).get("resolved_question", "") or "").strip()
+    previous_trace_state = (
+        dict(previous_state.get("_router_previous_trace_state") or {})
+        if isinstance(previous_state.get("_router_previous_trace_state"), dict)
+        else {}
+    )
+    previous_trace_resolved_question = str(previous_state.get("_router_previous_trace_resolved_question") or "").strip()
+    if not previous_trace_state and not previous_trace_resolved_question:
+        previous_trace = resolved_deps.find_previous_trace_context(history)
+        previous_trace_state = previous_trace.get("conversation_state_after") if isinstance(previous_trace.get("conversation_state_after"), dict) else {}
+        if isinstance(previous_trace.get("query_understanding"), dict):
+            previous_trace_resolved_question = str(previous_trace.get("query_understanding", {}).get("resolved_question", "") or "").strip()
     previous_question = _find_previous_user_question(original_question, history)
     conversation_state_before = dict(previous_trace_state) if previous_trace_state else (
         _build_conversation_state_snapshot(previous_question, resolved_query_state=_infer_prior_question_state(previous_question, history))
@@ -975,7 +997,14 @@ def _build_router_decision(
     previous_question = _find_previous_user_question(raw_question, history)
     previous_trace = resolved_deps.find_previous_trace_context(history)
     previous_trace_state = previous_trace.get("conversation_state_after") if isinstance(previous_trace.get("conversation_state_after"), dict) else {}
+    previous_trace_resolved_question = ""
+    if isinstance(previous_trace.get("query_understanding"), dict):
+        previous_trace_resolved_question = str(previous_trace.get("query_understanding", {}).get("resolved_question", "") or "").strip()
     previous_state = dict(previous_trace_state) if previous_trace_state else _infer_prior_question_state(previous_question, history)
+    if previous_trace_state:
+        previous_state["_router_previous_trace_state"] = dict(previous_trace_state)
+    if previous_trace_resolved_question:
+        previous_state["_router_previous_trace_resolved_question"] = previous_trace_resolved_question
     previous_working_set = _get_previous_media_working_set(previous_trace)
     if previous_working_set:
         previous_state["working_set"] = previous_working_set
@@ -994,9 +1023,9 @@ def _build_router_decision(
     llm_classification_seconds = resolved_deps.perf_counter() - llm_classification_t0
     llm_label = str(llm_media.get("label") or CLASSIFIER_LABEL_OTHER)
     llm_entities = [
-        str(item).strip()
+        normalized
         for item in llm_media.get("entities", [])
-        if str(item).strip() and not _looks_like_generic_media_scope(str(item).strip())
+        if (normalized := _normalize_router_media_entity_candidate(str(item).strip()))
     ]
     llm_filters = _sanitize_media_filters(llm_media.get("filters"))
     llm_lookup_mode = str(llm_media.get("lookup_mode") or "general_lookup").strip() or "general_lookup"
@@ -1059,9 +1088,9 @@ def _build_router_decision(
         if str(item).strip()
     }
     explicit_media_entities = [
-        str(item).strip()
+        normalized
         for item in _extract_media_entities(raw_question)
-        if str(item).strip() and not _looks_like_generic_media_scope(str(item).strip())
+        if (normalized := _normalize_router_media_entity_candidate(str(item).strip()))
     ]
     if alias_matched_keys:
         explicit_media_entities = [
@@ -1215,7 +1244,12 @@ def _build_router_decision(
     tech_cues = _has_router_tech_cues(raw_question)
     if tech_cues and llm_label == CLASSIFIER_LABEL_TECH and not media_title_marked and not media_intent_cues and not media_surface:
         entities = []
-    media_signal = bool(entities) or media_surface or abstract_media_concept or collection_query or followup_mode != "none" or llm_domain == "media" or llm_lookup_mode != "general_lookup"
+    llm_media_lookup_signal = llm_domain == "media" and (
+        bool(llm_entities)
+        or bool(llm_filters)
+        or llm_lookup_mode == "concept_lookup"
+    )
+    media_signal = bool(entities) or media_surface or abstract_media_concept or collection_query or followup_mode != "none" or llm_media_lookup_signal
     tech_signal = tech_cues or llm_label == CLASSIFIER_LABEL_TECH or llm_domain == "tech"
 
     strong_tech_override = (
@@ -1237,7 +1271,6 @@ def _build_router_decision(
         or bool(router_primary_entity)
         or working_set_followup
         or (followup_mode != "none" and _state_has_media_context(previous_state))
-        or (llm_domain == "media" and llm_lookup_mode in {"filter_search", "entity_lookup"})
     )
     media_primary = explicit_media_anchor and not tech_primary
     mixed_domain = (
@@ -1269,6 +1302,10 @@ def _build_router_decision(
         intent = "media_lookup"
         domain = "media"
     elif media_signal and not tech_signal:
+        arbitration = "llm_media_weak_general"
+        intent = "knowledge_qa"
+        domain = "general"
+    elif llm_domain == "media" and not tech_signal:
         arbitration = "llm_media_weak_general"
         intent = "knowledge_qa"
         domain = "general"

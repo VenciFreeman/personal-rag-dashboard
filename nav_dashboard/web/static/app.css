@@ -418,6 +418,13 @@ body[data-active-tab="authorization"] #panel-authorization {
   gap: 12px;
 }
 
+.authorization-config-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(260px, 1fr));
+  gap: 12px;
+  margin-top: 12px;
+}
+
 .authorization-card {
   border: 1px solid #3a3c33;
   border-radius: 10px;
@@ -428,6 +435,14 @@ body[data-active-tab="authorization"] #panel-authorization {
 .authorization-card h3 {
   margin: 0 0 12px;
   color: #f2f2ea;
+}
+
+.authorization-config-card {
+  background: #20221c;
+}
+
+.authorization-field-meta {
+  min-height: 18px;
 }
 
 .authorization-section-label {
@@ -1318,8 +1333,8 @@ body[data-active-tab="authorization"] #panel-authorization {
 
   .tickets-filter-grid > .tickets-date-field {
     grid-column: span 1;
-    width: min(100%, 9.5rem);
-    max-width: min(100%, 9.5rem);
+    width: min(100%, 11.5rem);
+    max-width: min(100%, 11.5rem);
   }
 
   .tickets-meta-row {

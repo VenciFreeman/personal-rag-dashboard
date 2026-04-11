@@ -12,8 +12,6 @@ from uuid import uuid4
 
 from nav_dashboard.web.services.runtime_paths import (
     DEBUG_DIR,
-    LEGACY_APPDATA_NAV_DASHBOARD_DATA_DIR,
-    LEGACY_NAV_DASHBOARD_DATA_DIR,
     MEMORY_DIR,
     SESSIONS_DIR,
 )
@@ -72,35 +70,11 @@ def _memory_file_path(session_id: str) -> Path:
 
 
 def _legacy_session_file_paths(session_id: str) -> list[Path]:
-    sid = str(session_id or "").strip()
-    if not sid:
-        return []
-    roots = [
-        LEGACY_APPDATA_NAV_DASHBOARD_DATA_DIR / "agent_sessions",
-        LEGACY_NAV_DASHBOARD_DATA_DIR / "agent_sessions",
-    ]
-    paths: list[Path] = []
-    for root in roots:
-        candidate = root / f"{SESSION_FILE_PREFIX}{sid}.json"
-        if candidate not in paths:
-            paths.append(candidate)
-    return paths
+    return []
 
 
 def _legacy_memory_file_paths(session_id: str) -> list[Path]:
-    sid = str(session_id or "").strip()
-    if not sid:
-        return []
-    roots = [
-        LEGACY_APPDATA_NAV_DASHBOARD_DATA_DIR / "agent_sessions" / "_memory",
-        LEGACY_NAV_DASHBOARD_DATA_DIR / "agent_sessions" / "_memory",
-    ]
-    paths: list[Path] = []
-    for root in roots:
-        candidate = root / f"memory_{sid}.json"
-        if candidate not in paths:
-            paths.append(candidate)
-    return paths
+    return []
 
 
 def derive_session_title(question: str, max_len: int | None = None) -> str:

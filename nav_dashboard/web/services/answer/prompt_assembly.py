@@ -295,6 +295,7 @@ def _compose_response_sections(
 
     focus_item_limit = max(1, int(style.get("focus_item_limit") or 10))
     overview_item_limit = max(focus_item_limit, int(style.get("overview_item_limit") or 16))
+    review_clip_limit = max(24, int(style.get("review_clip_limit") or 80))
     synthesis_first = response_structure in {
         "curated_collection_synthesis",
         "local_list_plus_external_background",
@@ -331,7 +332,7 @@ def _compose_response_sections(
             return
         date = str(row.get("date") or "").strip()
         rating = row.get("rating")
-        comment = deps.clip_text(str(row.get("comment") or row.get("review") or ""), 80)
+        comment = deps.clip_text(str(row.get("comment") or row.get("review") or ""), review_clip_limit)
         target.append(f"- 本地记录证据：标题=《{title}》")
         if date:
             target.append(f"  日期={date}")
@@ -382,7 +383,7 @@ def _compose_response_sections(
                 continue
             date = str(row.get("date") or "").strip()
             rating = row.get("rating")
-            comment = deps.clip_text(str(row.get("comment") or row.get("review") or ""), 80)
+            comment = deps.clip_text(str(row.get("comment") or row.get("review") or ""), review_clip_limit)
 
             block: list[str] = [f"- 本地记录证据：标题=《{title}》"]
             if date:
@@ -529,6 +530,42 @@ def _preferred_answer_temperature(answer_strategy: Any | None) -> float:
     return 0.2
 
 
+def _adapt_answer_strategy_for_prompt(
+    answer_strategy: Any | None,
+    tool_results: list[ToolExecution],
+    deps: PromptAssemblyDeps,
+) -> Any | None:
+    if answer_strategy is None:
+        return None
+    if str(getattr(answer_strategy, "mode", "") or "") != "personal_media_review_collection":
+        return answer_strategy
+
+    style = dict(getattr(answer_strategy, "style_hints", {}) or {})
+    response_structure = str(style.get("response_structure") or "")
+    if response_structure not in {"local_review_list", "compare"}:
+        return answer_strategy
+
+    local_rows: list[dict[str, Any]] = []
+    for result in tool_results:
+        if result.status not in {"ok", "partial"}:
+            continue
+        if result.tool not in {TOOL_QUERY_MEDIA, TOOL_SEARCH_BY_CREATOR}:
+            continue
+        data = result.data if isinstance(result.data, dict) else {}
+        rows = deps.get_media_main_result_rows_from_data(data) if result.tool == TOOL_QUERY_MEDIA else (data.get("results") or [])
+        local_rows.extend([row for row in rows if isinstance(row, dict)])
+
+    local_count = len(local_rows)
+    if local_count < 12:
+        return answer_strategy
+
+    focus_limit = min(max(1, int(style.get("focus_item_limit") or 5)), 3)
+    style["focus_item_limit"] = focus_limit
+    style["overview_item_limit"] = min(max(focus_limit, int(style.get("overview_item_limit") or 16)), 8)
+    style["review_clip_limit"] = 48 if local_count >= 20 else 56
+    return type(answer_strategy)(mode=answer_strategy.mode, style_hints=style)
+
+
 def summarize_answer(
     *,
     question: str,
@@ -549,6 +586,7 @@ def summarize_answer(
     carry_over_from_previous_turn: bool = False,
 ) -> str:
     timing_data = timing_sink if isinstance(timing_sink, dict) else {}
+    answer_strategy = _adapt_answer_strategy_for_prompt(answer_strategy, tool_results, deps)
     structured_context_t0 = _time.perf_counter()
     hist_lines = _trim_history_for_prompt(
         history,

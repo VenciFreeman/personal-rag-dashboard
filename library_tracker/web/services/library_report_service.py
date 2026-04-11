@@ -8,6 +8,38 @@ from core_service.reporting import build_report_meta, build_report_filename, per
 from . import library_analysis_core as shared
 
 
+def _clean_review_excerpt(text: Any, limit: int = 220) -> str:
+    raw = " ".join(str(text or "").replace("\r", "").split())
+    return shared.truncate_text_by_chars(raw, limit) if raw else ""
+
+
+def _render_quarterly_notes(lines: list[str], context: dict[str, Any]) -> None:
+    lines.extend(["## 本期笔记摘录"])
+    for media_type in shared.MEDIA_TYPES:
+        representative = (context.get("representatives") or {}).get(media_type)
+        if not representative:
+            lines.extend([f"### {shared.MEDIA_LABELS[media_type]}", "> 本期没有留下有效短评。", ""])
+            continue
+        raw_note = _clean_review_excerpt(representative.get("review"), 280)
+        if not raw_note:
+            raw_note = "本期没有留下有效短评。"
+        lines.extend(
+            [
+                f"### {shared.MEDIA_LABELS[media_type]}{shared._item_markdown_link(representative.get('title') or '—', representative.get('id') or '')}",
+                f"> {raw_note}",
+                "",
+            ]
+        )
+
+
+def _render_yearly_tracks(lines: list[str], sections: dict[str, Any]) -> None:
+    lines.append("## 年度轨迹")
+    for media_type in shared.MEDIA_TYPES:
+        lines.append(f"### {shared.MEDIA_LABELS[media_type]}")
+        lines.append((sections.get("yearly_tracks") or {}).get(media_type) or "—")
+        lines.append("")
+
+
 def resolve_period(kind: str, period_key: str | None = None) -> shared.ReportPeriod:
     if kind == shared.REPORT_KIND_QUARTERLY:
         return shared._quarter_period_from_key(period_key) if period_key else shared._previous_quarter_period()
@@ -27,10 +59,10 @@ def render_report_markdown(period: shared.ReportPeriod, context: dict[str, Any],
         )
         lines.append(f"- **代表作：** {representatives_line}")
     else:
-        lines.append("- 年内各季度代表作品见后文“年度代表作品回看”，不再额外挑选全年单一代表作。")
+        lines.append("- 年报更关心这一年兴趣怎么移动，不再额外挑单一“年度代表作”。")
     lines.append("")
     if context.get("kind") == shared.REPORT_KIND_YEARLY:
-        lines.extend(["## 年内变化趋势", sections.get("annual_trend_text") or "—", ""])
+        lines.extend(["## 季度对比", sections.get("annual_trend_text") or "—", ""])
         trend_lines = [
             "| 媒介 | 季度 | 条数 | 平均评分 | 代表作品 |",
             "| :---: | :---: | :---: | :---: | :---: |",
@@ -41,57 +73,23 @@ def render_report_markdown(period: shared.ReportPeriod, context: dict[str, Any],
             )
         lines.extend(trend_lines)
         lines.append("")
+        lines.extend(["## 年度之最", sections.get("annual_extremes_text") or "—", ""])
     lines.extend(["## 与上一周期对比" if context.get("kind") == shared.REPORT_KIND_QUARTERLY else "## 同比参考", *(shared._markdown_comparison_table(context.get("comparison_rows") or [])), ""])
-    lines.extend(["## 各媒体分布特点", ""])
+    lines.extend(["## 各媒体分布", ""])
+    distribution_sections = sections.get("distribution_sections") if isinstance(sections.get("distribution_sections"), dict) else {}
     for media_type in shared.MEDIA_TYPES:
-        dist = (context.get("distribution") or {}).get(media_type, {})
         lines.append(f"### {shared.MEDIA_LABELS[media_type]}")
-        if context.get("kind") == shared.REPORT_KIND_YEARLY:
-            for item in shared._yearly_distribution_points(media_type, dist):
-                lines.append(f"- {shared._bold_leading_label(item)}")
+        section_text = distribution_sections.get(media_type)
+        if isinstance(section_text, str) and section_text.strip():
+            lines.append(section_text.strip())
         else:
-            lines.extend(
-                [
-                    f"- {shared._bold_leading_label(shared._distribution_dimension_line(dist.get('nationality_details') or [], '国家/地区', annual=False))}",
-                    f"- {shared._bold_leading_label(shared._distribution_dimension_line(dist.get('category_details') or [], '题材', annual=False))}",
-                    f"- {shared._bold_leading_label(shared._distribution_dimension_line(dist.get('channel_details') or [], '渠道', annual=False))}",
-                    f"- {shared._bold_leading_label(shared._distribution_dimension_line(dist.get('author_details') or [], '作者', annual=False))}",
-                ]
-            )
+            lines.append("本期样本有限，先保留原始记录。")
         lines.append("")
     lines.extend(["## 评分概览", sections.get("rating_text") or "—", "", *(shared._markdown_rating_table(context.get("rating_rows") or [])), ""])
     if context.get("kind") == shared.REPORT_KIND_QUARTERLY:
-        lines.extend(["## 本期亮点作品"])
-        for media_type in shared.MEDIA_TYPES:
-            representative = (context.get("representatives") or {}).get(media_type)
-            if not representative:
-                lines.extend([f"### {shared.MEDIA_LABELS[media_type]}", "- 本期无代表作品。", ""])
-                continue
-            reference = (context.get("external_references") or {}).get(media_type) or {}
-            highlight = (sections.get("highlights") or {}).get(media_type, {})
-            reference_parts = [part for part in [reference.get("intro"), reference.get("background"), reference.get("extra")] if str(part or "").strip()]
-            reference_text = " ".join(reference_parts) if reference_parts else "暂无稳定外部补充。"
-            lines.extend(
-                [
-                    f"### {shared.MEDIA_LABELS[media_type]}{shared._item_markdown_link(representative.get('title') or '—', representative.get('id') or '')}",
-                    f"- **评价：** {highlight.get('evaluation_summary') or shared._excerpt(representative.get('review'), 80)}",
-                    f"- **简介：** {reference_text}",
-                    f"- **理由：** {highlight.get('representative_reason') or shared._representative_basis(shared.MEDIA_LABELS[media_type], representative, (context.get('distribution') or {}).get(media_type, {}), (context.get('current_rows_by_media') or {}).get(media_type, []))}",
-                    "",
-                ]
-            )
+        _render_quarterly_notes(lines, context)
     else:
-        lines.append("## 年度代表作品回看")
-        for media_type in shared.MEDIA_TYPES:
-            lines.append(f"### {shared.MEDIA_LABELS[media_type]}")
-            lines.append(sections.get("yearly_category_summaries", {}).get(media_type) or "—")
-            lines.append("")
-            lines.append("| 季度 | 代表作品 | 评分 |")
-            lines.append("| :---: | :---: | :---: |")
-            for row in [item for item in (context.get("trend_rows") or []) if item.get("media_type") == media_type]:
-                title_cell = shared._item_markdown_link(row["representative_title"], row.get("representative_id")) if str(row.get("representative_title") or "").strip() and str(row.get("representative_title")) != "—" else "—"
-                lines.append(f"| {row['quarter']} | {title_cell} | {shared._format_rating(row['representative_rating'])} |")
-            lines.append("")
+        _render_yearly_tracks(lines, sections)
     lines.append("## 本期结构特征" if context.get("kind") == shared.REPORT_KIND_QUARTERLY else "## 年度结构特征")
     for item in (sections.get("structure_features") or [])[:4]:
         lines.append(f"- {item}")

@@ -1,2 +1,19 @@
-# Auto detect text files and perform LF normalization
+# Auto detect text files and normalize line endings to LF
 * text=auto
+
+# Explicitly set line endings to LF for common text files
+*.py text eol=lf
+*.md text eol=lf
+*.txt text eol=lf
+*.json text eol=lf
+*.yaml text eol=lf
+*.yml text eol=lf
+*.toml text eol=lf
+*.bat text eol=crlf
+*.ps1 text eol=crlf
+*.cmd text eol=crlf
+*.exe binary
+*.pyc binary
+*.so binary
+*.dylib binary
+.DS_Store binary

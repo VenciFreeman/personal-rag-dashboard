@@ -17,7 +17,7 @@ from urllib.parse import quote, urlencode, urlparse
 from urllib.request import HTTPSHandler, ProxyHandler, Request, build_opener
 
 from core_service import get_settings
-from core_service.runtime_data import app_runtime_root, legacy_app_runtime_root
+from core_service.runtime_data import app_runtime_root
 from core_service.llm import chat_completion_with_retry
 from core_service.reporting import (
     JOB_TYPE_LIBRARY_QUARTERLY,
@@ -33,10 +33,6 @@ from ..settings import MEDIA_FILES, get_entity_file_path
 LIBRARY_RUNTIME_ROOT = app_runtime_root("library_tracker")
 ANALYSIS_ROOT = LIBRARY_RUNTIME_ROOT / "analysis"
 REPORTS_ROOT = ANALYSIS_ROOT / "reports"
-LEGACY_ANALYSIS_ROOTS = (
-    Path(__file__).resolve().parents[2] / "data" / "analysis",
-    legacy_app_runtime_root("library_tracker") / "analysis",
-)
 
 REPORT_KIND_QUARTERLY = "quarterly"
 REPORT_KIND_YEARLY = "yearly"
@@ -65,7 +61,7 @@ MEDIA_LABELS = {
 HTTP_USER_AGENT = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/135.0.0.0 Safari/537.36"
 TAVILY_MAX_CHARS = 2000
 TAVILY_RESULT_LIMIT = 5
-EXTERNAL_REFERENCE_MAX_UNCACHED_FETCHES = 1
+EXTERNAL_REFERENCE_MAX_UNCACHED_FETCHES = 4
 REFERENCE_SUMMARY_INPUT_CHARS = 5200
 REFERENCE_SUMMARY_OUTPUT_CHARS = 220
 PROMPT_PAYLOAD_CHAR_BUDGET = {
@@ -87,33 +83,9 @@ class ReportPeriod:
 
 
 def ensure_analysis_storage() -> None:
-    _migrate_legacy_analysis_root()
+    ANALYSIS_ROOT.mkdir(parents=True, exist_ok=True)
     for kind in REPORT_KINDS:
         (REPORTS_ROOT / kind).mkdir(parents=True, exist_ok=True)
-
-
-def _merge_tree_missing_only(source: Path, target: Path) -> None:
-    for item in source.rglob("*"):
-        relative = item.relative_to(source)
-        target_item = target / relative
-        if item.is_dir():
-            target_item.mkdir(parents=True, exist_ok=True)
-            continue
-        if target_item.exists():
-            continue
-        target_item.parent.mkdir(parents=True, exist_ok=True)
-        shutil.copy2(item, target_item)
-
-
-def _migrate_legacy_analysis_root() -> None:
-    ANALYSIS_ROOT.mkdir(parents=True, exist_ok=True)
-    for source in LEGACY_ANALYSIS_ROOTS:
-        if source == ANALYSIS_ROOT or not source.exists():
-            continue
-        try:
-            _merge_tree_missing_only(source, ANALYSIS_ROOT)
-        except Exception:
-            continue
 
 
 def _report_dir(kind: str) -> Path:
@@ -499,11 +471,22 @@ def _select_uncached_reference_fetches(
 
 
 def _tavily_search_key() -> str:
-    return str(os.getenv("TAVILY_API_KEY") or "").strip()
+    env_key = str(os.getenv("TAVILY_API_KEY") or "").strip()
+    if env_key:
+        return env_key
+    try:
+        return str(get_settings().tavily_api_key or "").strip()
+    except Exception:
+        return ""
 
 
 def _reference_site_keyword(media_type: str) -> str:
-    return "steam" if media_type == "game" else "豆瓣"
+    return {
+        "book": "豆瓣 读书 Goodreads Wikipedia",
+        "video": "豆瓣 TMDB Bangumi Wikipedia",
+        "music": "豆瓣 音乐 MusicBrainz Wikipedia",
+        "game": "Steam IGDB PCGamingWiki Wikipedia",
+    }.get(media_type, "豆瓣 Wikipedia")
 
 
 def _external_search_query(media_type: str, title: str) -> str:
@@ -514,6 +497,20 @@ def _external_search_query(media_type: str, title: str) -> str:
         "game": "game overview story features",
     }.get(media_type, "作品 简介")
     return f'"{title}" {_reference_site_keyword(media_type)} {media_hint}'
+
+
+def _reference_domain_bonus(media_type: str, domain: str) -> int:
+    normalized = str(domain or "").lower()
+    preferred_domains = {
+        "book": ("douban", "goodreads", "wikipedia"),
+        "video": ("douban", "themoviedb", "tmdb", "bangumi", "wikipedia"),
+        "music": ("douban", "musicbrainz", "rateyourmusic", "wikipedia"),
+        "game": ("steam", "igdb", "pcgamingwiki", "wikipedia"),
+    }.get(media_type, ("douban", "wikipedia"))
+    for index, token in enumerate(preferred_domains):
+        if token in normalized:
+            return max(2, 10 - index)
+    return 0
 
 
 def _reference_title_tokens(title: str) -> list[str]:
@@ -561,11 +558,7 @@ def _clean_reference_text(text: str) -> str:
 def _reference_candidate_score(media_type: str, title: str, row: dict[str, Any], cleaned_text: str) -> tuple[int, int, int]:
     domain = (urlparse(str(row.get("url") or "")).netloc or "").lower()
     score = 0
-    if media_type == "game":
-        if "steam" in domain:
-            score += 8
-    elif "douban" in domain:
-        score += 8
+    score += _reference_domain_bonus(media_type, domain)
     tokens = _reference_title_tokens(title)
     haystack = f"{row.get('title') or ''} {cleaned_text}".lower()
     score += sum(2 for token in tokens if token and token in haystack)
@@ -809,6 +802,9 @@ def _rating_rows(current_summary: dict[str, Any], previous_summary: dict[str, An
                 "previous_avg_rating": previous.get("avg_rating"),
                 "rating_delta": _rating_delta_value(current.get("avg_rating"), previous.get("avg_rating")),
                 "rating_stddev": current.get("rating_stddev"),
+                "sample_count": int(current.get("count") or 0),
+                "rating_min": current.get("rating_min"),
+                "rating_max": current.get("rating_max"),
                 "stability_label": current.get("stability_label") or "样本不足",
             }
         )
@@ -999,14 +995,14 @@ def _default_next_focus(context: dict[str, Any]) -> list[str]:
         top = growth_rows[0]
         dist = distribution.get(top["media_type"], {})
         if annual:
-            output.append(f"{top['media_label']} 是这一年最明显还在扩张的投入方向，下一年度可以继续沿着 {dist.get('top_category', '—')} 题材和 {dist.get('top_channel', '—')} 入口往下深挖。")
+            output.append(f"{top['media_label']} 是这一年最稳定的投入出口，下一年度值得判断的是要继续加深同一条线，还是主动补进不同题材来拉开层次。")
         else:
-            output.append(f"下一期可以继续沿着 {top['media_label']} 的 {dist.get('top_category', '—')} / {dist.get('top_channel', '—')} 方向延伸。")
+            output.append(f"{top['media_label']} 还在持续增长，下一期更值得观察的是它会不会从单一入口继续固化成惯性消费。")
     rating_rows = sorted(rating_rows, key=lambda row: (row["current_avg_rating"] if row["current_avg_rating"] is not None else -1), reverse=True)
     if rating_rows and rating_rows[0]["current_avg_rating"] is not None:
         top = rating_rows[0]
         best_category = _best_direction(rows_by_media.get(top["media_type"], []), "category")
-        output.append(f"如果按质量优先，下一期值得优先继续追 {top['media_label']} 里评分表现最好的 {best_category}。")
+        output.append(f"如果下期更看重完成度，{top['media_label']} 目前仍是最稳的方向，但要分清是个别高分样本在抬均分，还是这一类整体都更合拍。")
     seen: set[str] = set()
     deduped: list[str] = []
     for item in output:
@@ -1024,10 +1020,49 @@ def _yearly_media_summary(context: dict[str, Any], media_type: str) -> str:
     reps = [f"{row['quarter']}{_item_markdown_link(row.get('representative_title'), row.get('representative_id'))}" for row in media_rows if str(row.get('representative_title') or '').strip() and str(row.get('representative_title')) != '—']
     peak = max(media_rows, key=lambda row: int(row.get("count") or 0))
     low = min(media_rows, key=lambda row: int(row.get("count") or 0))
+    top_rated = max(media_rows, key=lambda row: float(row.get("representative_rating") or -1))
+    low_rated = min(media_rows, key=lambda row: float(row.get("representative_rating") or 99))
     rep_text = "、".join(reps) if reps else "各季度代表作品"
     if int(peak.get("count") or 0) == int(low.get("count") or 0):
-        return f"{rep_text} 构成了 {MEDIA_LABELS[media_type]} 的年度回看，四个季度的记录量比较接近，整体节奏相对平均。"
-    return f"{rep_text} 构成了 {MEDIA_LABELS[media_type]} 的年度回看，其中 {peak['quarter']} 最活跃，{low['quarter']} 相对较淡，年内节奏有明显起伏。"
+        return f"{MEDIA_LABELS[media_type]} 这一年节奏相对平均，{rep_text} 串起的是同一条兴趣线的持续展开，而不是明显的阶段切换。最高点落在 {top_rated['quarter']}，代表作评分 { _format_rating(top_rated.get('representative_rating')) }；最低点在 {low_rated['quarter']}。"
+    return f"{MEDIA_LABELS[media_type]} 的年度轨迹并不平均：{peak['quarter']} 最活跃，{low['quarter']} 最淡，注意力在年内有过明显转移。{rep_text} 更像是这条兴趣线在不同季度留下的锚点，其中评分最高的是 {top_rated['quarter']}，最低的是 {low_rated['quarter']}。"
+
+
+def _rating_range(rows: list[dict[str, Any]]) -> tuple[float | None, float | None]:
+    values = _rating_values(rows)
+    if not values:
+        return None, None
+    return min(values), max(values)
+
+
+def _overall_average_rating(rows_by_media: dict[str, list[dict[str, Any]]]) -> float | None:
+    values: list[float] = []
+    for rows in rows_by_media.values():
+        values.extend(_rating_values(rows))
+    if not values:
+        return None
+    return sum(values) / len(values)
+
+
+def _top_two_ratio(details: list[dict[str, Any]]) -> str:
+    if not details:
+        return ""
+    first = details[0]
+    if len(details) == 1:
+        return f"{first['label']} 占该维度的 {float(first.get('share') or 0.0) * 100:.0f}%"
+    second = details[1]
+    second_count = max(1, int(second.get("count") or 0))
+    ratio = int(first.get("count") or 0) / second_count
+    return f"{first['label']} 占该维度的 {float(first.get('share') or 0.0) * 100:.0f}% ，约是第二位 {second['label']} 的 {ratio:.1f} 倍"
+
+
+def _quarterly_high_low_items(rows: list[dict[str, Any]]) -> tuple[dict[str, Any] | None, dict[str, Any] | None]:
+    rated = [row for row in rows if _safe_rating(row.get("rating")) is not None]
+    if not rated:
+        return None, None
+    highest = max(rated, key=lambda row: (_safe_rating(row.get("rating")) or -1, len(str(row.get("review") or ""))))
+    lowest = min(rated, key=lambda row: (_safe_rating(row.get("rating")) or 99, -len(str(row.get("review") or ""))))
+    return highest, lowest
 
 
 def _sorted_yearly_trend_rows(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
@@ -1090,6 +1125,8 @@ def _build_common_context(
             "count": len(current_by_media.get(media_type, [])),
             "avg_rating": _average_rating(current_by_media.get(media_type, [])),
             "rating_stddev": _rating_stddev(current_by_media.get(media_type, [])),
+            "rating_min": _rating_range(current_by_media.get(media_type, []))[0],
+            "rating_max": _rating_range(current_by_media.get(media_type, []))[1],
             "stability_label": _rating_stability_label(current_by_media.get(media_type, [])),
         }
         for media_type in MEDIA_TYPES
@@ -1099,6 +1136,8 @@ def _build_common_context(
             "count": len(previous_by_media.get(media_type, [])),
             "avg_rating": _average_rating(previous_by_media.get(media_type, [])),
             "rating_stddev": _rating_stddev(previous_by_media.get(media_type, [])),
+            "rating_min": _rating_range(previous_by_media.get(media_type, []))[0],
+            "rating_max": _rating_range(previous_by_media.get(media_type, []))[1],
             "stability_label": _rating_stability_label(previous_by_media.get(media_type, [])),
         }
         for media_type in MEDIA_TYPES
@@ -1145,12 +1184,17 @@ def _markdown_comparison_table(rows: list[dict[str, Any]]) -> list[str]:
 
 def _markdown_rating_table(rows: list[dict[str, Any]]) -> list[str]:
     lines = [
-        "| 媒介 | 本期平均评分 | 上期平均评分 | 差值 | 本期波动 |",
-        "| :---: | :---: | :---: | :---: | :---: |",
+        "| 媒介 | 样本数 | 本期平均评分 | 上期平均评分 | 差值 | 标准差 | 分差 |",
+        "| :---: | :---: | :---: | :---: | :---: | :---: | :---: |",
     ]
     for row in rows:
+        spread = "—"
+        low = row.get("rating_min")
+        high = row.get("rating_max")
+        if low is not None and high is not None:
+            spread = f"{float(high) - float(low):.2f}"
         lines.append(
-            f"| {row['media_label']} | {_format_rating(row['current_avg_rating'])} | {_format_rating(row['previous_avg_rating'])} | {_format_rating_delta(row['rating_delta'])} | {row['stability_label']} |"
+            f"| {row['media_label']} | {int(row.get('sample_count') or 0)} | {_format_rating(row['current_avg_rating'])} | {_format_rating(row['previous_avg_rating'])} | {_format_rating_delta(row['rating_delta'])} | {_format_rating(row.get('rating_stddev'))} | {spread} |"
         )
     return lines
 

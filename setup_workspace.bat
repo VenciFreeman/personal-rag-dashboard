@@ -7,7 +7,7 @@ if exist ".venv\Scripts\python.exe" goto have_venv
 
 where py >nul 2>nul
 if %errorlevel%==0 (
-  set "PY_BOOTSTRAP=py -3.10"
+  set "PY_BOOTSTRAP=py -3"
 ) else (
   where python >nul 2>nul
   if %errorlevel% neq 0 (
@@ -28,8 +28,8 @@ if not exist "%PY_EXE%" (
   exit /b 1
 )
 
-echo [setup] Upgrading pip/setuptools/wheel...
-call "%PY_EXE%" -m pip install --upgrade pip setuptools wheel
+echo [setup] Upgrading pip...
+call "%PY_EXE%" -m pip install --upgrade pip
 if %errorlevel% neq 0 exit /b %errorlevel%
 
 echo [setup] Installing workspace package...

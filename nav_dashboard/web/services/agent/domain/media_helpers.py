@@ -24,7 +24,7 @@ from .media_core import (
 )
 
 
-_MEDIA_COMPARE_SPLIT_RE = re.compile(r"\s*(?:和|跟|及|以及|还有|加上|对比|比较|vs\.?|VS\.?)\s*")
+_MEDIA_COMPARE_SPLIT_RE = re.compile(r"\s*(?:和|跟|与|及|以及|还有|加上|对比|比较|vs\.?|VS\.?)\s*")
 _CREATOR_COLLECTION_SUFFIX_RE = re.compile(
     r"^(.{2,12})的(?:作品|所有作品|全部作品|一切作品|全集|书|全部书|所有书"
     r"|小说|全部小说|诗集|诗|散文|音乐|专辑|歌曲|全部专辑|电影|所有电影|全部电影"
@@ -54,6 +54,20 @@ _CREATOR_COLLECTION_PREFIX_RE = re.compile(
 _CREATOR_COLLECTION_LOOSE_RE = re.compile(
     r"(.{2,24})\s*(专辑|作品|电影|影片|动画|番剧|剧集|书|小说|游戏|歌曲|歌|唱片)",
     re.UNICODE,
+)
+_ROUTER_ENTITY_QUERY_PREFIXES = (
+    "在我的数据库里",
+    "我的数据库里",
+    "在数据库里",
+    "请问",
+    "帮我",
+    "我想知道",
+    "想问下",
+)
+_ROUTER_ENTITY_LEADING_SCAFFOLD_PATTERNS = (
+    re.compile(r"^(?:请(?:你)?|麻烦(?:你)?|帮我|我想知道|想问下)\s*", re.UNICODE),
+    re.compile(r"^(?:系统地|详细地?|具体地?|全面地?|简要地?|简单地?|大致地?|大概地?)\s*", re.UNICODE),
+    re.compile(r"^(?:分析|比较|对比|说明|讲讲|说说|总结|概述|介绍|聊聊)\s*", re.UNICODE),
 )
 
 
@@ -167,7 +181,11 @@ def _question_requests_personal_evaluation(question: str, query_classification: 
     if not text and isinstance(query_classification, dict):
         text = str(query_classification.get("resolved_question", "") or "").strip()
     lowered = text.lower()
-    if any(cue in text for cue in ("评价", "评分", "评论", "短评", "看法", "感受", "印象", "我的评价", "几分", "打几分")):
+    if any(cue in text for cue in ("评价", "评分", "评论", "短评", "看法", "感受", "印象", "我的评价", "几分", "打几分", "评分最高", "评价最高", "最高分", "最低分", "最喜欢", "最好的一", "最差的一")):
+        return True
+    if re.search(r"我.{0,20}(?:给了?|打了?)(?:它|这(?:部|本|张|首|个)|那(?:部|本|张|首|个))?.{0,6}(?:几分|多少分|分数)", text):
+        return True
+    if re.search(r"(?:最好|最差|最喜欢|评分最高|评价最高).{0,8}(?:一(?:部|本|张|首|个|款)|哪(?:部|本|张|首|个|款)|是哪个|是哪(?:部|本|张|首|个|款))", text):
         return True
     return any(cue in lowered for cue in ("review", "rating", "comment"))
 
@@ -282,10 +300,7 @@ def _rewrite_media_query(query: str) -> str:
     raw = (query or "").strip()
     if not raw:
         return ""
-    normalized = raw
-    for prefix in ["在我的数据库里", "我的数据库里", "在数据库里", "请问", "帮我", "我想知道", "想问下"]:
-        if normalized.startswith(prefix):
-            normalized = normalized[len(prefix):].strip(" ，。！？?；;:")
+    normalized = _normalize_router_media_entity_candidate(raw, keep_empty_fallback=True)
     match = re.search(r"(?:我)?对(?P<title>.+?)的?(?:个人)?(?:评价|看法|评分|感受|印象)", normalized)
     if match:
         entities, _ = _normalize_media_entities_and_filters(_split_media_entities(match.group("title")))
@@ -305,11 +320,22 @@ def _split_media_entities(raw: str) -> list[str]:
     text = text.strip(" ，。！？?；;:：\"'“”‘’（）()")
     if not text:
         return []
+    protected_titles: dict[str, str] = {}
+
+    def _protect_title(match: re.Match[str]) -> str:
+        key = f"__MEDIA_TITLE_{len(protected_titles)}__"
+        protected_titles[key] = match.group(0)
+        return key
+
+    text = re.sub(r"《[^》]+》", _protect_title, text)
     parts = _MEDIA_COMPARE_SPLIT_RE.split(text)
     dedup: list[str] = []
     seen: set[str] = set()
     for part in parts:
-        value = str(part or "").strip(" ，。！？?；;:：\"'“”‘’（）()")
+        value = str(part or "")
+        for key, title in protected_titles.items():
+            value = value.replace(key, title)
+        value = value.strip(" ，。！？?；;:：\"'“”‘’（）()")
         value = re.sub(r"^(?:我对|对于|关于|我看过的|我读过的|我听过的|我玩过的)", "", value).strip(" ，。！？?；;:：\"'“”‘’（）()")
         value = planner_trim_media_entity_structural_suffix(value)
         value = re.sub(r"(?:这|那)?(?:几|两|各)?(?:部|本|条|张)?(?:作品|条目|项目|系列)$", "", value).strip(" ，。！？?；;:：\"'“”‘’（）()")
@@ -327,6 +353,8 @@ def _split_media_entities(raw: str) -> list[str]:
 def _extract_explicit_media_entities_from_segment(raw: str) -> list[str]:
     split_entities, _ = _normalize_media_entities_and_filters(_split_media_entities(raw))
     local_entities, _ = _normalize_media_entities_and_filters(_extract_media_entities_from_local_titles(raw))
+    if not local_entities and not _has_media_surface(raw) and not _has_media_title_marker(raw):
+        return []
     merged: list[str] = []
     local_keys = [_normalize_media_title_for_match(item) for item in local_entities if str(item).strip()]
     for entity in [*local_entities, *split_entities]:
@@ -334,7 +362,9 @@ def _extract_explicit_media_entities_from_segment(raw: str) -> list[str]:
         if not clean:
             continue
         key = _normalize_media_title_for_match(clean)
-        if key and any(key != local_key and key in local_key for local_key in local_keys):
+        if key and any(local_key and local_key != key and local_key in key for local_key in local_keys):
+            continue
+        if _looks_like_generic_media_scope(clean):
             continue
         if clean not in merged:
             merged.append(clean)
@@ -348,6 +378,12 @@ def _looks_like_generic_media_scope(text: str) -> bool:
     if normalized in {"我", "我的", "自己", "本人", "我们", "咱们", "咱", "那个", "这个", "那部", "这部", "那本", "这本", "它", "它们"}:
         return True
     compact = re.sub(r"\s+", "", normalized)
+    if re.fullmatch(r"(?:这|那|它|其)(?:一)?(?:部|本|张|首|个|套|款)?(?:我自己的|自己的|我的)?(?:评价|评分|看法|感受|印象)?(?:呢)?", compact):
+        return True
+    if re.fullmatch(r"(?:这|那)(?:一)?(?:部|本|张|首|个|套|款)(?:我自己|自己|我的)?", compact):
+        return True
+    if re.fullmatch(r"(?:我|我的|自己|本人)?(?:的)?(?:评价|评分|看法|感受|印象)", compact):
+        return True
     if re.fullmatch(r"(?:20\d{2}年?)?\d{1,2}(?:月)?(?:到|至|[-~—－])\d{1,2}月(?:的)?(?:番|番剧|动画|动漫|新番)?", compact):
         return True
     if re.fullmatch(r"(?:20\d{2}年?)?\d{1,2}月(?:的)?(?:番|番剧|动画|动漫|新番)?", compact):
@@ -358,6 +394,27 @@ def _looks_like_generic_media_scope(text: str) -> bool:
         "有哪些", "什么", "简介", "剧情", "介绍", "导演", "演员", "评分", "时间", "我阅读过", "我读过", "我看过", "我玩过", "番剧", "动画", "动漫", "新番", "评价比较高", "评分比较高", "文学", "小说", "诗歌", "作家",
     )
     return any(marker in normalized for marker in generic_markers)
+
+
+def _normalize_router_media_entity_candidate(text: str, *, keep_empty_fallback: bool = False) -> str:
+    normalized = str(text or "").strip(" ，。！？?；;:：,\t\r\n")
+    if not normalized:
+        return ""
+    previous = None
+    while normalized and normalized != previous:
+        previous = normalized
+        for prefix in _ROUTER_ENTITY_QUERY_PREFIXES:
+            if normalized.startswith(prefix):
+                normalized = normalized[len(prefix):].strip(" ，。！？?；;:：,")
+        for pattern in _ROUTER_ENTITY_LEADING_SCAFFOLD_PATTERNS:
+            updated = pattern.sub("", normalized).strip(" ，。！？?；;:：,")
+            if updated != normalized:
+                normalized = updated
+    if normalized:
+        return "" if _looks_like_generic_media_scope(normalized) else normalized
+    if keep_empty_fallback:
+        return str(text or "").strip()
+    return ""
 
 
 def _looks_like_creator_surface_candidate(text: str) -> bool:
@@ -496,10 +553,9 @@ def _extract_media_entities(query: str, *, resolve_title_hit: Any | None = None,
         return []
     collection_query = _is_collection_media_query(raw, resolve_creator_hit=resolve_creator_hit)
     creator_collection_query = _is_creator_collection_media_query(raw, resolve_creator_hit=resolve_creator_hit)
-    normalized = raw
-    for prefix in ["在我的数据库里", "我的数据库里", "在数据库里", "请问", "帮我", "我想知道", "想问下"]:
-        if normalized.startswith(prefix):
-            normalized = normalized[len(prefix):].strip(" ，。！？?；;:")
+    normalized = _normalize_router_media_entity_candidate(raw, keep_empty_fallback=True)
+    if _looks_like_generic_media_scope(normalized):
+        return []
     match = re.search(r"(?:我)?对(?P<title>.+?)(?:的)?(?:个人)?(?:评价|看法|评分|感受|印象|想法)", normalized)
     if match:
         entities = _extract_explicit_media_entities_from_segment(match.group("title"))

@@ -624,6 +624,89 @@
             <input id="data-backup-restore-input" type="file" accept="application/json,.json,application/zip,.zip" hidden />
           </section>
 
+          <section class="authorization-card" style="margin-top:14px;">
+            <h3>模型与外部服务配置</h3>
+            <div class="dashboard-meta">非敏感配置写入 core_service/config.local.json；密钥类字段写入 env.local.ps1。输入框留空不会覆盖已有值；若显示来源为 env，运行时仍以环境变量为准。</div>
+            <div id="authorization-config-meta" class="dashboard-meta" style="margin-top:8px;"></div>
+
+            <div class="authorization-config-grid">
+              <section class="authorization-card authorization-config-card">
+                <h3>外部 API</h3>
+                <div class="authorization-form-grid">
+                  <label class="authorization-field">
+                    <span>BASE_URL</span>
+                    <input id="authorization-config-external-base-url" type="text" autocomplete="off" spellcheck="false" />
+                    <div id="authorization-config-external-base-url-meta" class="dashboard-meta authorization-field-meta"></div>
+                  </label>
+                  <label class="authorization-field">
+                    <span>MODEL</span>
+                    <input id="authorization-config-external-model" type="text" autocomplete="off" spellcheck="false" />
+                    <div id="authorization-config-external-model-meta" class="dashboard-meta authorization-field-meta"></div>
+                  </label>
+                  <label class="authorization-field">
+                    <span>API_KEY</span>
+                    <input id="authorization-config-external-api-key" type="password" autocomplete="new-password" placeholder="留空则不修改" />
+                    <div id="authorization-config-external-api-key-meta" class="dashboard-meta authorization-field-meta"></div>
+                  </label>
+                </div>
+                <div class="authorization-form-actions">
+                  <button id="authorization-config-external-save-btn" type="button">保存外部 API</button>
+                </div>
+                <div id="authorization-config-external-error" class="dashboard-error hidden"></div>
+              </section>
+
+              <section class="authorization-card authorization-config-card">
+                <h3>本地 LLM</h3>
+                <div class="authorization-form-grid">
+                  <label class="authorization-field">
+                    <span>BASE_URL</span>
+                    <input id="authorization-config-local-base-url" type="text" autocomplete="off" spellcheck="false" />
+                    <div id="authorization-config-local-base-url-meta" class="dashboard-meta authorization-field-meta"></div>
+                  </label>
+                  <label class="authorization-field">
+                    <span>MODEL</span>
+                    <input id="authorization-config-local-model" type="text" autocomplete="off" spellcheck="false" />
+                    <div id="authorization-config-local-model-meta" class="dashboard-meta authorization-field-meta"></div>
+                  </label>
+                  <label class="authorization-field">
+                    <span>API_KEY</span>
+                    <input id="authorization-config-local-api-key" type="password" autocomplete="new-password" placeholder="留空则不修改" />
+                    <div id="authorization-config-local-api-key-meta" class="dashboard-meta authorization-field-meta"></div>
+                  </label>
+                </div>
+                <div class="authorization-form-actions">
+                  <button id="authorization-config-local-save-btn" type="button">保存本地 LLM</button>
+                </div>
+                <div id="authorization-config-local-error" class="dashboard-error hidden"></div>
+              </section>
+
+              <section class="authorization-card authorization-config-card">
+                <h3>其他 API</h3>
+                <div class="authorization-form-grid">
+                  <label class="authorization-field">
+                    <span>Tavily API_KEY</span>
+                    <input id="authorization-config-tavily-api-key" type="password" autocomplete="new-password" placeholder="留空则不修改" />
+                    <div id="authorization-config-tavily-api-key-meta" class="dashboard-meta authorization-field-meta"></div>
+                  </label>
+                  <label class="authorization-field">
+                    <span>TMDB API_KEY</span>
+                    <input id="authorization-config-tmdb-api-key" type="password" autocomplete="new-password" placeholder="留空则不修改" />
+                    <div id="authorization-config-tmdb-api-key-meta" class="dashboard-meta authorization-field-meta"></div>
+                  </label>
+                  <label class="authorization-field">
+                    <span>Bangumi ACCESS_TOKEN</span>
+                    <input id="authorization-config-bangumi-access-token" type="password" autocomplete="new-password" placeholder="留空则不修改" />
+                    <div id="authorization-config-bangumi-access-token-meta" class="dashboard-meta authorization-field-meta"></div>
+                  </label>
+                </div>
+                <div class="authorization-form-actions">
+                  <button id="authorization-config-other-save-btn" type="button">保存其他 API</button>
+                </div>
+                <div id="authorization-config-other-error" class="dashboard-error hidden"></div>
+              </section>
+            </div>
+          </section>
+
           <div class="authorization-grid">
             <section class="authorization-card authorization-create-card">
               <h3>新增账号</h3>

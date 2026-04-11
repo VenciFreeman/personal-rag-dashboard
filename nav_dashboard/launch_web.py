@@ -60,15 +60,6 @@ def _load_workspace_env_local() -> None:
         os.environ[key] = value
 
 
-def _migrate_runtime_data_if_needed() -> None:
-    try:
-        from core_service.runtime_migration_cli import ensure_runtime_data_migrated
-
-        ensure_runtime_data_migrated()
-    except Exception as exc:
-        print(f"[launch_web] runtime migration skipped: {exc}")
-
-
 def _maybe_reexec_into_venv() -> None:
     """Ensure double-click always runs with workspace venv Python."""
     root = Path(__file__).resolve().parent
@@ -95,7 +86,6 @@ def _maybe_reexec_into_venv() -> None:
 
 _maybe_reexec_into_venv()
 _load_workspace_env_local()
-_migrate_runtime_data_if_needed()
 _mark_deploy_start()
 
 from nav_dashboard.web.config import HOST, PORT

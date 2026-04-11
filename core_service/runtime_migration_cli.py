@@ -7,7 +7,7 @@ import threading
 from pathlib import Path
 from typing import Any
 
-from core_service.runtime_data import app_runtime_root, legacy_app_runtime_root, migrate_core_runtime_data
+from core_service.runtime_data import app_runtime_root, migrate_core_runtime_data
 from nav_dashboard.web.services.runtime_paths import nav_dashboard_runtime_migration_plan
 
 
@@ -205,10 +205,7 @@ def _migrate_app_runtime_tree(app_name: str, *, repo_legacy_root: Path, dry_run:
     target_root = app_runtime_root(app_name)
     marker = _app_runtime_marker_path(target_root)
     marker_exists = marker.exists()
-    source_roots: list[Path] = []
-    for candidate in (legacy_app_runtime_root(app_name), repo_legacy_root):
-        if candidate not in source_roots:
-            source_roots.append(candidate)
+    source_roots = [repo_legacy_root]
 
     projected_target_exists = target_root.exists()
     copied: list[str] = []
@@ -315,7 +312,7 @@ def ensure_runtime_data_migrated() -> dict[str, Any]:
 
 
 def main() -> None:
-    parser = argparse.ArgumentParser(description="Migrate runtime state from legacy repo-local paths into canonical app-data roots.")
+    parser = argparse.ArgumentParser(description="Migrate runtime state from repo-local legacy paths into canonical workspace data roots.")
     parser.add_argument("--apply", action="store_true", help="Perform the migration instead of printing the dry-run plan.")
     args = parser.parse_args()
 

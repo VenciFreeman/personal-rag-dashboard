@@ -1,0 +1,30 @@
+[submodule "ai_conversations_summary"]
+	path = ai_conversations_summary
+	url = https://github.com/VenciFreeman/ai_conversations_summary.git
+	branch = main
+	ignore = all
+[submodule "library_tracker"]
+	path = library_tracker
+	url = https://github.com/VenciFreeman/library_tracker.git
+	branch = main
+	ignore = all
+[submodule "wardrobe"]
+	path = wardrobe
+	url = https://github.com/VenciFreeman/wardrobe.git
+	branch = .
+	ignore = all
+[submodule "nav_dashboard"]
+	path = nav_dashboard
+	url = https://github.com/VenciFreeman/nav_dashboard.git
+	branch = .
+	ignore = all
+[submodule "property"]
+	path = property
+	url = https://github.com/VenciFreeman/property.git
+	branch = .
+	ignore = all
+[submodule "journey"]
+	path = journey
+	url = https://github.com/VenciFreeman/journey.git
+	branch = master
+	ignore = all

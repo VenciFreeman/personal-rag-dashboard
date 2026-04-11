@@ -47,7 +47,12 @@
       category: null,
       channel: null,
     },
+    openOverlayKeys: new Set(),
+    overlayScrollSnapshot: null,
   };
+
+  let viewportHeightSyncBound = false;
+  let viewportHeightSyncFrame = 0;
 
   async function apiGet(url) {
     const response = await fetch(url);
@@ -55,13 +60,38 @@
     return response.json();
   }
 
+  function isTransientFetchError(error) {
+    if (!error || error.name === "AbortError") return false;
+    const message = String(error.message || "").trim().toLowerCase();
+    return error instanceof TypeError
+      || message === "load failed"
+      || message.includes("failed to fetch")
+      || message.includes("fetch failed")
+      || message.includes("networkerror");
+  }
+
+  async function fetchWithRetry(url, requestOptions, options = {}) {
+    const retries = Math.max(0, Number(options.retries) || 0);
+    let attempt = 0;
+    while (true) {
+      try {
+        return await fetch(url, requestOptions);
+      } catch (error) {
+        if (attempt >= retries || !isTransientFetchError(error)) {
+          throw error;
+        }
+        attempt += 1;
+      }
+    }
+  }
+
   async function apiPost(url, payload, options = {}) {
-    const response = await fetch(url, {
+    const response = await fetchWithRetry(url, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify(payload),
       ...(options.signal ? { signal: options.signal } : {}),
-    });
+    }, { retries: options.retries });
     if (!response.ok) throw new Error(await response.text());
     return response.json();
   }
@@ -158,12 +188,83 @@
   }
 
   function setDialogOpenState(isOpen) {
-    document.documentElement.classList.toggle("dialog-open", Boolean(isOpen));
-    document.body.classList.toggle("dialog-open", Boolean(isOpen));
+    setOverlayOpenState("dialog", isOpen);
+  }
+
+  function applyViewportHeightVar() {
+    viewportHeightSyncFrame = 0;
+    const viewportHeight = window.visualViewport?.height || window.innerHeight || document.documentElement.clientHeight || 0;
+    if (!viewportHeight) return;
+    document.documentElement.style.setProperty("--app-viewport-height", `${Math.round(viewportHeight)}px`);
+  }
+
+  function scheduleViewportHeightSync() {
+    if (viewportHeightSyncFrame) return;
+    viewportHeightSyncFrame = window.requestAnimationFrame(applyViewportHeightVar);
+  }
+
+  function bindViewportHeightSync() {
+    if (viewportHeightSyncBound) return;
+    viewportHeightSyncBound = true;
+    scheduleViewportHeightSync();
+    window.addEventListener("resize", scheduleViewportHeightSync, { passive: true });
+    window.addEventListener("orientationchange", scheduleViewportHeightSync, { passive: true });
+    window.addEventListener("pageshow", scheduleViewportHeightSync, { passive: true });
+    if (window.visualViewport) {
+      window.visualViewport.addEventListener("resize", scheduleViewportHeightSync, { passive: true });
+      window.visualViewport.addEventListener("scroll", scheduleViewportHeightSync, { passive: true });
+    }
+  }
+
+  function setOverlayOpenState(key, isOpen) {
+    const overlayKey = String(key || "dialog").trim() || "dialog";
+    if (isOpen) state.openOverlayKeys.add(overlayKey);
+    else state.openOverlayKeys.delete(overlayKey);
+    const anyOpen = state.openOverlayKeys.size > 0;
+    if (isOpen && !state.overlayScrollSnapshot) {
+      const mainPanel = document.querySelector(".main-panel");
+      state.overlayScrollSnapshot = {
+        windowX: window.scrollX || 0,
+        windowY: window.scrollY || window.pageYOffset || 0,
+        mainPanelScrollTop: mainPanel ? mainPanel.scrollTop : 0,
+        bodyPosition: document.body.style.position || "",
+        bodyTop: document.body.style.top || "",
+        bodyLeft: document.body.style.left || "",
+        bodyRight: document.body.style.right || "",
+        bodyWidth: document.body.style.width || "",
+        bodyOverflow: document.body.style.overflow || "",
+        htmlOverflow: document.documentElement.style.overflow || "",
+      };
+      document.body.style.position = "fixed";
+      document.body.style.top = `-${state.overlayScrollSnapshot.windowY}px`;
+      document.body.style.left = `-${state.overlayScrollSnapshot.windowX}px`;
+      document.body.style.right = "0";
+      document.body.style.width = "100%";
+      document.body.style.overflow = "hidden";
+      document.documentElement.style.overflow = "hidden";
+    }
+    document.documentElement.classList.toggle("dialog-open", anyOpen);
+    document.body.classList.toggle("dialog-open", anyOpen);
+    if (!anyOpen && state.overlayScrollSnapshot) {
+      const snapshot = state.overlayScrollSnapshot;
+      state.overlayScrollSnapshot = null;
+      document.body.style.position = snapshot.bodyPosition;
+      document.body.style.top = snapshot.bodyTop;
+      document.body.style.left = snapshot.bodyLeft;
+      document.body.style.right = snapshot.bodyRight;
+      document.body.style.width = snapshot.bodyWidth;
+      document.body.style.overflow = snapshot.bodyOverflow;
+      document.documentElement.style.overflow = snapshot.htmlOverflow;
+      window.requestAnimationFrame(() => {
+        const mainPanel = document.querySelector(".main-panel");
+        window.scrollTo(snapshot.windowX, snapshot.windowY);
+        if (mainPanel) mainPanel.scrollTop = snapshot.mainPanelScrollTop;
+      });
+    }
   }
 
   const api = { apiDelete, apiGet, apiPost, apiPut, normalizeDateInput, uploadCoverFile };
-  const helpers = { formatNumber, setDialogOpenState, showToast };
+  const helpers = { bindViewportHeightSync, formatNumber, setDialogOpenState, setOverlayOpenState, showToast };
   const shell = { AppShell, SharedShell };
   const libraryModules = {};
   const getModules = () => libraryModules;
@@ -228,6 +329,7 @@
   }
 
   async function bootstrap() {
+    bindViewportHeightSync();
     instantiateModules();
     libraryModules.editor.initRatingControl();
     libraryModules.editor.bindEvents();

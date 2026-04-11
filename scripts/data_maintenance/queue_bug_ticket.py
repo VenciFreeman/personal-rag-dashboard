@@ -7,6 +7,8 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any
 
+from core_service.bug_ticket_payloads import parse_bug_ticket_payload
+
 
 WORKSPACE_ROOT = Path(__file__).resolve().parents[2]
 
@@ -26,10 +28,7 @@ def _load_payload(args: argparse.Namespace) -> dict[str, Any]:
         raw = sys.stdin.read().strip()
     if not raw:
         raise ValueError("Missing bug ticket JSON payload")
-    payload = json.loads(raw)
-    if not isinstance(payload, dict):
-        raise ValueError("Bug ticket payload must be a JSON object")
-    return payload
+    return parse_bug_ticket_payload(raw)
 
 
 def main() -> int:

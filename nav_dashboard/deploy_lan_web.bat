@@ -163,15 +163,15 @@ if defined PY_FOR_RUN (
 
 where py >nul 2>nul
 if %errorlevel%==0 (
-    start "AI Summary Service" /min /d "..\ai_conversations_summary" py -3 "launch_web.py"
-    start "Library Tracker Service" /min /d "..\library_tracker" py -3 "launch_web.py"
-    start "Property Service" /min /d "..\property" py -3 "launch_web.py"
-    start "Journey Service" /min /d "..\journey" py -3 "launch_web.py"
-
-    echo [Nav Dashboard] Started AI Summary and Library Tracker in background.
-    echo [Nav Dashboard] Opening only Nav Dashboard in browser...
-    py -3 "launch_web.py"
-    exit /b %errorlevel%
+    rem Keep the fallback launcher aligned with the hidden python.exe branch so
+    rem machines without a prepared .venv do not spawn one console window per service.
+    powershell -NoProfile -ExecutionPolicy Bypass -WindowStyle Hidden -Command "$env:PERSONAL_AI_STACK_DISABLE_BROWSER_OPEN='1'; Start-Process -WindowStyle Hidden -FilePath 'py' -WorkingDirectory '%CD%\..\ai_conversations_summary' -ArgumentList @('-3','launch_web.py')"
+    powershell -NoProfile -ExecutionPolicy Bypass -WindowStyle Hidden -Command "$env:PERSONAL_AI_STACK_DISABLE_BROWSER_OPEN='1'; Start-Process -WindowStyle Hidden -FilePath 'py' -WorkingDirectory '%CD%\..\library_tracker' -ArgumentList @('-3','launch_web.py')"
+    powershell -NoProfile -ExecutionPolicy Bypass -WindowStyle Hidden -Command "$env:PERSONAL_AI_STACK_DISABLE_BROWSER_OPEN='1'; Start-Process -WindowStyle Hidden -FilePath 'py' -WorkingDirectory '%CD%\..\property' -ArgumentList @('-3','launch_web.py')"
+    powershell -NoProfile -ExecutionPolicy Bypass -WindowStyle Hidden -Command "$env:PERSONAL_AI_STACK_DISABLE_BROWSER_OPEN='1'; Start-Process -WindowStyle Hidden -FilePath 'py' -WorkingDirectory '%CD%\..\journey' -ArgumentList @('-3','launch_web.py')"
+    powershell -NoProfile -ExecutionPolicy Bypass -WindowStyle Hidden -Command "$env:PERSONAL_AI_STACK_DISABLE_BROWSER_OPEN='0'; Start-Process -WindowStyle Hidden -FilePath 'py' -WorkingDirectory '%CD%' -ArgumentList @('-3','launch_web.py')"
+    echo [Nav Dashboard] Started services in hidden fallback mode.
+    exit /b 0
 )
 
 echo [ERROR] Python not found. Please install Python or create .venv first.

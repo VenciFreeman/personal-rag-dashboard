@@ -53,6 +53,10 @@ _FIRST_PERSON_PERSONAL_RECORD_RE = re.compile(
     r"我.{0,30}(?:记录|评分|评价|短评|评论|看法|感受|印象)",
     re.UNICODE,
 )
+_FIRST_PERSON_PERSONAL_SCORE_RE = re.compile(
+    r"我.{0,20}(?:给了?|打了?).{0,8}(?:几分|多少分|分数|评分)",
+    re.UNICODE,
+)
 _MEDIA_ENTITY_STRUCTURAL_SUFFIX_RE = re.compile(
     r"的?(?:(?:个人|自己的|我的)?(?:评分|评价|短评|评论|看法|感受|印象)(?:与(?:短评|评论|评价|评分))?|(?:对比|比较|区别|差异)|(?:条目细节|条目详情|详细介绍|分别介绍|分别说说)).*$",
     re.UNICODE,
@@ -104,6 +108,7 @@ def has_personal_scope_surface(text: str) -> bool:
         or _PERSONAL_SCOPE_RE.search(question)
         or _IMPLICIT_PERSONAL_SCOPE_RE.search(question)
         or _FIRST_PERSON_PERSONAL_RECORD_RE.search(question)
+        or _FIRST_PERSON_PERSONAL_SCORE_RE.search(question)
     )
 
 
@@ -368,6 +373,8 @@ def derive_query_class(decision: RouterDecision, *, deps: RouterSemanticDeps) ->
     ev = dict(decision.evidence or {})
     if ev.get("working_set_item_followup"):
         return planner_contracts.ROUTER_QUERY_CLASS_WORKING_SET_ITEM_DETAIL_FOLLOWUP
+    if ev.get("music_work_versions_compare"):
+        return planner_contracts.ROUTER_QUERY_CLASS_MUSIC_WORK_VERSIONS_COMPARE
     single_entity_personal_review_detail = (
         decision.domain == "media"
         and decision.subject_scope == planner_contracts.ROUTER_SUBJECT_SCOPE_PERSONAL_RECORD
@@ -395,8 +402,6 @@ def derive_query_class(decision: RouterDecision, *, deps: RouterSemanticDeps) ->
         return planner_contracts.ROUTER_QUERY_CLASS_MEDIA_CREATOR_COLLECTION
     if ev.get("abstract_media_concept"):
         return planner_contracts.ROUTER_QUERY_CLASS_MEDIA_ABSTRACT_CONCEPT
-    if ev.get("music_work_versions_compare"):
-        return planner_contracts.ROUTER_QUERY_CLASS_MUSIC_WORK_VERSIONS_COMPARE
     if decision.domain == "media" and decision.lookup_mode == "entity_lookup" and len(decision.entities) == 1:
         return planner_contracts.ROUTER_QUERY_CLASS_MEDIA_TITLE_DETAIL
     if decision.domain == "media" and decision.lookup_mode == "filter_search":
@@ -452,6 +457,7 @@ def derive_time_scope_type(decision: RouterDecision) -> str:
 def derive_answer_shape(decision: RouterDecision, *, deps: RouterSemanticDeps) -> str:
     text = str(decision.raw_question or "").strip()
     evidence = dict(decision.evidence or {})
+    strong_summary_requested = any(cue in text for cue in ("总结", "概括", "概述", "归纳", "总的来说", "整体来看", "总体上", "梳理"))
     single_entity_personal_review_detail = (
         decision.domain == "media"
         and decision.subject_scope == planner_contracts.ROUTER_SUBJECT_SCOPE_PERSONAL_RECORD
@@ -471,6 +477,8 @@ def derive_answer_shape(decision: RouterDecision, *, deps: RouterSemanticDeps) -
             or bool(evidence.get("alias_title_collection_query"))
         )
     )
+    if is_personal_review_collection and strong_summary_requested and not any(cue in text for cue in ("比较总结", "对比总结", "先总后分", "比较", "对比", "最好", "最差", "最高", "最低", "分别")):
+        return planner_contracts.ROUTER_ANSWER_SHAPE_SUMMARY
     if decision.needs_comparison:
         return planner_contracts.ROUTER_ANSWER_SHAPE_COMPARE
     if single_entity_personal_review_detail:
@@ -589,11 +597,16 @@ def derive_media_family(decision: RouterDecision) -> str:
     inferred_from_filters = _infer_media_family_from_filters(getattr(decision, "filters", None))
     inferred_from_selection = _infer_media_family_from_filters(getattr(decision, "selection", None))
     media_type_family = derive_media_family_from_media_type(decision.media_type)
+    evidence = dict(getattr(decision, "evidence", None) or {})
 
     if (
         inferred_from_question
         and inferred_from_question != media_type_family
-        and str(getattr(decision, "query_class", "") or "") == planner_contracts.ROUTER_QUERY_CLASS_PERSONAL_MEDIA_REVIEW_COLLECTION
+        and (
+            str(getattr(decision, "query_class", "") or "") == planner_contracts.ROUTER_QUERY_CLASS_PERSONAL_MEDIA_REVIEW_COLLECTION
+            or bool(evidence.get("title_anchored_personal_review_query"))
+            or bool(evidence.get("alias_title_collection_query"))
+        )
     ):
         return inferred_from_question
     if inferred_from_question == planner_contracts.ROUTER_MEDIA_FAMILY_GAME and media_type_family in {
@@ -604,7 +617,6 @@ def derive_media_family(decision: RouterDecision) -> str:
     for candidate in (media_type_family, inferred_from_filters, inferred_from_selection, inferred_from_question):
         if candidate:
             return candidate
-    evidence = dict(getattr(decision, "evidence", None) or {})
     anchor_resolution = evidence.get("router_metadata_anchor_resolution") if isinstance(evidence.get("router_metadata_anchor_resolution"), dict) else {}
     for entry in list(anchor_resolution.get("entries") or []):
         if not isinstance(entry, dict):

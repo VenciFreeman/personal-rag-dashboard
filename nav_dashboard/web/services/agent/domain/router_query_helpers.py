@@ -572,7 +572,11 @@ def _question_requests_personal_evaluation(question: str, query_classification: 
     if not text and isinstance(query_classification, dict):
         text = str(query_classification.get("resolved_question", "") or "").strip()
     lowered = text.lower()
-    if any(cue in text for cue in ("评价", "评分", "评论", "短评", "看法", "感受", "印象", "我的评价", "几分", "打几分")):
+    if any(cue in text for cue in ("评价", "评分", "评论", "短评", "看法", "感受", "印象", "我的评价", "几分", "打几分", "评分最高", "评价最高", "最高分", "最低分", "最喜欢", "最好的一", "最差的一")):
+        return True
+    if re.search(r"我.{0,20}(?:给了?|打了?)(?:它|这(?:部|本|张|首|个)|那(?:部|本|张|首|个))?.{0,6}(?:几分|多少分|分数)", text):
+        return True
+    if re.search(r"(?:最好|最差|最喜欢|评分最高|评价最高).{0,8}(?:一(?:部|本|张|首|个|款)|哪(?:部|本|张|首|个|款)|是哪个|是哪(?:部|本|张|首|个|款))", text):
         return True
     return any(cue in lowered for cue in ("review", "rating", "comment"))
 

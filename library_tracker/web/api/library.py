@@ -76,7 +76,7 @@ class GraphExpandRequest(BaseModel):
 
 class AnalysisGenerateIn(BaseModel):
     kind: str
-    backend: str = "local"
+    backend: str | None = None
     period_key: str | None = None
 
 
@@ -288,7 +288,8 @@ def open_analysis_report_location(body: AnalysisReportActionIn) -> dict[str, Any
 @router.post("/analysis/generate")
 def generate_analysis(body: AnalysisGenerateIn) -> dict[str, Any]:
     try:
-        report = analysis_service.generate_report(body.kind, body.backend, period_key=body.period_key, manual=True)
+        backend = body.backend or ("local" if body.kind == "quarterly" else "deepseek")
+        report = analysis_service.generate_report(body.kind, backend, period_key=body.period_key, manual=True)
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
     except RuntimeError as exc:

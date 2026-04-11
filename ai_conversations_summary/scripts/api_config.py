@@ -6,6 +6,11 @@ import importlib.util
 import os
 from pathlib import Path
 
+try:
+    from core_service import get_settings
+except Exception:
+    get_settings = None
+
 
 def _load_root_api_config():
     current = Path(__file__).resolve()
@@ -24,13 +29,25 @@ def _load_root_api_config():
 
 _ROOT = _load_root_api_config()
 
+
+def _load_core_settings():
+    if get_settings is None:
+        return None
+    try:
+        return get_settings()
+    except Exception:
+        return None
+
+
+_CORE_SETTINGS = _load_core_settings()
+
 if _ROOT is None:
-    API_BASE_URL = (os.getenv("DEEPSEEK_BASE_URL", "https://api.deepseek.com") or "https://api.deepseek.com").strip()
-    API_KEY = (os.getenv("DEEPSEEK_API_KEY", "") or "").strip()
-    MODEL = (os.getenv("DEEPSEEK_MODEL", "deepseek-chat") or "deepseek-chat").strip()
-    EMBEDDING_MODEL = (os.getenv("EMBEDDING_MODEL", "BAAI/bge-base-zh-v1.5") or "BAAI/bge-base-zh-v1.5").strip()
-    TAVILY_API_KEY = (os.getenv("TAVILY_API_KEY", "") or "").strip()
-    TIMEOUT = int(os.getenv("DEEPSEEK_TIMEOUT", "120") or "120")
+    API_BASE_URL = (os.getenv("DEEPSEEK_BASE_URL", getattr(_CORE_SETTINGS, "api_base_url", "https://api.deepseek.com")) or "https://api.deepseek.com").strip()
+    API_KEY = (os.getenv("DEEPSEEK_API_KEY", getattr(_CORE_SETTINGS, "api_key", "")) or "").strip()
+    MODEL = (os.getenv("DEEPSEEK_MODEL", getattr(_CORE_SETTINGS, "chat_model", "deepseek-chat")) or "deepseek-chat").strip()
+    EMBEDDING_MODEL = (os.getenv("EMBEDDING_MODEL", getattr(_CORE_SETTINGS, "embedding_model", "BAAI/bge-base-zh-v1.5")) or "BAAI/bge-base-zh-v1.5").strip()
+    TAVILY_API_KEY = (os.getenv("TAVILY_API_KEY", getattr(_CORE_SETTINGS, "tavily_api_key", "")) or "").strip()
+    TIMEOUT = int(os.getenv("DEEPSEEK_TIMEOUT", str(getattr(_CORE_SETTINGS, "timeout", 120))) or "120")
 else:
     API_BASE_URL = _ROOT.API_BASE_URL
     API_KEY = _ROOT.API_KEY

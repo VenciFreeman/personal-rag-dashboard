@@ -1,0 +1,28 @@
+[build-system]
+requires = ["setuptools>=69", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "personal-ai-stack"
+version = "0.1.0"
+description = "Installable packaging and entrypoints for the Personal AI Stack workspace"
+readme = "README.md"
+requires-python = ">=3.10"
+dependencies = [
+  "fastapi>=0.110,<0.135",
+  "httpx",
+  "jinja2",
+  "pydantic>=2,<3",
+  "Send2Trash",
+  "starlette<1",
+  "uvicorn",
+]
+
+[project.scripts]
+nav-dashboard = "nav_dashboard.launch_web:main"
+personal-ai-stack-migrate-runtime = "core_service.runtime_migration_cli:main"
+
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["core_service", "nav_dashboard*", "ai_conversations_summary*", "library_tracker*", "journey*", "property*"]
+namespaces = true

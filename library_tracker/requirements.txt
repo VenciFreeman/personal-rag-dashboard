@@ -1,5 +1,6 @@
-# Core web runtime dependencies
+# Core web runtime dependencies.
 # Setup script installs these into the monorepo top-level .venv used by web and worker scripts.
+# First-time setup is usually done via the repository root setup_workspace.bat.
 fastapi
 uvicorn
 jinja2

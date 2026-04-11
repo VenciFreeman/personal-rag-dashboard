@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import base64
 import io
 import json
 import threading
@@ -10,8 +11,8 @@ from pathlib import Path
 from typing import Any
 
 from ai_conversations_summary import runtime_paths as ai_summary_runtime_paths
+from core_service import tickets as core_tickets
 from core_service.runtime_data import backup_snapshots_root, core_runtime_path, ensure_backup_snapshots_dir, workspace_root
-from core_service.ticket_store import TICKETS_FILE as NAV_TICKETS_FILE, list_tickets
 
 
 BACKUP_CONTRACT = "personal_ai_stack_main_data_backup"
@@ -23,17 +24,26 @@ BACKUP_PAYLOAD_FILENAME = "main_data_contract.json"
 BACKUP_MANIFEST_FILENAME = "backup_manifest.json"
 BACKUP_STORAGE_CONTRACT_FILENAME = "storage_contract.json"
 BACKUP_APP_PAYLOAD_DIR = "apps"
+BACKUP_ARTIFACTS_DIR = "artifacts"
 LIBRARY_MEDIA_TYPES = ("book", "video", "music", "game")
 AI_SUMMARY_PAYLOAD_CONTRACT = "ai_conversations_summary_backup"
 AI_SUMMARY_PAYLOAD_VERSION = 1
 NAV_DASHBOARD_PAYLOAD_CONTRACT = "nav_dashboard_backup"
 NAV_DASHBOARD_PAYLOAD_VERSION = 1
 BACKUP_SCHEDULER_STATE_PATH = core_runtime_path("backup_scheduler_state.json")
+BACKUP_RESTORE_AUDIT_PATH = core_runtime_path("backup_restore_audit.jsonl")
 BACKUP_SCHEDULER_INTERVAL_SECONDS = 6 * 60 * 60
 
 _BACKUP_SCHEDULER_LOCK = threading.Lock()
 _BACKUP_SCHEDULER_STARTED = False
 _BACKUP_SCHEDULER_STOP = threading.Event()
+
+
+def _nav_tickets_file() -> Path:
+    paths = core_tickets.list_ticket_storage_paths()
+    if paths:
+        return Path(paths[0])
+    return workspace_root() / "data" / "nav_dashboard" / "tickets" / "tickets.jsonl"
 
 
 def data_storage_contract() -> dict[str, Any]:
@@ -52,6 +62,14 @@ def data_storage_contract() -> dict[str, Any]:
                     "nav_dashboard": ["data/nav_dashboard/tickets/tickets.jsonl"],
                 },
             },
+            "managed_user_artifacts": {
+                "description": "需要随主数据一起迁移的用户维护产物，包括封面、分析报告和工作区级报表。",
+                "paths": {
+                    "library_tracker": ["data/library_tracker/media/covers", "data/library_tracker/analysis/reports"],
+                    "property": ["data/property/analysis/reports"],
+                    "workspace": ["data/reports", "data/project_reports"],
+                },
+            },
             "shared_runtime_metadata": {
                 "description": "共享运行态与运维元数据。",
                 "paths": {"core_service": ["data/core_service", "data/core_service/backup_snapshots"]},
@@ -59,7 +77,7 @@ def data_storage_contract() -> dict[str, Any]:
             "cache_and_indexes": {
                 "description": "可重建缓存、索引和向量数据库，默认不进主数据备份。",
                 "paths": {
-                    "library_tracker": ["data/library_tracker/vector_db", "data/library_tracker/media/covers"],
+                    "library_tracker": ["data/library_tracker/vector_db"],
                     "ai_conversations_summary": ["data/ai_conversations_summary/cache", "data/ai_conversations_summary/hf_cache", "data/ai_conversations_summary/vector_db"],
                 },
             },
@@ -78,7 +96,7 @@ def data_storage_contract() -> dict[str, Any]:
                 },
             },
             "analysis_outputs": {
-                "description": "分析报告和衍生产物，可重建，默认不进主数据备份。",
+                "description": "分析报告和衍生产物，可重建且默认不进主数据备份；用户维护目录已单列到 managed_user_artifacts。",
                 "paths": {
                     "library_tracker": ["data/library_tracker/analysis"],
                     "property": ["data/property/analysis"],
@@ -120,6 +138,228 @@ def _relative_display_path(path: Path) -> str:
         return str(path.resolve().relative_to(workspace_root().resolve())).replace("\\", "/")
     except Exception:
         return str(path).replace("\\", "/")
+
+
+def _workspace_report_roots() -> list[Path]:
+    root = workspace_root()
+    return [root / "data" / "reports", root / "data" / "project_reports"]
+
+
+def _artifact_roots_for_apps(apps: list[str] | tuple[str, ...]) -> list[Path]:
+    roots: list[Path] = []
+    selected = set(apps)
+    if "library_tracker" in selected:
+        from library_tracker.web.settings import COVERS_DIR
+        from library_tracker.web.services import library_analysis_core
+
+        roots.extend([COVERS_DIR, library_analysis_core.REPORTS_ROOT])
+    if "property" in selected:
+        from property.web.services import property_analysis_core
+
+        roots.append(property_analysis_core.REPORTS_ROOT)
+    if "nav_dashboard" in selected:
+        roots.extend(_workspace_report_roots())
+    ordered: list[Path] = []
+    for root in roots:
+        if root not in ordered:
+            ordered.append(root)
+    return ordered
+
+
+def _iter_artifact_files_for_apps(apps: list[str] | tuple[str, ...]) -> list[Path]:
+    files: list[Path] = []
+    for root in _artifact_roots_for_apps(apps):
+        if not root.exists() or not root.is_dir():
+            continue
+        for path in sorted((candidate for candidate in root.rglob("*") if candidate.is_file()), key=lambda item: item.as_posix().lower()):
+            if path.name == ".gitkeep":
+                continue
+            files.append(path)
+    return files
+
+
+def _artifact_archive_name(path: Path) -> str:
+    return f"{BACKUP_ARTIFACTS_DIR}/{_relative_display_path(path)}"
+
+
+def _build_artifact_summary(apps: list[str] | tuple[str, ...]) -> dict[str, Any]:
+    files = _iter_artifact_files_for_apps(apps)
+    counts: dict[str, int] = {}
+    for file_path in files:
+        rel_path = _relative_display_path(file_path)
+        if rel_path.startswith("data/library_tracker/media/covers"):
+            key = "library_tracker"
+        elif rel_path.startswith("data/library_tracker/analysis/reports"):
+            key = "library_tracker"
+        elif rel_path.startswith("data/property/analysis/reports"):
+            key = "property"
+        else:
+            key = "workspace"
+        counts[key] = int(counts.get(key, 0) or 0) + 1
+    return {
+        "file_count": len(files),
+        "counts_by_owner": dict(sorted(counts.items())),
+        "paths": [_relative_display_path(path) for path in files],
+    }
+
+
+def _artifact_path_matches_selected_apps(relative_path: str, apps: set[str]) -> bool:
+    normalized = str(relative_path or "").replace("\\", "/").strip("/")
+    if normalized.startswith("data/library_tracker/media/covers") or normalized.startswith("data/library_tracker/analysis/reports"):
+        return "library_tracker" in apps
+    if normalized.startswith("data/property/analysis/reports"):
+        return "property" in apps
+    if normalized.startswith("data/reports") or normalized.startswith("data/project_reports"):
+        return "nav_dashboard" in apps
+    return False
+
+
+def _append_restore_audit(action: str, **fields: Any) -> None:
+    payload = {
+        "timestamp": datetime.now().isoformat(timespec="seconds"),
+        "action": str(action or "").strip(),
+    }
+    for key, value in fields.items():
+        if isinstance(value, Path):
+            payload[str(key)] = _relative_display_path(value)
+        else:
+            payload[str(key)] = value
+    try:
+        BACKUP_RESTORE_AUDIT_PATH.parent.mkdir(parents=True, exist_ok=True)
+        with BACKUP_RESTORE_AUDIT_PATH.open("a", encoding="utf-8") as handle:
+            handle.write(json.dumps(payload, ensure_ascii=False) + "\n")
+    except Exception:
+        return
+
+
+def _artifact_owner_for_relative_path(relative_path: str) -> str:
+    normalized = str(relative_path or "").replace("\\", "/").strip("/")
+    if normalized.startswith("data/library_tracker/media/covers") or normalized.startswith("data/library_tracker/analysis/reports"):
+        return "library_tracker"
+    if normalized.startswith("data/property/analysis/reports"):
+        return "property"
+    if normalized.startswith("data/reports") or normalized.startswith("data/project_reports"):
+        return "workspace"
+    return ""
+
+
+def _artifact_owner_for_root(root: Path) -> str:
+    relative = _relative_display_path(root)
+    return _artifact_owner_for_relative_path(relative)
+
+
+def _selected_artifact_roots_by_owner(apps: set[str]) -> dict[str, list[Path]]:
+    grouped: dict[str, list[Path]] = {}
+    for root in _artifact_roots_for_apps(sorted(apps)):
+        owner = _artifact_owner_for_root(root)
+        if not owner:
+            continue
+        grouped.setdefault(owner, []).append(root)
+    return grouped
+
+
+def _owner_existing_artifact_counts(roots_by_owner: dict[str, list[Path]]) -> dict[str, int]:
+    counts: dict[str, int] = {}
+    for owner, roots in roots_by_owner.items():
+        count = 0
+        for root in roots:
+            if not root.exists() or not root.is_dir():
+                continue
+            count += sum(1 for candidate in root.rglob("*") if candidate.is_file() and candidate.name != ".gitkeep")
+        counts[owner] = count
+    return counts
+
+
+def _payload_artifact_counts_by_owner(rows: list[dict[str, Any]], apps: set[str]) -> dict[str, int]:
+    counts: dict[str, int] = {}
+    for row in rows:
+        relative_path = str(row.get("path_relative") or "").replace("\\", "/").strip("/")
+        if not relative_path or not _artifact_path_matches_selected_apps(relative_path, apps):
+            continue
+        owner = _artifact_owner_for_relative_path(relative_path)
+        if not owner:
+            continue
+        counts[owner] = int(counts.get(owner, 0) or 0) + 1
+    return counts
+
+
+def _clear_selected_artifact_roots(roots: list[Path]) -> None:
+    for root in roots:
+        _clear_directory_contents(root)
+
+
+def _restore_archive_artifacts(payload: dict[str, Any], *, apps: list[str], replace_existing: bool) -> dict[str, Any]:
+    artifact_files = payload.get("artifact_files") if isinstance(payload.get("artifact_files"), list) else []
+    clean_rows = [row for row in artifact_files if isinstance(row, dict)]
+    selected = set(apps)
+    roots_by_owner = _selected_artifact_roots_by_owner(selected)
+    payload_counts = _payload_artifact_counts_by_owner(clean_rows, selected)
+    existing_counts = _owner_existing_artifact_counts(roots_by_owner)
+    if replace_existing:
+        missing_payload_owners = sorted(
+            owner
+            for owner, existing_count in existing_counts.items()
+            if existing_count > 0 and int(payload_counts.get(owner, 0) or 0) <= 0
+        )
+        if missing_payload_owners:
+            _append_restore_audit(
+                "artifact_restore_rejected_missing_owner_payload",
+                selected_apps=sorted(selected),
+                missing_payload_owners=missing_payload_owners,
+                existing_counts=existing_counts,
+                payload_counts=payload_counts,
+            )
+            raise ValueError(
+                "refusing to clear existing managed artifacts when the backup payload is missing: "
+                + ", ".join(missing_payload_owners)
+            )
+        roots_to_clear = [
+            root
+            for owner, roots in roots_by_owner.items()
+            if int(payload_counts.get(owner, 0) or 0) > 0
+            for root in roots
+        ]
+        if roots_to_clear:
+            _append_restore_audit(
+                "artifact_restore_clear_roots",
+                selected_apps=sorted(selected),
+                roots=[_relative_display_path(root) for root in roots_to_clear],
+                existing_counts=existing_counts,
+                payload_counts=payload_counts,
+            )
+            _clear_selected_artifact_roots(roots_to_clear)
+    restored_paths: list[str] = []
+    skipped_existing: list[str] = []
+    for row in clean_rows:
+        relative_path = str(row.get("path_relative") or "").replace("\\", "/").strip("/")
+        if not relative_path or not _artifact_path_matches_selected_apps(relative_path, selected):
+            continue
+        target = (workspace_root() / relative_path).resolve()
+        if not str(target).startswith(str(workspace_root().resolve())):
+            raise ValueError(f"invalid artifact restore path: {relative_path}")
+        if target.exists() and not replace_existing:
+            skipped_existing.append(relative_path)
+            continue
+        encoded = str(row.get("content_b64") or "")
+        try:
+            content = base64.b64decode(encoded.encode("ascii"), validate=True)
+        except Exception as exc:
+            raise ValueError(f"invalid artifact payload for {relative_path}") from exc
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_bytes(content)
+        restored_paths.append(relative_path)
+    _append_restore_audit(
+        "artifact_restore_write",
+        selected_apps=sorted(selected),
+        restored_count=len(restored_paths),
+        skipped_existing_count=len(skipped_existing),
+        payload_counts=payload_counts,
+    )
+    return {
+        "artifact_file_count": len(restored_paths),
+        "artifact_paths": restored_paths,
+        "skipped_existing_artifacts": skipped_existing,
+    }
 
 
 def _iter_ai_summary_document_paths(documents_dir: Path) -> list[Path]:
@@ -177,6 +417,8 @@ def _import_ai_summary_payload(payload: dict[str, Any], *, replace_existing: boo
     existing_docs = _iter_ai_summary_document_paths(documents_dir)
     if existing_docs and not replace_existing and clean_rows:
         raise ValueError("ai_conversations_summary documents already exist; set replace_existing=true to overwrite")
+    if replace_existing and existing_docs and not clean_rows:
+        raise ValueError("refusing to overwrite existing ai_conversations_summary documents with an empty backup payload")
 
     documents_dir.mkdir(parents=True, exist_ok=True)
     if replace_existing:
@@ -226,7 +468,8 @@ def _export_app_payload(app_name: str) -> dict[str, Any]:
     if app_name == "ai_conversations_summary":
         return _export_ai_summary_payload()
     if app_name == "nav_dashboard":
-        ticket_text = NAV_TICKETS_FILE.read_text(encoding="utf-8") if NAV_TICKETS_FILE.exists() else ""
+        ticket_file = _nav_tickets_file()
+        ticket_text = ticket_file.read_text(encoding="utf-8") if ticket_file.exists() else ""
         return {
             "contract": NAV_DASHBOARD_PAYLOAD_CONTRACT,
             "version": NAV_DASHBOARD_PAYLOAD_VERSION,
@@ -251,14 +494,37 @@ def _import_app_payload(app_name: str, payload: dict[str, Any], *, replace_exist
     if app_name == "ai_conversations_summary":
         return _import_ai_summary_payload(payload, replace_existing=replace_existing)
     if app_name == "nav_dashboard":
-        if NAV_TICKETS_FILE.exists() and not replace_existing:
+        ticket_file = _nav_tickets_file()
+        incoming_ticket_text = str(payload.get("ticket_events_text") or "")
+        if not incoming_ticket_text.strip():
+            core_tickets.append_ticket_storage_audit(
+                "restore_rejected_empty_payload",
+                ticket_file=ticket_file,
+                replace_existing=bool(replace_existing),
+            )
+            raise ValueError("refusing to restore nav_dashboard tickets from an empty backup payload")
+        if ticket_file.exists() and not replace_existing:
             raise ValueError("nav_dashboard tickets already exist; set replace_existing=true to overwrite")
-        NAV_TICKETS_FILE.parent.mkdir(parents=True, exist_ok=True)
-        NAV_TICKETS_FILE.write_text(str(payload.get("ticket_events_text") or ""), encoding="utf-8")
+        if ticket_file.exists() and replace_existing:
+            existing_ticket_text = ticket_file.read_text(encoding="utf-8") if ticket_file.exists() else ""
+            if existing_ticket_text.strip() and not incoming_ticket_text.strip():
+                raise ValueError("refusing to overwrite non-empty nav_dashboard tickets with an empty backup payload")
+            existing_size = len(existing_ticket_text.encode("utf-8"))
+        else:
+            existing_size = 0
+        ticket_file.parent.mkdir(parents=True, exist_ok=True)
+        ticket_file.write_text(incoming_ticket_text, encoding="utf-8")
+        core_tickets.append_ticket_storage_audit(
+            "restore_write",
+            ticket_file=ticket_file,
+            replace_existing=bool(replace_existing),
+            previous_size_bytes=existing_size,
+            incoming_size_bytes=len(incoming_ticket_text.encode("utf-8")),
+        )
         return {
             "ok": True,
-            "ticket_file": _relative_display_path(NAV_TICKETS_FILE),
-            "ticket_count": len(list_tickets(limit=5000, sort="updated_desc")),
+            "ticket_file": _relative_display_path(ticket_file),
+            "ticket_count": len(core_tickets.list_tickets(limit=5000, sort="updated_desc")),
             "replace_existing": bool(replace_existing),
         }
     raise ValueError(f"unsupported backup app: {app_name}")
@@ -481,6 +747,7 @@ def export_main_data_contract(apps: list[str] | None = None) -> dict[str, Any]:
         "apps": app_payloads,
         "app_order": selected_apps,
         "summary": app_summaries,
+        "artifact_summary": _build_artifact_summary(selected_apps),
         "storage_contract": data_storage_contract(),
     }
 
@@ -491,16 +758,26 @@ def _app_payload_archive_name(app_name: str) -> str:
 
 def _build_backup_manifest(payload: dict[str, Any]) -> dict[str, Any]:
     app_order = [str(item).strip() for item in list(payload.get("app_order") or []) if str(item).strip()]
+    artifact_files = [
+        {
+            "path_relative": _relative_display_path(path),
+            "archive_name": _artifact_archive_name(path),
+            "size_bytes": int(path.stat().st_size),
+        }
+        for path in _iter_artifact_files_for_apps(app_order)
+    ]
     return {
         "contract": BACKUP_CONTRACT,
         "version": BACKUP_SCHEMA_VERSION,
         "created_at": payload.get("created_at"),
         "app_order": app_order,
         "summary": dict(payload.get("summary") or {}) if isinstance(payload.get("summary"), dict) else {},
+        "artifact_summary": dict(payload.get("artifact_summary") or {}) if isinstance(payload.get("artifact_summary"), dict) else {},
         "app_payload_files": {
             app_name: _app_payload_archive_name(app_name)
             for app_name in app_order
         },
+        "artifact_files": artifact_files,
     }
 
 
@@ -517,6 +794,17 @@ def build_backup_archive_bytes(payload: dict[str, Any]) -> bytes:
             if not isinstance(app_payload, dict):
                 continue
             archive.writestr(_app_payload_archive_name(app_name), json.dumps(app_payload, ensure_ascii=False, indent=2))
+        for artifact in manifest.get("artifact_files") or []:
+            if not isinstance(artifact, dict):
+                continue
+            path_relative = str(artifact.get("path_relative") or "").strip()
+            archive_name = str(artifact.get("archive_name") or "").strip()
+            if not path_relative or not archive_name:
+                continue
+            source = workspace_root() / Path(path_relative)
+            if not source.exists() or not source.is_file():
+                continue
+            archive.writestr(archive_name, source.read_bytes())
     return buffer.getvalue()
 
 
@@ -538,11 +826,17 @@ def _load_backup_scheduler_state() -> dict[str, str]:
         payload = {}
     if not isinstance(payload, dict):
         payload = {}
-    return {
+    normalized = {
         "last_weekly_backup_week": str(payload.get("last_weekly_backup_week") or payload.get("last_monthly_backup_month") or ""),
         "last_weekly_backup_at": str(payload.get("last_weekly_backup_at") or payload.get("last_monthly_backup_at") or ""),
         "last_weekly_backup_name": str(payload.get("last_weekly_backup_name") or payload.get("last_monthly_backup_name") or ""),
     }
+    if any(key in payload for key in ("last_monthly_backup_month", "last_monthly_backup_at", "last_monthly_backup_name")):
+        try:
+            _save_backup_scheduler_state(normalized)
+        except Exception:
+            pass
+    return normalized
 
 
 def _save_backup_scheduler_state(payload: dict[str, str]) -> None:
@@ -697,6 +991,27 @@ def load_backup_payload(file_name: str, raw_bytes: bytes) -> dict[str, Any]:
                         storage_contract = json.loads(archive.read(BACKUP_STORAGE_CONTRACT_FILENAME).decode("utf-8"))
                     except Exception as exc:
                         raise ValueError("backup archive storage contract is not valid JSON") from exc
+                artifact_rows = manifest.get("artifact_files") if isinstance(manifest.get("artifact_files"), list) else []
+                loaded_artifacts: list[dict[str, Any]] = []
+                for item in artifact_rows:
+                    if not isinstance(item, dict):
+                        continue
+                    archive_name = str(item.get("archive_name") or "").strip()
+                    relative_path = str(item.get("path_relative") or "").strip().replace("\\", "/")
+                    if not archive_name or not relative_path:
+                        continue
+                    try:
+                        raw_artifact = archive.read(archive_name)
+                    except KeyError as exc:
+                        raise ValueError(f"backup archive missing {archive_name}") from exc
+                    loaded_artifacts.append(
+                        {
+                            "path_relative": relative_path,
+                            "archive_name": archive_name,
+                            "size_bytes": int(item.get("size_bytes") or len(raw_artifact)),
+                            "content_b64": base64.b64encode(raw_artifact).decode("ascii"),
+                        }
+                    )
                 payload = {
                     "contract": manifest.get("contract"),
                     "version": manifest.get("version"),
@@ -704,6 +1019,8 @@ def load_backup_payload(file_name: str, raw_bytes: bytes) -> dict[str, Any]:
                     "app_order": app_order,
                     "apps": app_payloads,
                     "summary": manifest.get("summary") if isinstance(manifest.get("summary"), dict) else {},
+                    "artifact_summary": manifest.get("artifact_summary") if isinstance(manifest.get("artifact_summary"), dict) else {},
+                    "artifact_files": loaded_artifacts,
                     "storage_contract": storage_contract if isinstance(storage_contract, dict) else {},
                 }
             else:
@@ -739,11 +1056,13 @@ def restore_main_data_contract(payload: dict[str, Any], *, apps: list[str] | Non
         if not isinstance(app_payload, dict):
             continue
         restored[app_name] = _import_app_payload(app_name, dict(app_payload), replace_existing=bool(replace_existing))
+    artifact_restore = _restore_archive_artifacts(payload, apps=selected_apps, replace_existing=bool(replace_existing))
     return {
         "ok": True,
         "restored_apps": list(restored.keys()),
         "replace_existing": bool(replace_existing),
         "results": restored,
+        "artifacts": artifact_restore,
         "pre_restore_backup": safety_snapshot,
         "summary": backup_summary(),
     }

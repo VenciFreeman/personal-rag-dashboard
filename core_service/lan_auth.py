@@ -18,6 +18,7 @@ from fastapi import APIRouter, FastAPI, Request
 from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse, Response
 from starlette.middleware.base import BaseHTTPMiddleware
 
+from . import config as core_config
 from .runtime_data import lan_auth_db_path
 
 
@@ -340,8 +341,18 @@ def build_lan_auth_router(*, app_id: str, app_title: str) -> APIRouter:
                     for app_key, app_label in AVAILABLE_APPS.items()
                 ],
                 "users": list_users_for_admin() if users_exist else [],
+                "config": core_config.load_admin_config_state(),
             }
         )
+
+    @router.patch("/api/admin/config")
+    async def admin_update_config_api(request: Request) -> Response:
+        auth_error = _require_recent_admin_reauth(request)
+        if auth_error is not None:
+            return auth_error
+        payload = await _parse_json_body(request)
+        result = core_config.update_admin_config(payload)
+        return JSONResponse(result)
 
     @router.post("/api/admin/reauth")
     async def admin_reauth_api(request: Request) -> Response:

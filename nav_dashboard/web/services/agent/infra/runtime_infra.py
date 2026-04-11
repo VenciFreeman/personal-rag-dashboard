@@ -204,6 +204,8 @@ _BUG_MARKER_PREFIX = "BUG-TICKET:"
 
 
 def _auto_queue_bug_tickets(text: str, *, session_id: str = "", trace_id: str = "") -> None:
+    from core_service.bug_ticket_payloads import parse_bug_ticket_payload
+
     if not text or _BUG_MARKER_PREFIX not in text:
         return
     tickets: list[dict[str, Any]] = []
@@ -212,11 +214,10 @@ def _auto_queue_bug_tickets(text: str, *, session_id: str = "", trace_id: str = 
             continue
         payload_text = line.split(_BUG_MARKER_PREFIX, 1)[1].strip().strip("`")
         try:
-            payload = json.loads(payload_text)
-        except Exception:
+            payload = parse_bug_ticket_payload(payload_text)
+        except ValueError:
             continue
-        if isinstance(payload, dict):
-            tickets.append(payload)
+        tickets.append(payload)
     if not tickets:
         return
     try:

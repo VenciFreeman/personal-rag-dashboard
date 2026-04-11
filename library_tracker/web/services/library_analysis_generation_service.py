@@ -29,6 +29,13 @@ def _report_job_metadata(kind: str, backend: str, period: Any, manual: bool) -> 
     }
 
 
+def _backend_config(backend: str) -> tuple[str, str, str, str]:
+    settings = get_settings()
+    if backend == "deepseek":
+        return settings.api_key, settings.api_base_url, settings.chat_model, "DeepSeek"
+    return settings.local_llm_api_key, settings.local_llm_url, settings.local_llm_model, "Local"
+
+
 def generate_report(kind: str, backend: str, period_key: str | None = None, manual: bool = True) -> dict[str, object]:
     if kind not in shared.REPORT_KINDS:
         raise ValueError("invalid report kind")
@@ -68,19 +75,19 @@ def generate_report(kind: str, backend: str, period_key: str | None = None, manu
         sections = library_spotlight_service.build_default_sections(context)
         markdown = library_report_service.render_report_markdown(period, context, sections)
         settings = get_settings()
+        requested_backend = backend
+        attempted_backends = [backend]
         if backend == "deepseek":
-            api_key = settings.api_key
-            base_url = settings.api_base_url
-            model = settings.chat_model
-            backend_label = "DeepSeek"
-        else:
-            api_key = settings.local_llm_api_key
-            base_url = settings.local_llm_url
-            model = settings.local_llm_model
-            backend_label = "Local"
-        attempted_label = display_model_name(model) if model else backend_label
-        model_label = f"{backend_label} 未配置，规则输出"
-        if api_key and model and base_url:
+            attempted_backends.append("local")
+        actual_backend = backend
+        failure_notes: list[str] = []
+        model_label = "规则输出"
+        for candidate in attempted_backends:
+            api_key, base_url, model, backend_label = _backend_config(candidate)
+            attempted_label = display_model_name(model) if model else backend_label
+            if not (api_key and model and base_url):
+                failure_notes.append(f"{backend_label} 未配置")
+                continue
             try:
                 llm_text = chat_completion_with_retry(
                     api_key=api_key,
@@ -94,9 +101,13 @@ def generate_report(kind: str, backend: str, period_key: str | None = None, manu
                     max_tokens=2600 if kind == shared.REPORT_KIND_QUARTERLY else 3200,
                 ).strip()
                 sections = library_spotlight_service.merge_llm_sections(context, llm_text)
-                markdown = library_report_service.render_report_markdown(period, context, sections)
+                note = ""
+                if requested_backend == "deepseek" and candidate == "local":
+                    note = "DeepSeek 调用失败，已回退本地模型输出。"
+                markdown = library_report_service.render_report_markdown(period, context, sections, note=note)
+                actual_backend = candidate
                 model_label = attempted_label
-                if backend == "deepseek":
+                if candidate == "deepseek":
                     notify_nav_dashboard_usage(
                         deepseek_delta=1,
                         count_daily=False,
@@ -111,12 +122,17 @@ def generate_report(kind: str, backend: str, period_key: str | None = None, manu
                         ],
                         background=True,
                     )
-            except Exception:
-                markdown = library_report_service.render_report_markdown(period, context, sections, note="模型调用失败，已使用规则兜底输出。")
-                model_label = f"{attempted_label} 调用失败，规则输出"
+                break
+            except Exception as exc:
+                failure_notes.append(f"{backend_label} 调用失败: {str(exc).strip()}")
+        else:
+            note = "；".join(failure_notes) if failure_notes else "模型调用失败，已使用规则兜底输出。"
+            markdown = library_report_service.render_report_markdown(period, context, sections, note=note)
+            model_label = "规则输出"
+            actual_backend = requested_backend
         try:
             summary = library_report_service.summary_from_markdown(markdown)
-            report = library_report_service.save_report(kind, backend, period, markdown, model_label, summary)
+            report = library_report_service.save_report(kind, actual_backend, period, markdown, model_label, summary)
         except Exception as exc:
             publish_nav_dashboard_job_update(
                 job_id=dashboard_job_id,

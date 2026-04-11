@@ -1,98 +1,214 @@
-# Workspace-level ignore rules
+################################################################################
+# Root-level .gitignore for personal-ai-stack
+# Last updated: 2026-04-04
+#
+# This is a personal project workspace, we ignore:
+# - Development/runtime artifacts (venv, caches, logs)
+# - All runtime data and backups (mounted under /data/)
+# - IDE and OS files
+# - Build and dist outputs
+# - Large model caches and local models
+#
+# Note: /data/ paths are ALWAYS ignored at workspace level.
+# If a specific app or module needs to version certain data,
+# use a !-prefixed pattern in its own .gitignore.
+################################################################################
 
-# Python virtual environments
+# ==============================================================================
+# Python virtual environments and local development
+# ==============================================================================
 .venv/
 venv/
 env/
-**/.venv/
-**/venv/
+ENV/
+.python-version
+.pipdeptree
 
-# Local model assets
-local_models/
-**/local_models/
-
-# Private vector index lives in sub-repo private-data branch.
-core_service/data/vector_db/**
-!core_service/data/vector_db/.gitkeep
-
-# Python cache/build artifacts
+# ==============================================================================
+# Python runtime artifacts
+# ==============================================================================
 __pycache__/
 **/__pycache__/
 *.py[cod]
-*$py.class
+*.pyo
+*.pyd
+*.so
+*.egg
+*.egg-info/
+.eggs/
+dist/
+build/
+pip-log.txt
+pip-delete-this-directory.txt
+.venv.lock
+
+# ==============================================================================
+# Testing and coverage
+# ==============================================================================
 .pytest_cache/
-.mypy_cache/
-.ruff_cache/
+.pytest_tmp/
 .coverage
 .coverage.*
 htmlcov/
-*.egg-info/
-.eggs/
+.mypy_cache/
+.dmypy.json
+dmypy.json
+.ruff_cache/
+.pytype/
+.hypothesis/
+
+# ==============================================================================
+# Jupyter / iPython
+# ==============================================================================
+.ipynb_checkpoints/
+*.ipynb_checkpoints
+*.ipynb
+
+# ==============================================================================
+# IDE and editor
+# ==============================================================================
+.vscode/
+.code-workspace
+.idea/
+*.iml
+*.sublime-project
+*.sublime-workspace
+.DS_Store
+Thumbs.db
+Desktop.ini
+*.swp
+*.swo
+*~
+.project
+.pydevproject
+.settings/
+
+# ==============================================================================
+# Environment and secrets
+# ==============================================================================
+.env
+.env.local
+.env.*.local
+!.env.example
+env.local.ps1
+
+# ==============================================================================
+# Runtime data (ALL data is in /data/ - ALWAYS exclude)
+# ==============================================================================
+/data/
+/data/core_service/lan_auth.sqlite3
+/ai_conversations_summary/data/
+/nav_dashboard/data/
+/nav_dashboard/data.backup/
+/library_tracker/data/
+/library_tracker/data.backup/
+/property/data/
+/property/data.backup/
+/journey/data/
+/journey/data.backup/
+/core_service/data/
+/core_service/data.backup/
+*.backup
+*.backup.*
+
+# ==============================================================================
+# Large model caches and local models (use environment variables to manage)
+# ==============================================================================
+local_models/
+**/local_models/
+data/core_service/hf_cache/
+data/core_service/local_models/
+data/core_service/vector_db/
+**/hf_cache/
+**/huggingface_cache/
+transformers_cache/
+
+# ==============================================================================
+# Build, distribution, packaging
+# ==============================================================================
+*.whl
+*.tar.gz
+*.zip
 build/
 dist/
+*.egg-info/
+.eggs/
+# Pre-built wheels or compiled extensions (should not version)
+*.so
 
-# Notebook/runtime
-.ipynb_checkpoints/
-
-# Logs and temp files
-*.log
-*.tmp
-*.temp
-
-# Node/frontend artifacts
+# ==============================================================================
+# Node/frontend artifacts (if any frontend exists in future)
+# ==============================================================================
 node_modules/
 .npm/
 .pnpm-store/
 .yarn/
 *.tsbuildinfo
+dist_web/
+webpack_dist/
 
-# IDE/editor
-.vscode/
-.idea/
-*.code-workspace
+# ==============================================================================
+# Logs, temporary, and debug files
+# ==============================================================================
+*.log
+*.log.*
+*.tmp
+*.temp
+*.bak
+.DS_Store.lock
+_tmp_*/
+*_tmp_*.json
+*.pid
 
-# OS files
+# ==============================================================================
+# Backup and export tarballs (generated at runtime, can be restored from backup)
+# ==============================================================================
+personal_data_backup_*.zip
+pre_restore_backup_*.zip
+personal_data_export_*.zip
+data_backup_*.tar.gz
+backup_*.zip
+
+# ==============================================================================
+# macOS specific
+# ==============================================================================
+.AppleDouble
+.LSOverride
+._*
+.Spotlight-V100
+.Trashes
+.TemporaryItems
+.fseventsd
 .DS_Store
+
+# ==============================================================================
+# Linux/Unix specific
+# ==============================================================================
+.directory
+.Trash-*
+
+# ==============================================================================
+# Windows specific
+# ==============================================================================
 Thumbs.db
 Desktop.ini
+$RECYCLE.BIN/
+ehthumbs.db
 
-# Local tooling and runtime state
-.claude/
-/core_service/data
-data/benchmark_results.json
-data/*.sqlite3
-data/*.db
-data/nav_dashboard_deploy.json
-env.local.ps1
-.gitmodules
-_tmp_run_two_rag_checks.ps1
-_tmp_benchmark_rag_two_requests.ps1
-/ai_conversations_summary/data/cache
-/ai_conversations_summary/data/summarize_dir
-/ai_conversations_summary/documents
-/ai_conversations_summary/data
-/ai_conversations_summary/web/static
-/library_tracker/data
-/nav_dashboard/web/static
-/nav_dashboard/favicon_logosc
+# ==============================================================================
+# Project-specific temporary/runtime files
+# ==============================================================================
+_tmp_post_fix_smoke.json
+.pytest_tmp_*
+test_output_*.json
+benchmark_run_*.json
+
+data/core_service/.core_runtime_data_migrated.json
+/ai_conversations_summary
 /library_tracker/web/static
-/wardrobe
-ai_conversations_summary/LICENSE
-ai_conversations_summary/LICENSE
-data/custom_cards.json
-/property
-/journey
-/data/_smoke_runs
-/data/ai_conversations_summary
-/data/core_service
-/data/journey
-/data/library_tracker
-/data/nav_dashboard
-/data/property
-/data/reports
-/nav_dashboard/web/services/ontologies
-/nav_dashboard/web/services/media
+/nav_dashboard/favicon_logosc
 /tests
-/tests
-/tests
+/nav_dashboard/web/static
+/scripts/dev
+/scripts/dev
 /tests

@@ -1,6 +1,6 @@
 # Agent Bootstrap
 
-- Workflow entrypoint: `.github/README.md`
+- Workflow entrypoint: `.github/AGENT_WORKFLOW.md`
 - Rule library: `.github/AGENT_RULES.md`
 - Always classify the task as `debug`, `feature`, or `refactor`.
 - Only apply `GLOBAL RULES` plus the active task section from `.github/AGENT_RULES.md`.
@@ -15,6 +15,12 @@
 - Use the root `.venv` for Python work in this workspace.
 - Main entrypoints are `nav_dashboard/launch_web.bat`, `ai_conversations_summary/launch_web.bat`, and `library_tracker/launch_web.bat`.
 - Ticket records are stored in `data/nav_dashboard/tickets/tickets.jsonl` using the schema implemented in `core_service/ticket_store.py`.
+
+## Safety Guardrails
+- Never edit files outside the current workspace unless the user explicitly asks for it and names the target path.
+- Treat runtime data and local config as sensitive: `data/**`, `env.local.ps1`, `core_service/config.local.json`, and backup snapshots must not be deleted, truncated, or overwritten without explicit user confirmation in the current session.
+- Before any restore/import operation with overwrite semantics, prefer validation or rehearsal first; do not run destructive restore flows silently.
+- If a restore payload for `nav_dashboard` tickets is empty while the current tickets file is non-empty, stop and surface the mismatch instead of overwriting.
 
 ## Bug Ticket Sync
 - When your work discovers or fixes one or more concrete bugs, add exactly one `BUG-TICKET:` line per bug in your final response.

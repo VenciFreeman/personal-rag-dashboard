@@ -158,6 +158,31 @@ const authorizationCreateActive = document.getElementById("authorization-create-
 const authorizationCreateApps = document.getElementById("authorization-create-apps");
 const authorizationCreateBtn = document.getElementById("authorization-create-btn");
 const authorizationUsersList = document.getElementById("authorization-users-list");
+const authorizationConfigMeta = document.getElementById("authorization-config-meta");
+const authorizationConfigExternalBaseUrl = document.getElementById("authorization-config-external-base-url");
+const authorizationConfigExternalBaseUrlMeta = document.getElementById("authorization-config-external-base-url-meta");
+const authorizationConfigExternalModel = document.getElementById("authorization-config-external-model");
+const authorizationConfigExternalModelMeta = document.getElementById("authorization-config-external-model-meta");
+const authorizationConfigExternalApiKey = document.getElementById("authorization-config-external-api-key");
+const authorizationConfigExternalApiKeyMeta = document.getElementById("authorization-config-external-api-key-meta");
+const authorizationConfigExternalSaveBtn = document.getElementById("authorization-config-external-save-btn");
+const authorizationConfigExternalError = document.getElementById("authorization-config-external-error");
+const authorizationConfigLocalBaseUrl = document.getElementById("authorization-config-local-base-url");
+const authorizationConfigLocalBaseUrlMeta = document.getElementById("authorization-config-local-base-url-meta");
+const authorizationConfigLocalModel = document.getElementById("authorization-config-local-model");
+const authorizationConfigLocalModelMeta = document.getElementById("authorization-config-local-model-meta");
+const authorizationConfigLocalApiKey = document.getElementById("authorization-config-local-api-key");
+const authorizationConfigLocalApiKeyMeta = document.getElementById("authorization-config-local-api-key-meta");
+const authorizationConfigLocalSaveBtn = document.getElementById("authorization-config-local-save-btn");
+const authorizationConfigLocalError = document.getElementById("authorization-config-local-error");
+const authorizationConfigTavilyApiKey = document.getElementById("authorization-config-tavily-api-key");
+const authorizationConfigTavilyApiKeyMeta = document.getElementById("authorization-config-tavily-api-key-meta");
+const authorizationConfigTmdbApiKey = document.getElementById("authorization-config-tmdb-api-key");
+const authorizationConfigTmdbApiKeyMeta = document.getElementById("authorization-config-tmdb-api-key-meta");
+const authorizationConfigBangumiAccessToken = document.getElementById("authorization-config-bangumi-access-token");
+const authorizationConfigBangumiAccessTokenMeta = document.getElementById("authorization-config-bangumi-access-token-meta");
+const authorizationConfigOtherSaveBtn = document.getElementById("authorization-config-other-save-btn");
+const authorizationConfigOtherError = document.getElementById("authorization-config-other-error");
 const customCardModal = document.getElementById("custom-card-modal");
 const customCardModalTitle = document.getElementById("custom-card-modal-title");
 const customCardNameInput = document.getElementById("custom-card-name");
@@ -401,6 +426,7 @@ let currentTicketSort = "updated_desc";
 let currentTicketStatusFilter = "non_closed";
 let ticketsListCollapsed = false;
 let ticketsDetailResizeObserver = null;
+let ticketsPaneResizeListenerBound = false;
 const TICKETS_LIST_COLLAPSED_STORAGE_KEY = "navDashboardTicketsListCollapsed";
 
 // Startup polling
@@ -639,6 +665,34 @@ function summarizeBenchmarkContractFailures(records) {
   }).join(" ");
   const more = failures.length > 3 ? ` <span class="bm-assert-fail-more">+${failures.length - 3} more</span>` : "";
   return `<div class="dashboard-meta">Contract: ${preview}${more}</div>`;
+}
+
+function summarizeBenchmarkFailures(scope, records, title = "失败项") {
+  const assertionFailures = (Array.isArray(scope?.checks) ? scope.checks : [])
+    .filter((item) => item && item.passed === false)
+    .map((item) => ({
+      kind: "assertion",
+      name: String(item?.name || "assertion"),
+      detail: `${String(item?.actual ?? "—")} / ${String(item?.expected ?? "—")}`,
+    }));
+  const contractFailures = (Array.isArray(records) ? records : [])
+    .flatMap((record) => Array.isArray(record?.contract_checks) ? record.contract_checks.map((check) => ({ record, check })) : [])
+    .filter((entry) => entry.check && entry.check.passed === false)
+    .map(({ record, check }) => ({
+      kind: "contract",
+      name: String(check?.name || "contract"),
+      detail: `trace ${String(record?.trace_id || "—")}`,
+    }));
+  const failures = [...assertionFailures, ...contractFailures];
+  if (!failures.length) {
+    return `<span style="color:#9ecb8b">${escapeHtml(title)}: 全部通过</span>`;
+  }
+  const preview = failures.slice(0, 4).map((item) => {
+    const prefix = item.kind === "contract" ? "Contract" : "Assert";
+    return `<span class="bm-assert-fail-item"><span>${escapeHtml(prefix)} · ${escapeHtml(item.name)}</span><span class="bm-assert-fail-more">${escapeHtml(item.detail)}</span></span>`;
+  }).join(" ");
+  const more = failures.length > 4 ? ` <span class="bm-assert-fail-more">+${failures.length - 4} more</span>` : "";
+  return `<div class="dashboard-meta">${escapeHtml(title)}: ${preview}${more}</div>`;
 }
 
 function renderBenchmarkContractFailureSummary(record, options = {}) {
@@ -2545,6 +2599,12 @@ function dashboardTicketTrendModeLabel(mode) {
   return "周";
 }
 
+const DASHBOARD_TICKET_TREND_MAX_POINTS = {
+  day: 30,
+  week: 24,
+  month: 24,
+};
+
 function dashboardPrioritySeriesLabel(priority) {
   const key = String(priority || "").trim().toLowerCase();
   return `优先级 ${key || "unknown"}`;
@@ -2564,8 +2624,13 @@ function resolveDashboardTicketTrendSeries(stats, mode) {
   const trends = stats?.trends && typeof stats.trends === "object" ? stats.trends : {};
   const normalized = normalizeDashboardTicketTrendMode(mode);
   const fromTrends = Array.isArray(trends?.[normalized]) ? trends[normalized] : [];
-  if (fromTrends.length) return fromTrends;
-  if (normalized === "week" && Array.isArray(stats?.weeks)) return stats.weeks;
+  const maxPoints = Number(DASHBOARD_TICKET_TREND_MAX_POINTS[normalized] || 0);
+  if (fromTrends.length) {
+    return maxPoints > 0 && fromTrends.length > maxPoints ? fromTrends.slice(-maxPoints) : fromTrends;
+  }
+  if (normalized === "week" && Array.isArray(stats?.weeks)) {
+    return maxPoints > 0 && stats.weeks.length > maxPoints ? stats.weeks.slice(-maxPoints) : stats.weeks;
+  }
   return [];
 }
 
@@ -2690,11 +2755,11 @@ function renderDashboardTicketTrend(stats, options = {}) {
       textStyle: { color: "#b7b7a4", fontSize: 12 },
       data: [...priorityLegendKeys.map((priority) => dashboardPrioritySeriesLabel(priority))],
     },
-    grid: { left: 12, right: 12, top: 58, bottom: 26, containLabel: true },
+    grid: { left: 12, right: 20, top: 58, bottom: 26, containLabel: true },
     xAxis: {
       type: "category",
       data: labels,
-      boundaryGap: false,
+      boundaryGap: ["2%", "6%"],
       axisLabel: {
         color: "#98a08d",
         fontSize: 11,
@@ -3744,6 +3809,20 @@ function syncTicketsPaneHeights() {
 function setupTicketsPaneHeightSync() {
   if (!(ticketsDetailShell instanceof HTMLElement)) return;
   if (ticketsDetailResizeObserver) ticketsDetailResizeObserver.disconnect();
+  if (!ticketsPaneResizeListenerBound && typeof window !== "undefined") {
+    const resync = () => {
+      if (typeof window.requestAnimationFrame === "function") {
+        window.requestAnimationFrame(() => {
+          syncTicketsPaneHeights();
+        });
+        return;
+      }
+      syncTicketsPaneHeights();
+    };
+    window.addEventListener("resize", resync, { passive: true });
+    window.addEventListener("orientationchange", resync, { passive: true });
+    ticketsPaneResizeListenerBound = true;
+  }
   if (typeof ResizeObserver === "function") {
     ticketsDetailResizeObserver = new ResizeObserver(() => {
       syncTicketsPaneHeights();
@@ -4075,6 +4154,7 @@ const dashboardBenchmarkBootstrap = DashboardBenchmarkBootstrapModule?.createBen
   getBenchmarkLatestCase: (results, liveLatestCase) => DashboardBenchmarkModule.getLatestBenchmarkCase(results, liveLatestCase),
   summarizeAssertionScope,
   summarizeAssertionFailures,
+  summarizeBenchmarkFailures,
   summarizeBenchmarkContractFailures,
   renderBenchmarkContractFailureSummary,
   modalApi: DashboardSharedModal,
@@ -4734,6 +4814,136 @@ function collectAuthorizationApps(container) {
     .filter(Boolean);
 }
 
+const AUTHORIZATION_SOURCE_LABELS = {
+  env: "环境变量覆盖",
+  config: "config.local.json",
+  default: "默认值",
+  empty: "未配置",
+};
+
+function authorizationFieldMetaText(field) {
+  const source = String(field?.source || "empty").trim() || "empty";
+  const sourceLabel = AUTHORIZATION_SOURCE_LABELS[source] || source;
+  if (field?.secret) {
+    return field?.configured ? `已配置，当前来源：${sourceLabel}` : "未配置";
+  }
+  return `当前来源：${sourceLabel}`;
+}
+
+function primeAuthorizationConfigInput(input, value, { secret = false } = {}) {
+  if (!(input instanceof HTMLInputElement)) return;
+  const text = String(value || "");
+  input.value = secret ? "" : text;
+  input.dataset.initialValue = secret ? "" : text;
+}
+
+function changedAuthorizationConfigValue(input) {
+  if (!(input instanceof HTMLInputElement)) return null;
+  const current = String(input.value || "").trim();
+  const initial = String(input.dataset.initialValue || "").trim();
+  if (current === initial) return null;
+  return current;
+}
+
+function secretAuthorizationConfigValue(input) {
+  if (!(input instanceof HTMLInputElement)) return null;
+  const current = String(input.value || "").trim();
+  return current ? current : null;
+}
+
+function renderAuthorizationConfig() {
+  const config = authorizationState.data?.config || {};
+  const externalApi = config.external_api || {};
+  const localLlm = config.local_llm || {};
+  const otherApis = config.other_apis || {};
+
+  if (authorizationConfigMeta) {
+    const configPath = String(config.persistence_path || "core_service/config.local.json").trim();
+    const secretPath = String(config.secret_persistence_path || "env.local.ps1").trim();
+    const configPrefix = config.config_file_exists ? "当前非敏感配置文件" : "非敏感配置将写入";
+    const secretPrefix = config.env_file_exists ? "密钥环境文件" : "密钥将写入";
+    authorizationConfigMeta.textContent = `${configPrefix}: ${configPath}；${secretPrefix}: ${secretPath}`;
+  }
+
+  primeAuthorizationConfigInput(authorizationConfigExternalBaseUrl, externalApi.base_url?.value || "");
+  primeAuthorizationConfigInput(authorizationConfigExternalModel, externalApi.model?.value || "");
+  primeAuthorizationConfigInput(authorizationConfigExternalApiKey, "", { secret: true });
+  if (authorizationConfigExternalBaseUrlMeta) authorizationConfigExternalBaseUrlMeta.textContent = authorizationFieldMetaText(externalApi.base_url);
+  if (authorizationConfigExternalModelMeta) authorizationConfigExternalModelMeta.textContent = authorizationFieldMetaText(externalApi.model);
+  if (authorizationConfigExternalApiKeyMeta) authorizationConfigExternalApiKeyMeta.textContent = authorizationFieldMetaText(externalApi.api_key);
+  showAuthorizationError(authorizationConfigExternalError, "");
+
+  primeAuthorizationConfigInput(authorizationConfigLocalBaseUrl, localLlm.base_url?.value || "");
+  primeAuthorizationConfigInput(authorizationConfigLocalModel, localLlm.model?.value || "");
+  primeAuthorizationConfigInput(authorizationConfigLocalApiKey, "", { secret: true });
+  if (authorizationConfigLocalBaseUrlMeta) authorizationConfigLocalBaseUrlMeta.textContent = authorizationFieldMetaText(localLlm.base_url);
+  if (authorizationConfigLocalModelMeta) authorizationConfigLocalModelMeta.textContent = authorizationFieldMetaText(localLlm.model);
+  if (authorizationConfigLocalApiKeyMeta) authorizationConfigLocalApiKeyMeta.textContent = authorizationFieldMetaText(localLlm.api_key);
+  showAuthorizationError(authorizationConfigLocalError, "");
+
+  primeAuthorizationConfigInput(authorizationConfigTavilyApiKey, "", { secret: true });
+  primeAuthorizationConfigInput(authorizationConfigTmdbApiKey, "", { secret: true });
+  primeAuthorizationConfigInput(authorizationConfigBangumiAccessToken, "", { secret: true });
+  if (authorizationConfigTavilyApiKeyMeta) authorizationConfigTavilyApiKeyMeta.textContent = authorizationFieldMetaText(otherApis.tavily_api_key);
+  if (authorizationConfigTmdbApiKeyMeta) authorizationConfigTmdbApiKeyMeta.textContent = authorizationFieldMetaText(otherApis.tmdb_api_key);
+  if (authorizationConfigBangumiAccessTokenMeta) authorizationConfigBangumiAccessTokenMeta.textContent = authorizationFieldMetaText(otherApis.bangumi_access_token);
+  showAuthorizationError(authorizationConfigOtherError, "");
+}
+
+async function saveAuthorizationConfig(sectionName) {
+  const payload = {};
+  let button = null;
+  let errorNode = null;
+
+  if (sectionName === "external_api") {
+    button = authorizationConfigExternalSaveBtn;
+    errorNode = authorizationConfigExternalError;
+    const baseUrl = changedAuthorizationConfigValue(authorizationConfigExternalBaseUrl);
+    const model = changedAuthorizationConfigValue(authorizationConfigExternalModel);
+    const apiKey = secretAuthorizationConfigValue(authorizationConfigExternalApiKey);
+    if (baseUrl) payload.external_api = { ...(payload.external_api || {}), base_url: baseUrl };
+    if (model) payload.external_api = { ...(payload.external_api || {}), model };
+    if (apiKey) payload.external_api = { ...(payload.external_api || {}), api_key: apiKey };
+  } else if (sectionName === "local_llm") {
+    button = authorizationConfigLocalSaveBtn;
+    errorNode = authorizationConfigLocalError;
+    const baseUrl = changedAuthorizationConfigValue(authorizationConfigLocalBaseUrl);
+    const model = changedAuthorizationConfigValue(authorizationConfigLocalModel);
+    const apiKey = secretAuthorizationConfigValue(authorizationConfigLocalApiKey);
+    if (baseUrl) payload.local_llm = { ...(payload.local_llm || {}), base_url: baseUrl };
+    if (model) payload.local_llm = { ...(payload.local_llm || {}), model };
+    if (apiKey) payload.local_llm = { ...(payload.local_llm || {}), api_key: apiKey };
+  } else if (sectionName === "other_apis") {
+    button = authorizationConfigOtherSaveBtn;
+    errorNode = authorizationConfigOtherError;
+    const tavilyApiKey = secretAuthorizationConfigValue(authorizationConfigTavilyApiKey);
+    const tmdbApiKey = secretAuthorizationConfigValue(authorizationConfigTmdbApiKey);
+    const bangumiAccessToken = secretAuthorizationConfigValue(authorizationConfigBangumiAccessToken);
+    if (tavilyApiKey) payload.other_apis = { ...(payload.other_apis || {}), tavily_api_key: tavilyApiKey };
+    if (tmdbApiKey) payload.other_apis = { ...(payload.other_apis || {}), tmdb_api_key: tmdbApiKey };
+    if (bangumiAccessToken) payload.other_apis = { ...(payload.other_apis || {}), bangumi_access_token: bangumiAccessToken };
+  }
+
+  if (!Object.keys(payload).length) {
+    showToast("没有可保存的配置变更");
+    return;
+  }
+
+  showAuthorizationError(errorNode, "");
+  button && (button.disabled = true);
+  try {
+    const result = await apiPost("/_auth/api/admin/config", payload, "PATCH", authorizationHeaders());
+    authorizationState.data = { ...(authorizationState.data || {}), config: result.config || authorizationState.data?.config };
+    renderAuthorizationConfig();
+    const count = Array.isArray(result?.updated_fields) ? result.updated_fields.length : 0;
+    showToast(count ? `已保存 ${count} 项配置` : "配置未变化");
+  } catch (error) {
+    showAuthorizationError(errorNode, String(error));
+  } finally {
+    button && (button.disabled = false);
+  }
+}
+
 function renderAuthorizationUsers() {
   if (!(authorizationUsersList instanceof HTMLElement)) return;
   const users = Array.isArray(authorizationState.data?.users) ? authorizationState.data.users : [];
@@ -4846,6 +5056,7 @@ function renderAuthorizationAdmin() {
     createRole === "admin" ? allAppIds : [],
     { disabled: createRole === "admin" },
   );
+  renderAuthorizationConfig();
   renderAuthorizationUsers();
   if (authorizationSessionMeta) {
     const until = String(authorizationState.expiresAt || "").trim();
@@ -4869,7 +5080,7 @@ async function loadAuthorizationState() {
     showAuthorizationSection("bootstrap");
     return payload;
   }
-  setAuthorizationMessage("Authorization 页面已解锁，可直接管理远端访问账号和应用权限。");
+  setAuthorizationMessage("Authorization 页面已解锁，可管理远端访问账号、应用权限与共享配置。");
   showAuthorizationSection("admin");
   renderAuthorizationAdmin();
   return payload;
@@ -6270,6 +6481,21 @@ function _registerAuthorizationHandlers() {
   authorizationCreateBtn?.addEventListener("click", () => {
     createAuthorizationUser().catch((error) => {
       showAppErrorModal("Authorization 创建失败", String(error));
+    });
+  });
+  authorizationConfigExternalSaveBtn?.addEventListener("click", () => {
+    saveAuthorizationConfig("external_api").catch((error) => {
+      showAuthorizationError(authorizationConfigExternalError, String(error));
+    });
+  });
+  authorizationConfigLocalSaveBtn?.addEventListener("click", () => {
+    saveAuthorizationConfig("local_llm").catch((error) => {
+      showAuthorizationError(authorizationConfigLocalError, String(error));
+    });
+  });
+  authorizationConfigOtherSaveBtn?.addEventListener("click", () => {
+    saveAuthorizationConfig("other_apis").catch((error) => {
+      showAuthorizationError(authorizationConfigOtherError, String(error));
     });
   });
 }

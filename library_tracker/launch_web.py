@@ -77,18 +77,6 @@ _maybe_reexec_into_venv()
 _prepend_workspace_root()
 _load_workspace_env_local()
 
-
-def _migrate_runtime_data_if_needed() -> None:
-    try:
-        from core_service.runtime_migration_cli import ensure_runtime_data_migrated
-
-        ensure_runtime_data_migrated()
-    except Exception:
-        return
-
-
-_migrate_runtime_data_if_needed()
-
 from web.config import HOST, PORT
 from web.main import run
 

@@ -17,7 +17,7 @@ from .router_music_helpers import (
     _extract_music_work_hints,
     _has_music_signature_filters,
     _resolve_creator_canonicals,
-    _resolve_music_work_canonical_entity,
+    _resolve_music_work_canonical_entity as _resolve_music_work_canonical_entity_owner,
 )
 from .router_query_helpers import (
     _approx_tokens,
@@ -53,19 +53,19 @@ from .router_query_helpers import (
     _question_requests_personal_evaluation,
     _render_resolved_question_from_decision,
     _replace_time_window_in_query,
-    _resolve_query_profile,
+    _resolve_query_profile as _resolve_query_profile_owner,
     _router_followup_mode_label,
     _strip_semantic_hint_filter_fields,
 )
 from .router_state_helpers import (
-    _build_conversation_state_snapshot,
-    _build_media_followup_rewrite_queries,
+    _build_conversation_state_snapshot as _build_conversation_state_snapshot_owner,
+    _build_media_followup_rewrite_queries as _build_media_followup_rewrite_queries_owner,
     _build_state_diff,
-    _derive_router_followup_resolution,
+    _derive_router_followup_resolution as _derive_router_followup_resolution_owner,
     _describe_inheritance_transition,
     _find_previous_assistant_message,
     _find_previous_trace_context,
-    _find_previous_user_question,
+    _find_previous_user_question as _find_previous_user_question_owner,
     _get_previous_assistant_answer_summary,
     _get_previous_media_working_set,
     _has_explicit_fresh_media_scope,
@@ -90,10 +90,39 @@ def _default_router_llm_chat(*args: Any, **kwargs: Any) -> str:
     return runtime_infra._llm_chat(*args, **kwargs)
 
 
+def _resolve_query_profile(question: str, *, base_threshold: float = 0.35, base_vector_top_n: int = constants.DOC_VECTOR_TOP_N, base_top_k: int = 5) -> dict[str, Any]:
+    return _resolve_query_profile_owner(
+        question,
+        base_threshold=base_threshold,
+        base_vector_top_n=base_vector_top_n,
+        base_top_k=base_top_k,
+    )
+
+
 def _serialize_router_decision(decision: Any) -> dict[str, Any]:
     from ...planner.planner_contracts import serialize_router_decision as serialize_router_decision_contract
 
     return serialize_router_decision_contract(decision)
+
+
+def _derive_router_followup_resolution(question: str, previous_state: dict[str, Any]) -> Any:
+    return _derive_router_followup_resolution_owner(question, previous_state)
+
+
+def _find_previous_user_question(current_question: str, history: list[dict[str, str]]) -> str:
+    return _find_previous_user_question_owner(current_question, history)
+
+
+def _build_conversation_state_snapshot(*args: Any, **kwargs: Any) -> dict[str, Any]:
+    return _build_conversation_state_snapshot_owner(*args, **kwargs)
+
+
+def _build_media_followup_rewrite_queries(*args: Any, **kwargs: Any) -> list[str]:
+    return _build_media_followup_rewrite_queries_owner(*args, **kwargs)
+
+
+def _resolve_music_work_canonical_entity(question: str, music_work_hints: dict[str, list[str]] | None = None) -> str:
+    return _resolve_music_work_canonical_entity_owner(question, music_work_hints)
 
 
 def _serialize_media_entity_resolution(resolution: Any) -> dict[str, Any]:

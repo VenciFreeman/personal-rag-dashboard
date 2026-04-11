@@ -58,6 +58,8 @@
 setup.bat
 ```
 
+`setup.bat` 会优先转发到仓库根 `setup_workspace.bat`，统一复用工作区顶层 `.venv`。
+
 ## 启动
 
 ```powershell

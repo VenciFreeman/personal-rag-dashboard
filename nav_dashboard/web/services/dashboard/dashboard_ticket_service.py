@@ -6,6 +6,7 @@ from typing import Any, Callable
 
 from fastapi import HTTPException
 
+from core_service.bug_ticket_payloads import parse_bug_ticket_payload
 from core_service.observability import get_trace_record
 
 
@@ -138,13 +139,7 @@ def parse_ticket_paste_payload(raw_text: str) -> dict[str, Any]:
     if not payload_text:
         raise ValueError("未找到 BUG-TICKET JSON 内容")
 
-    try:
-        payload = json.loads(payload_text)
-    except json.JSONDecodeError as exc:
-        raise ValueError(f"BUG-TICKET JSON 解析失败: {exc.msg}") from exc
-
-    if not isinstance(payload, dict):
-        raise ValueError("BUG-TICKET 内容必须是 JSON 对象")
+    payload = parse_bug_ticket_payload(payload_text)
 
     ticket = _empty_ticket_draft()
     ticket.update(

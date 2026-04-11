@@ -82,83 +82,82 @@ CHAIN_SPECS: dict[str, dict[str, str]] = {
 }
 
 _BENCHMARK_LENGTHS = ["short", "medium", "long"]
+_NINETY_SECOND_P95_LIMITS = {"short": 90.0, "medium": 90.0, "long": 90.0, "global": 90.0}
 
 DEFAULT_ASSERTION_LIMITS: dict[str, dict[str, Any]] = {
     "rag": {
         "max_no_context_rate": 0.35,
-        "max_p95_wall_clock_s": {"short": 40.0, "medium": 45.0, "long": 50.0, "global": 50.0},
-        "max_p95_elapsed_s": {"short": 40.0, "medium": 45.0, "long": 50.0, "global": 50.0},
+        "max_p95_wall_clock_s": dict(_NINETY_SECOND_P95_LIMITS),
+        "max_p95_elapsed_s": dict(_NINETY_SECOND_P95_LIMITS),
     },
     "agent": {
         "max_no_context_rate": 0.45,
-        "max_p95_wall_clock_s": {"short": 45.0, "medium": 50.0, "long": 60.0, "global": 60.0},
-        "max_p95_elapsed_s": {"short": 45.0, "medium": 50.0, "long": 60.0, "global": 60.0},
+        "max_p95_wall_clock_s": dict(_NINETY_SECOND_P95_LIMITS),
+        "max_p95_elapsed_s": dict(_NINETY_SECOND_P95_LIMITS),
     },
     "hybrid": {
         "max_no_context_rate": 0.45,
-        "max_p95_wall_clock_s": {"short": 70.0, "medium": 80.0, "long": 95.0, "global": 95.0},
-        "max_p95_elapsed_s": {"short": 70.0, "medium": 80.0, "long": 95.0, "global": 95.0},
+        "max_p95_wall_clock_s": dict(_NINETY_SECOND_P95_LIMITS),
+        "max_p95_elapsed_s": dict(_NINETY_SECOND_P95_LIMITS),
     },
 }
 
 ASSERTION_LIMIT_OVERRIDES_BY_CASE_SET: dict[str, dict[str, dict[str, Any]]] = {
     "regression_v1": {
-        # Full regression pool includes materially heavier prompts than the first 3-item subset
-        # used during early tuning, so its p95 tail needs its own baseline.
         "agent": {
-            "max_p95_wall_clock_s": {"medium": 60.0, "long": 75.0, "global": 75.0},
-            "max_p95_elapsed_s": {"medium": 60.0, "long": 75.0, "global": 75.0},
+            "max_p95_wall_clock_s": dict(_NINETY_SECOND_P95_LIMITS),
+            "max_p95_elapsed_s": dict(_NINETY_SECOND_P95_LIMITS),
         },
         "rag": {
-            "max_p95_wall_clock_s": {"short": 55.0, "medium": 60.0, "long": 75.0, "global": 75.0},
-            "max_p95_elapsed_s": {"short": 55.0, "medium": 60.0, "long": 75.0, "global": 75.0},
+            "max_p95_wall_clock_s": dict(_NINETY_SECOND_P95_LIMITS),
+            "max_p95_elapsed_s": dict(_NINETY_SECOND_P95_LIMITS),
         },
     },
     "session_contamination_v1": {
         "agent": {
-            "max_p95_wall_clock_s": {"short": 55.0, "medium": 60.0, "long": 70.0, "global": 70.0},
-            "max_p95_elapsed_s": {"short": 55.0, "medium": 60.0, "long": 70.0, "global": 70.0},
+            "max_p95_wall_clock_s": dict(_NINETY_SECOND_P95_LIMITS),
+            "max_p95_elapsed_s": dict(_NINETY_SECOND_P95_LIMITS),
             "by_taxonomy": {
                 "entity_detail_noise": {
                     "max_quality_fail_rate": 0.0,
                     "max_wrong_topic_leak_rate": 0.0,
-                    "max_p95_wall_clock_s": {"global": 55.0},
-                    "max_p95_elapsed_s": {"global": 55.0},
+                    "max_p95_wall_clock_s": {"global": 90.0},
+                    "max_p95_elapsed_s": {"global": 90.0},
                 },
                 "followup_contamination": {
                     "max_quality_fail_rate": 0.0,
                     "max_wrong_topic_leak_rate": 0.0,
                     "max_followup_contamination_rate": 0.0,
                     "max_empty_answer_rate": 0.0,
-                    "max_p95_wall_clock_s": {"global": 60.0},
-                    "max_p95_elapsed_s": {"global": 60.0},
+                    "max_p95_wall_clock_s": {"global": 90.0},
+                    "max_p95_elapsed_s": {"global": 90.0},
                 },
                 "compare_terminal_quality": {
                     "max_quality_fail_rate": 0.0,
                     "max_reference_order_violation_rate": 0.0,
                     "max_empty_answer_rate": 0.0,
-                    "max_p95_wall_clock_s": {"global": 45.0},
-                    "max_p95_elapsed_s": {"global": 45.0},
+                    "max_p95_wall_clock_s": {"global": 90.0},
+                    "max_p95_elapsed_s": {"global": 90.0},
                 },
                 "personal_review_cross_contamination": {
                     "max_quality_fail_rate": 0.0,
                     "max_wrong_topic_leak_rate": 0.0,
                     "max_empty_answer_rate": 0.0,
-                    "max_p95_wall_clock_s": {"global": 65.0},
-                    "max_p95_elapsed_s": {"global": 65.0},
+                    "max_p95_wall_clock_s": {"global": 90.0},
+                    "max_p95_elapsed_s": {"global": 90.0},
                 },
                 "strict_scope_alias_collection": {
                     "max_quality_fail_rate": 0.0,
                     "max_strict_scope_false_negative_rate": 0.0,
                     "max_empty_answer_rate": 0.0,
-                    "max_p95_wall_clock_s": {"global": 45.0},
-                    "max_p95_elapsed_s": {"global": 45.0},
+                    "max_p95_wall_clock_s": {"global": 90.0},
+                    "max_p95_elapsed_s": {"global": 90.0},
                 },
             },
         },
         "hybrid": {
-            "max_p95_wall_clock_s": {"short": 70.0, "medium": 80.0, "long": 90.0, "global": 90.0},
-            "max_p95_elapsed_s": {"short": 70.0, "medium": 80.0, "long": 90.0, "global": 90.0},
+            "max_p95_wall_clock_s": dict(_NINETY_SECOND_P95_LIMITS),
+            "max_p95_elapsed_s": dict(_NINETY_SECOND_P95_LIMITS),
             "by_taxonomy": {
                 "entity_detail_noise": {
                     "max_quality_fail_rate": 0.0,

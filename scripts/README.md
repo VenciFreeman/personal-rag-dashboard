@@ -11,6 +11,7 @@
 
 ## 当前常见脚本
 
+- `scripts/install_workspace.bat`：从 `scripts/` 目录进入时调用仓库根 `setup_workspace.bat`
 - `scripts/dev/agent_workflow_hook.py`：仓库内 Agent 工作流 Hook 实现
 - `scripts/dev/bug_ticket_sync_hook.py`：`BUG-TICKET` 标记同步到 Ticket 存储的 Hook
 - `scripts/smoke/check_app_parse.py`：对 `nav_dashboard/web/static/app.js` 做解析级 smoke

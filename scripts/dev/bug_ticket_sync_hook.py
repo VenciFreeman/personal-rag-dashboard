@@ -15,6 +15,7 @@ if str(WORKSPACE_ROOT) not in sys.path:
     sys.path.insert(0, str(WORKSPACE_ROOT))
 
 import core_service.ticket_store as ticket_store
+from core_service.bug_ticket_payloads import parse_bug_ticket_payload
 
 
 BUG_MARKER_PREFIX = "BUG-TICKET:"
@@ -502,11 +503,10 @@ def _extract_bug_markers(texts: list[str]) -> list[dict[str, Any]]:
                 continue
             payload_text = line.split(BUG_MARKER_PREFIX, 1)[1].strip().strip("`")
             try:
-                payload = json.loads(payload_text)
-            except Exception:
+                payload = parse_bug_ticket_payload(payload_text)
+            except ValueError:
                 continue
-            if isinstance(payload, dict):
-                candidates.append(payload)
+            candidates.append(payload)
     return candidates
 
 

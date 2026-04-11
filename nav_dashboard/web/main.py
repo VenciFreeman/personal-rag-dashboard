@@ -71,7 +71,6 @@ LIBRARY_TRACKER_DEFAULT_PORT = 8091
 from core_service import display_model_name, get_settings
 from core_service.auth import install_app_auth
 from core_service.feedback import append_feedback, clear_feedback, list_feedback
-from core_service.runtime_migration_cli import ensure_runtime_data_migrated
 from core_service.tickets import (
     build_ticket_facets,
     build_ticket_weekly_stats,
@@ -1107,15 +1106,7 @@ def _trigger_custom_card_compression() -> None:
     dashboard_custom_cards_service.trigger_custom_card_compression()
 
 
-def _ensure_runtime_data_migrated() -> None:
-    try:
-        ensure_runtime_data_migrated()
-        ensure_nav_dashboard_runtime_layout()
-    except Exception:
-        return
-
 app = FastAPI(title="Nav Dashboard", version="0.1.0")
-app.add_event_handler("startup", _ensure_runtime_data_migrated)
 app.add_event_handler("startup", _start_bug_ticket_workspace_backfill)
 app.add_event_handler("startup", _start_dashboard_overview_warmup)
 app.add_event_handler("shutdown", _stop_bug_ticket_workspace_backfill)

@@ -7,15 +7,11 @@ from pathlib import Path
 from typing import Any
 from uuid import uuid4
 
-from core_service.runtime_data import app_runtime_root, workspace_root
+from core_service.runtime_data import app_runtime_root
 
 
 TICKETS_FILE = app_runtime_root("nav_dashboard") / "tickets" / "tickets.jsonl"
-_LEGACY_TICKET_FILES = (
-    workspace_root() / "records" / "nav_dashboard" / "tickets.jsonl",
-    app_runtime_root("nav_dashboard") / "tickets" / "tickets.jsonl",
-    app_runtime_root("nav_dashboard") / "tickets.jsonl",
-)
+TICKET_STORAGE_AUDIT_FILE = app_runtime_root("core_service") / "ticket_storage_audit.jsonl"
 _LOCK = threading.Lock()
 _CLOSED_TICKET_STATUSES = {"resolved", "closed"}
 _TREND_PRIORITIES = ("critical", "high", "medium")
@@ -132,15 +128,26 @@ def list_ticket_storage_paths() -> list[Path]:
     return [TICKETS_FILE]
 
 
-def _ensure_ticket_storage_location() -> None:
-    if TICKETS_FILE.exists():
+def append_ticket_storage_audit(action: str, **fields: Any) -> None:
+    payload = {
+        "timestamp": datetime.now().isoformat(timespec="seconds"),
+        "action": _safe_text(action),
+    }
+    for key, value in fields.items():
+        if isinstance(value, Path):
+            payload[str(key)] = str(value)
+        else:
+            payload[str(key)] = _json_safe(value)
+    try:
+        TICKET_STORAGE_AUDIT_FILE.parent.mkdir(parents=True, exist_ok=True)
+        with TICKET_STORAGE_AUDIT_FILE.open("a", encoding="utf-8") as handle:
+            handle.write(json.dumps(payload, ensure_ascii=False) + "\n")
+    except Exception:
         return
-    for legacy_file in _LEGACY_TICKET_FILES:
-        if not legacy_file.exists():
-            continue
-        TICKETS_FILE.parent.mkdir(parents=True, exist_ok=True)
-        legacy_file.replace(TICKETS_FILE)
-        break
+
+
+def _ensure_ticket_storage_location() -> None:
+    TICKETS_FILE.parent.mkdir(parents=True, exist_ok=True)
 
 
 def _title_fallback(payload: dict[str, Any]) -> str:

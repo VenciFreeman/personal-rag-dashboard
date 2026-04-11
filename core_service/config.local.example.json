@@ -17,6 +17,9 @@
     "api_key": "local"
   },
   "external_apis": {
+    "tavily": {
+      "api_key": ""
+    },
     "mediawiki": {
       "zh_api_url": "https://zh.wikipedia.org/w/api.php",
       "en_api_url": "https://en.wikipedia.org/w/api.php",

@@ -58,13 +58,65 @@ def strip_rewritten_query_echo_lines(rewritten_blob: Any, *source_texts: Any) ->
 
 def extract_answer_reference_metrics(answer: str) -> dict[str, Any]:
     text = str(answer or "")
-    reference_line_pattern = re.compile(r"(?m)^(?:\[(\d+)\]\s+\[[^\]]+\]\([^)]+\)|<a\s+href=\"[^\"]+\">\[(\d+)\]</a>\s+\[[^\]]+\]\([^)]+\))")
-    reference_numbers = [
-        int(match.group(1) or match.group(2))
-        for match in reference_line_pattern.finditer(text)
-    ]
-    first_reference_line = reference_line_pattern.search(text)
-    answer_body = text[: first_reference_line.start()].rstrip() if first_reference_line else text.strip()
+    reference_line_pattern = re.compile(
+        r"^\s*(?:<a\s+href=\"[^\"]+\">\[(\d+)\]</a>|\[(\d+)\])(?:\s+(?:\[[^\]]+\]\([^)]+\)|\S.*))?\s*$"
+    )
+    reference_heading_pattern = re.compile(r"^\s*(?:#{1,6}\s+.*|参考来源\s*[:：]?|本地媒体库参考\s*[:：]?|来源\s*[:：]?)\s*$")
+    rendered_reference_heading_pattern = re.compile(r"^\s*##\s+参考资料\s*$")
+    rendered_subheading_pattern = re.compile(r"^\s*###\s+(.+?)\s*$")
+    ignored_rendered_subsections = {"本地媒体库命中索引", "更多本地资料", "更多外部参考"}
+
+    lines = text.splitlines()
+    rendered_reference_heading_index = next(
+        (index for index in range(len(lines) - 1, -1, -1) if rendered_reference_heading_pattern.match(lines[index])),
+        -1,
+    )
+
+    reference_numbers: list[int] = []
+    answer_body = text.strip()
+    if rendered_reference_heading_index >= 0:
+        answer_body = "\n".join(lines[:rendered_reference_heading_index]).rstrip()
+        current_subheading = ""
+        for raw_line in lines[rendered_reference_heading_index + 1 :]:
+            line = str(raw_line or "")
+            stripped = line.strip()
+            if not stripped:
+                continue
+            subheading_match = rendered_subheading_pattern.match(line)
+            if subheading_match:
+                current_subheading = str(subheading_match.group(1) or "").strip()
+                continue
+            if current_subheading in ignored_rendered_subsections:
+                continue
+            match = reference_line_pattern.match(line)
+            if match:
+                reference_numbers.append(int(match.group(1) or match.group(2)))
+
+    if not reference_numbers:
+        end = len(lines) - 1
+        while end >= 0 and not lines[end].strip():
+            end -= 1
+
+        trailing_reference_lines: list[str] = []
+        while end >= 0:
+            line = lines[end]
+            if reference_line_pattern.match(line):
+                trailing_reference_lines.append(line)
+                end -= 1
+                continue
+            if trailing_reference_lines and (not line.strip() or reference_heading_pattern.match(line)):
+                end -= 1
+                continue
+            break
+
+        trailing_reference_lines.reverse()
+        for line in trailing_reference_lines:
+            match = reference_line_pattern.match(line)
+            if match:
+                reference_numbers.append(int(match.group(1) or match.group(2)))
+
+        answer_body = "\n".join(lines[: end + 1]).rstrip() if reference_numbers else text.strip()
+
     inline_reference_numbers = [int(match.group(1)) for match in re.finditer(r"\[(\d+)\]", answer_body)]
     expected_sequence = list(range(1, len(reference_numbers) + 1))
     reference_lines_sequential = reference_numbers == expected_sequence
@@ -769,11 +821,14 @@ def aggregate_records(records: list[dict[str, Any]]) -> dict[str, Any]:
             3,
         )
 
-    reference_rows = [r for r in valid if bool(r.get("reference_order_violation")) or bool(r.get("references_monotonic"))]
+    reference_rows = [
+        r for r in valid
+        if bool((r.get("quality_flag_applicability") or {}).get("reference_order_violation"))
+    ]
     if reference_rows:
         out["reference_case_count"] = len(reference_rows)
         out["reference_order_violation_rate"] = round(
-            sum(1 for r in reference_rows if bool(r.get("reference_order_violation"))) / len(reference_rows),
+            sum(1 for r in reference_rows if bool((r.get("quality_flags") or {}).get("reference_order_violation"))) / len(reference_rows),
             3,
         )
 

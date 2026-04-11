@@ -57,6 +57,7 @@ _ACTIVE_JOB_ID: str = ""
 _LOCK = threading.Lock()
 _ANSI_ESCAPE_RE = re.compile(r"\x1B\[[0-?]*[ -/]*[@-~]")
 _LOAD_REPORT_START_RE = re.compile(r"\bLOAD REPORT\b", re.IGNORECASE)
+_MODEL_PROGRESS_NOISE_RE = re.compile(r"^Loading weights:\s*", re.IGNORECASE)
 
 
 def _now_str() -> str:
@@ -87,6 +88,24 @@ def _append_startup_log(message: str) -> None:
     line = f"[{_now_str()}] {str(message or '').strip()}"
     with _LOCK:
         _STARTUP_LOGS.append(line)
+
+
+def _decode_subprocess_line(raw: bytes | str) -> str:
+    if isinstance(raw, str):
+        return _ANSI_ESCAPE_RE.sub("", raw.rstrip("\r\n"))
+    data = raw.rstrip(b"\r\n")
+    if not data:
+        return ""
+    text = ""
+    for encoding in ("utf-8", "utf-8-sig", "gb18030", "cp936"):
+        try:
+            text = data.decode(encoding)
+            break
+        except UnicodeDecodeError:
+            continue
+    if not text:
+        text = data.decode("latin-1", errors="replace")
+    return _ANSI_ESCAPE_RE.sub("", text)
 
 
 def _set_startup_status(**kwargs: Any) -> None:
@@ -475,24 +494,68 @@ def _run_startup_model_warmup() -> dict[str, Any]:
     embedding_model = resolve_runtime_embedding_model(index_dir=VECTOR_DB_DIR)
     reranker_model = os.getenv("AI_SUMMARY_RERANKER_MODEL", "BAAI/bge-reranker-v2-m3").strip() or "BAAI/bge-reranker-v2-m3"
 
-    code = (
-        "from sentence_transformers import SentenceTransformer, CrossEncoder\n"
+    def _run_warmup_phase(code: str) -> dict[str, Any]:
+        run_env = os.environ.copy()
+        run_env.setdefault("PYTHONIOENCODING", "utf-8")
+        run_env.setdefault("PYTHONUTF8", "1")
+        run_env.setdefault("HF_HUB_DISABLE_PROGRESS_BARS", "1")
+        proc = subprocess.Popen(
+            [_resolve_python_executable(), "-c", code],
+            cwd=str(WORKSPACE_ROOT),
+            env=run_env,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT,
+            text=False,
+            bufsize=0,
+        )
+        output_lines: list[str] = []
+        load_report_active = False
+        load_report_lines = 0
+        if proc.stdout is not None:
+            for raw_line in proc.stdout:
+                line = _decode_subprocess_line(raw_line).strip()
+                if not line:
+                    continue
+                output_lines.append(line)
+                if _MODEL_PROGRESS_NOISE_RE.search(line):
+                    continue
+                if load_report_active:
+                    load_report_lines += 1
+                    if line.lstrip().startswith("{") or line.startswith("预热阶段:") or load_report_lines >= 120:
+                        load_report_active = False
+                        load_report_lines = 0
+                    else:
+                        continue
+                if _LOAD_REPORT_START_RE.search(line):
+                    load_report_active = True
+                    load_report_lines = 1
+                    continue
+                _append_startup_log(line)
+        returncode = proc.wait()
+        return {
+            "ok": returncode == 0,
+            "stderr_tail": "\n".join(output_lines)[-800:],
+        }
+
+    embedding_result = _run_warmup_phase(
+        "from sentence_transformers import SentenceTransformer\n"
+        f"print({('预热阶段: 开始加载 embedding 模型 ' + embedding_model)!r}, flush=True)\n"
         f"emb = SentenceTransformer({embedding_model!r})\n"
+        "print('预热阶段: embedding 模型加载完成，开始执行向量编码', flush=True)\n"
         "_ = emb.encode(['warmup dummy text'], normalize_embeddings=True)\n"
-        f"rer = CrossEncoder({reranker_model!r})\n"
-        "_ = rer.predict([('dummy query','dummy doc')])\n"
-        "print('warmup_ok')\n"
+        "print('预热阶段: embedding 预热完成', flush=True)\n"
     )
-    proc = subprocess.run(
-        [_resolve_python_executable(), "-c", code],
-        cwd=str(WORKSPACE_ROOT),
-        capture_output=True,
-        text=True,
-        encoding="utf-8",
-        errors="replace",
-        check=False,
-    )
-    ok = proc.returncode == 0
+    reranker_result = {"ok": False, "stderr_tail": ""}
+    if embedding_result["ok"]:
+        reranker_result = _run_warmup_phase(
+            "from sentence_transformers import CrossEncoder\n"
+            f"print({('预热阶段: 开始加载 reranker 模型 ' + reranker_model)!r}, flush=True)\n"
+            f"rer = CrossEncoder({reranker_model!r})\n"
+            "print('预热阶段: reranker 模型加载完成，开始执行重排预测', flush=True)\n"
+            "_ = rer.predict([('dummy query','dummy doc')])\n"
+            "print('预热阶段: reranker 预热完成', flush=True)\n"
+        )
+    ok = embedding_result["ok"] and reranker_result["ok"]
     if ok:
         _append_startup_log("模型预热完成")
     else:
@@ -501,7 +564,7 @@ def _run_startup_model_warmup() -> dict[str, Any]:
         "ok": ok,
         "embedding_model": embedding_model,
         "reranker_model": reranker_model,
-        "stderr_tail": (proc.stderr or "")[-800:],
+        "stderr_tail": (reranker_result if embedding_result["ok"] else embedding_result).get("stderr_tail", ""),
     }
 
 
@@ -640,21 +703,6 @@ def _run_subprocess(job: WorkflowJob, command: list[str], env: dict[str, str] | 
         bufsize=0,
     )
 
-    def _decode_line(raw: bytes) -> str:
-        data = raw.rstrip(b"\r\n")
-        if not data:
-            return ""
-        text = ""
-        for encoding in ("utf-8", "utf-8-sig", "gb18030", "cp936"):
-            try:
-                text = data.decode(encoding)
-                break
-            except UnicodeDecodeError:
-                continue
-        if not text:
-            text = data.decode("latin-1", errors="replace")
-        return _ANSI_ESCAPE_RE.sub("", text)
-
     try:
         load_report_active = False
         load_report_unexpected = 0
@@ -677,7 +725,7 @@ def _run_subprocess(job: WorkflowJob, command: list[str], env: dict[str, str] | 
                 raw = process.stdout.readline()
                 if not raw:
                     break
-                line = _decode_line(raw)
+                line = _decode_subprocess_line(raw)
                 if not line:
                     continue
 

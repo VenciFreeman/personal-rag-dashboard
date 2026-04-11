@@ -14,6 +14,7 @@ from typing import Any
 from dataclasses import dataclass, field
 from urllib import parse as urlparse
 
+from ai_conversations_summary import runtime_paths as ai_summary_runtime_paths
 from nav_dashboard.web.clients.internal_services import (
     InternalServiceError,
     ai_summary_internal_base_url,
@@ -22,16 +23,16 @@ from nav_dashboard.web.clients.internal_services import (
 )
 
 
-_WORKSPACE_ROOT = Path(__file__).resolve().parents[3]
+_WORKSPACE_ROOT = Path(__file__).resolve().parents[4]
 _AI_SUMMARY_ROOT = _WORKSPACE_ROOT / "ai_conversations_summary"
 _LIBRARY_TRACKER_ROOT = _WORKSPACE_ROOT / "library_tracker"
 
 _DOC_GRAPH_SCRIPT = _AI_SUMMARY_ROOT / "scripts" / "rag_knowledge_graph.py"
 _MEDIA_GRAPH_SCRIPT = _LIBRARY_TRACKER_ROOT / "scripts" / "expand_library_query.py"
-_DOC_GRAPH_DIR = _AI_SUMMARY_ROOT / "data" / "vector_db"
+_DOC_GRAPH_DIR = ai_summary_runtime_paths.VECTOR_DB_DIR
 _MEDIA_GRAPH_DIR = _LIBRARY_TRACKER_ROOT / "data" / "vector_db"
 
-_CACHE_DIR = _AI_SUMMARY_ROOT / "data" / "cache"
+_CACHE_DIR = ai_summary_runtime_paths.CACHE_DIR
 _WEB_CACHE_PATH = _CACHE_DIR / "web_cache.db"
 _NO_CONTEXT_LOG_PATH = _CACHE_DIR / "no_context_queries.jsonl"
 _WEB_CACHE_TTL_SECONDS = 7 * 86_400

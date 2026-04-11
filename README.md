@@ -1,101 +1,95 @@
 # personal-ai-stack
 
-本仓库是一个本地优先的个人 AI 工作台，当前包含 5 个 FastAPI Web 应用和 1 组共享核心模块：
+本仓库是一个本地优先的个人 AI 工作台，围绕统一入口、个人知识库、媒体库、资产管理和旅行归档，组织成 5 个 Web 应用加 1 组共享核心模块。
 
-- `nav_dashboard`：统一入口、跨服务 Agent、Trace/Ticket/Benchmark/任务中心
-- `ai_conversations_summary`：文档整理、向量检索、RAG 问答
-- `library_tracker`：个人媒体库管理、检索、图谱与 embedding 后台任务
-- `property`：资产快照、收支记录、分析报告
-- `journey`：旅行规划、归档编辑、复盘报告
-- `core_service`：共享配置、认证、LLM 客户端、运行态数据与票据/Trace 基础设施
+## 仓库定位
 
-## 总览
+- `nav_dashboard`：统一入口，负责跨服务 Agent、Trace、Ticket、Benchmark、任务中心和运维面板
+- `ai_conversations_summary`：文档沉淀、向量检索、RAG 问答与索引维护
+- `library_tracker`：个人媒体库管理、结构化检索、图谱和 embedding 任务
+- `property`：资产快照、收支流水、观察清单和分析报告
+- `journey`：旅程归档、逐日编辑、复盘生成
+- `core_service`：共享配置、认证、LLM 客户端、运行态数据、Trace/Ticket 基础设施
+
+## 系统结构
 
 ```text
 Browser
-    |
-    +-- nav_dashboard (8092)
-    |     +-- 对接 ai_conversations_summary (8000)
-    |     +-- 对接 library_tracker (8091)
-    |     +-- 聚合 property (8093) / journey (8094) 状态与入口
-    |
-    +-- ai_conversations_summary (8000)
-    |     +-- 文档整理 / 索引 / RAG / startup 自检与预热
-    |
-    +-- library_tracker (8091)
-    |     +-- 媒体库 CRUD / 搜索 / embedding / 图谱 / 分析任务与 worker
-    |
-    +-- property (8093)
-    |     +-- 资产与收支记录 / 图表 / 分析报告 / worker 任务
-    |
-    +-- journey (8094)
-                +-- 行程编辑 / 归档 / 复盘报告 / worker 任务
-
-Shared Core
-    +-- core_service/config.py
-    +-- core_service/llm_client.py
-    +-- core_service/trace_store.py
-    +-- core_service/ticket_store.py
-    +-- core_service/runtime_data.py
+  |
+  +-- nav_dashboard (8092)
+  |     +-- ai_conversations_summary (8000)
+  |     +-- library_tracker (8091)
+  |     +-- property (8093)
+  |     +-- journey (8094)
+  |
+  +-- Shared Core
+        +-- core_service/config.py
+        +-- core_service/llm_client.py
+        +-- core_service/runtime_data.py
+        +-- core_service/trace_store.py
+        +-- core_service/ticket_store.py
 ```
 
-## 当前能力
+`nav_dashboard` 是默认主入口。其余应用既可以独立启动，也可以由 Dashboard 聚合访问。
 
-### nav_dashboard
+## 主要能力
 
-- 统一聊天入口，按问题类型在文档 RAG、媒体检索、联网搜索之间规划工具
-- 记录完整 Agent Trace，包括 router decision、arbitration、tool plan、guardrail、结果分层与参考截断原因
-- Dashboard 页展示系统总览、启动状态、任务中心、Trace、Ticket 周趋势、聊天反馈与运行态数据清理
-- Benchmark 支持固定 case set、历史结果和回归样例对比
-- Ticket 系统基于 append-only 日志，支持列表、详情、创建、更新、AI draft、Trace 反查
+### Dashboard
 
-### ai_conversations_summary
+- 统一聊天入口，按问题类型在本地资料检索、结构化查询和联网搜索之间路由
+- 记录完整 Agent Trace，包括路由决策、工具计划、护栏与结果分层
+- 提供 Ticket、反馈、Benchmark、任务中心、运行状态与备份入口
+
+### AI Conversations Summary
 
 - 将对话整理为 Markdown 文档并建立向量索引
-- 检索链路支持 query rewrite、query expansion、向量召回、轻量 BM25、cross-encoder rerank
-- 回答阶段区分本地资料、通用知识、推断三类证据，并做 citation reconciliation
-- 服务启动时会执行索引一致性检查、必要的自动修复，以及 embedding/reranker 预热
+- 支持 query rewrite、query expansion、向量召回、轻量 BM25、rerank
+- 启动时会执行索引一致性检查、必要修复与模型预热
 
-### library_tracker
+### Library Tracker
 
 - 管理阅读、音乐、视频、游戏等个人媒体条目
-- 提供结构化字段检索、关键词检索、向量检索与图谱辅助能力
-- 支持增量 embedding 刷新、别名生命周期、分析报告生成和后台任务调度
-- 结果字段直接服务于 Dashboard Agent 的结构化回答，例如评分、短评、作者、渠道、出版方等
+- 支持结构化检索、关键词检索、向量检索、图谱辅助和分析任务
 
-### property
+### Property
 
-- 资产总览图表、月度快照管理、收支流水与年度统计
-- 支持 JSON 导入导出、工资 CSV 导入、分析报告与观察清单
-- Web 进程负责页面与 API，分析生成由独立 worker / 后台任务链路承接
+- 管理资产快照、工资/收支记录、观察清单和分析报告
+- 支持工资 CSV 导入与图表化分析
 
-### journey
+### Journey
 
-- 旅行列表、逐日时间线、天级住宿/摘要/活动编辑
-- 行程归档区支持旅程元信息维护、Day 编辑、导入导出
-- 分析页展示旅行复盘报告，归档后可触发独立 worker 生成报告
+- 管理旅程元信息、逐日行程、归档和复盘报告
+- 支持导入导出与独立 worker 生成分析内容
 
-## 目录
+## 目录导览
 
 - `nav_dashboard/`：统一入口应用
-- `ai_conversations_summary/`：RAG 服务
+- `ai_conversations_summary/`：RAG 与文档服务
 - `library_tracker/`：媒体库服务
 - `property/`：资产管理服务
 - `journey/`：旅行管理服务
-- `core_service/`：共享模块
-- `data/`：仓库级共享运行态数据与持久化票据/追踪数据
-- `scripts/`：开发脚本、烟测脚本、回归脚本、数据维护脚本
-- `.github/`：Agent 工作流与仓库协作规则
+- `core_service/`：共享基础模块
+- `data/`：仓库级运行态数据、主数据和报表产物
+- `scripts/`：开发、回归、烟测、数据维护脚本
+- `.github/`：Agent workflow、协作规则和 hook 配置
 
-## 安装
+## 快速开始
 
-当前工作区推荐使用仓库根目录统一 `.venv`。
+推荐统一使用仓库根目录的 `.venv`。
 
-Windows 下可直接运行仓库根目录一键安装脚本：
+### 一键安装
 
 ```bat
 setup_workspace.bat
 ```
+
+或：
+
+```bat
+scripts\install_workspace.bat
+```
+
+### 手动安装
 
 ```powershell
 python -m venv .venv
@@ -108,24 +102,24 @@ python -m venv .venv
 .\.venv\Scripts\python.exe -m pip install -r .\journey\requirements.txt
 ```
 
-如果只运行单个子项目，也仍然建议复用同一套 `.venv`，避免 launcher、脚本和共享模块解析路径不一致。
+如果只跑单个子项目，也建议继续复用这套 `.venv`，避免 launcher、脚本和共享模块解析到不同 Python 环境。
 
-## 启动
+## 启动方式
 
-### 推荐方式
+### 推荐入口
 
 ```powershell
 .\nav_dashboard\launch_web.bat
 ```
 
-说明：各应用的 `launch_web.py` 都会做这几件事：
+各应用的 `launch_web.py` 会统一处理以下事情：
 
 - 自动读取仓库根目录 `env.local.ps1`
 - 优先切换到根 `.venv\Scripts\python.exe`
 - 端口被占用时尝试清理旧监听进程
 - 服务就绪后自动打开浏览器
 
-### 单独启动
+### 独立启动
 
 ```powershell
 .\ai_conversations_summary\launch_web.bat
@@ -143,71 +137,51 @@ python -m venv .venv
 - Property: `http://127.0.0.1:8093/`
 - Journey: `http://127.0.0.1:8094/`
 
-### 局域网启动
+### 局域网部署
 
-```text
-nav_dashboard/deploy_lan_web.bat
+```bat
+nav_dashboard\deploy_lan_web.bat
 ```
 
-该脚本会以 `0.0.0.0` 启动 5 个 Web 应用，并将 Dashboard 作为主入口。
+该脚本会以 `0.0.0.0` 启动各 Web 应用，并将 Dashboard 作为主入口。
 
-## 配置
+## 配置约定
 
-推荐把本地环境变量统一写在仓库根目录 `env.local.ps1`。
+推荐把本地变量统一写在仓库根目录 `env.local.ps1`。
 
-常见变量：
+常见配置项包括：
 
-- LLM 与模型：
-    - `AI_SUMMARY_LOCAL_LLM_URL`
-    - `AI_SUMMARY_LOCAL_LLM_MODEL`
-    - `NAV_DASHBOARD_LOCAL_LLM_URL`
-    - `NAV_DASHBOARD_LOCAL_LLM_MODEL`
-- Embedding / reranker：
-    - `LOCAL_EMBEDDING_MODEL`
-    - `DEEPSEEK_EMBEDDING_MODEL`
-    - `AI_SUMMARY_RERANKER_MODEL`
-- Dashboard 服务地址：
-    - `NAV_DASHBOARD_AI_SUMMARY_URL`
-    - `NAV_DASHBOARD_LIBRARY_TRACKER_URL`
-    - `PROPERTY_WEB_PORT`
-    - `JOURNEY_WEB_PORT`
-- 联网扩展：
-    - `TAVILY_API_KEY`
-    - `NAV_DASHBOARD_TMDB_API_KEY`
-    - `NAV_DASHBOARD_TMDB_READ_ACCESS_TOKEN`
+- 本地 LLM：`AI_SUMMARY_LOCAL_LLM_URL`、`AI_SUMMARY_LOCAL_LLM_MODEL`、`NAV_DASHBOARD_LOCAL_LLM_URL`、`NAV_DASHBOARD_LOCAL_LLM_MODEL`
+- Embedding / reranker：`LOCAL_EMBEDDING_MODEL`、`DEEPSEEK_EMBEDDING_MODEL`、`AI_SUMMARY_RERANKER_MODEL`
+- 服务地址：`NAV_DASHBOARD_AI_SUMMARY_URL`、`NAV_DASHBOARD_LIBRARY_TRACKER_URL`、`PROPERTY_WEB_PORT`、`JOURNEY_WEB_PORT`
+- 外部接口：`TAVILY_API_KEY`、`NAV_DASHBOARD_TMDB_API_KEY`、`NAV_DASHBOARD_TMDB_READ_ACCESS_TOKEN`
 
-如果默认 embedding 模型没有生效，优先检查 `LOCAL_EMBEDDING_MODEL` 和 `DEEPSEEK_EMBEDDING_MODEL` 是否仍指向旧值。
+如果 embedding 模型未按预期生效，优先检查 `LOCAL_EMBEDDING_MODEL` 和 `DEEPSEEK_EMBEDDING_MODEL` 是否仍指向旧值。
 
-## 运行态数据
+## 数据与持久化
 
-- `data/nav_dashboard/trace_records/trace_records_YYYY_MM.jsonl`：按月滚动的 Trace
+运行态正式路径统一收敛到仓库级 `data/`，旧的 app 内部 `data/` 目录只保留为迁移/冻结痕迹，不再是常规运行路径。
+
+关键目录：
+
+- `data/nav_dashboard/trace_records/`：按月滚动的 Trace 记录
 - `data/nav_dashboard/tickets/tickets.jsonl`：append-only Ticket 事件流
-- `data/ai_conversations_summary/sessions/rag/`：RAG 会话与调试数据
-- `data/core_service/`：共享运行态数据根目录
+- `data/ai_conversations_summary/documents/`：长期保留文档主数据
+- `data/core_service/`：共享运行态元数据、认证库、备份快照
+- `data/project_reports/`：跨项目评估与阶段性报告
 
-默认正式路径只有仓库级 `data/`。`nav_dashboard/data/`、`library_tracker/data/`、`property/data/`、`journey/data/`、`core_service/data/` 只作为一次性 repair / 冻结迁移的旧位置记录，不再作为常规运行模式的一部分。
+### 数据 Contract
 
-冻结后的 legacy repair 痕迹统一集中在 `data/core_service/legacy_frozen/`，不会被运行时自动作为活数据根重新纳入搜索路径。
+- 主数据放在 `data/library_tracker/`、`data/property/`、`data/journey/` 和 `data/ai_conversations_summary/documents/`
+- 托管用户产物如封面、分析报告和项目报告随主数据备份导出
+- 向量库、缓存、新闻抓取结果等默认视为可重建产物，不进入主数据备份
+- 跨应用 smoke / 运维演练结果收敛到 `data/_smoke_runs/`
 
-### 数据落盘 Contract
+### 导出 / 备份 / 恢复
 
-- 业务主数据：统一放在 `data/library_tracker/`、`data/property/`、`data/journey/` 下，`ai_conversations_summary` 的长期保留主数据为 `data/ai_conversations_summary/documents/`。
-- 共享运行态元数据：统一放在 `data/core_service/`，包括跨应用运行态文件与备份快照 `data/core_service/backup_snapshots/`。
-- 缓存与索引：如向量库、封面缓存、HF cache、RAG cache，允许重建，默认不进入主数据备份。`ai_conversations_summary` 统一使用 `data/ai_conversations_summary/` 下的 `vector_db/`、`cache/`、`hf_cache/`。
-- 日志与可观测性：Trace、Ticket、反馈等继续按应用运行态落盘，建议统一放进 app 内 `observability/`、`tickets/` 这类显式分层，按需单独保留，不与主数据备份绑定。
-- 分析产物：报表、分析快照和衍生结果默认视为可重建产物，不进入主数据备份。
-- 临时文件：抽取中间件、调试输出、临时目录应保持可清理，不应承担长期存储职责；`ai_conversations_summary` 统一收敛到 `processing/`，跨应用烟测落到 `data/_smoke_runs/`。
-- 根层残留项：`data/lan_auth.sqlite3` 仅作为 legacy residual 保留用于显式核对/迁移，当前正式运行态数据库路径是 `data/core_service/lan_auth.sqlite3`；`data/_smoke_runs/` 则保留为跨应用 smoke / 运维演练产物目录，不归属任何单 app 主数据 contract。
+Dashboard 的 Authorization 面板已经集成统一的数据导出、备份、恢复与配置维护入口。
 
-### 主数据导出 / 备份 / 恢复
-
-- Dashboard 已在 Authorization 面板下提供统一卡片，覆盖 `library_tracker`、`property`、`journey`，以及 `ai_conversations_summary/documents` 这四类主数据。
-- `导出数据包`：生成一份 zip 包，不写入仓库运行态目录；包内按 app/source 分开存放 `apps/<app>/main_data.json`、`backup_manifest.json`、`storage_contract.json`。
-- `创建备份`：将同一份结构化 zip 快照落盘到 `data/core_service/backup_snapshots/`，并在 Dashboard 显示最近备份时间。
-- `恢复备份`：从导出的 zip 或历史快照恢复当前勾选应用的主数据；默认覆盖对应应用主数据，并在恢复前自动再做一份 safety snapshot。
-- `校验/演练恢复`：命令行支持只做合同与载荷校验，或基于当前主数据做 rehearsal，对比“备份内摘要”和“当前环境摘要”，但不落盘变更。
-
-也可以使用命令行脚本：
+命令行脚本：
 
 ```powershell
 .\.venv\Scripts\python.exe scripts\data_maintenance\personal_data_backup.py summary
@@ -218,28 +192,13 @@ nav_dashboard/deploy_lan_web.bat
 .\.venv\Scripts\python.exe scripts\data_maintenance\personal_data_backup.py restore --file data\core_service\backup_snapshots\personal_data_backup_YYYYMMDD_HHMMSS.zip
 ```
 
-### 一次性 Legacy Repair / 冻结
+`freeze_legacy_data_roots.py` 仅用于一次性迁移后的核对和冻结，不应作为日常操作命令。
 
-`freeze_legacy_data_roots.py` 只用于一次性迁移后的核对、冻结和应急修复，不应作为日常运行命令：
+## 开发与协作
 
-```powershell
-.\.venv\Scripts\python.exe scripts\data_maintenance\freeze_legacy_data_roots.py status
-.\.venv\Scripts\python.exe scripts\data_maintenance\freeze_legacy_data_roots.py apply
-```
-
-- `status`：查看旧目录是否还有未冻结内容。
-- `apply`：把剩余旧内容冻结成 repair 痕迹，避免再次被误认为正式数据。
-- 常规开发、启动和脚本调试都应直接面向仓库级 `data/`。
-
-### Benchmark 样本池
-
-- Benchmark 面板中的 `3 / 5 / 10 / 20` 现在表示本次总 Query 条数，而不是“每类 Query 条数”。
-- 样本池会按 short / medium / long 轮转抽取，确保不同样本池在同一选择下运行规模一致。
-- `session_contamination_v1` 已扩充到 20 条真实/半真实污染回放样本，和其他样本池保持同一上限口径。
-
-## 常用协作约定
-
-- 文档入口与 Agent 工作流见 `.github/README.md`
+- 仓库主说明入口是当前 `README.md`
+- Agent workflow 入口见 `.github/AGENT_WORKFLOW.md`
+- 规则库见 `.github/AGENT_RULES.md`
 - 脚本分层说明见 `scripts/README.md`
-- 子项目各自的架构、能力和启动说明见对应 README
-- 运行态数据通常不应与源码改动混在同一次提交中
+- 子项目的专有架构、接口和启动细节见各自目录下的 README
+- 运行态数据通常不应与源码修改混在同一次提交中

@@ -1,6 +1,8 @@
-# Core web runtime dependencies
+# Core web runtime dependencies.
 # Recommended install target in this monorepo: ../.venv shared by launch_web / benchmark / maintenance scripts.
-fastapi
+# First-time setup is usually done via the repository root setup_workspace.bat.
+fastapi>=0.110,<0.135
+starlette<1
 uvicorn
 jinja2
 openai

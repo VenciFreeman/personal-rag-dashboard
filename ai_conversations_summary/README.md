@@ -55,6 +55,14 @@
 ..\.venv\Scripts\python.exe -m pip install -r requirements.txt
 ```
 
+也可以直接运行：
+
+```text
+setup.bat
+```
+
+该脚本会优先转发到仓库根 `setup_workspace.bat`，统一安装整个工作区依赖。
+
 如未创建 `.venv`，先在仓库根目录执行：
 
 ```powershell

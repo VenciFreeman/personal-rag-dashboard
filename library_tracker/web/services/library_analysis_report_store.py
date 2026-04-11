@@ -115,7 +115,7 @@ def ensure_scheduled_reports(now: datetime | None = None) -> dict[str, Any]:
     if current.date() >= yearly_release:
         yearly_report = shared._preferred_report(shared.REPORT_KIND_YEARLY, yearly_period.key)
         if not yearly_report:
-            library_analysis_generation_service.generate_report(shared.REPORT_KIND_YEARLY, "local", period_key=yearly_period.key, manual=False)
+            library_analysis_generation_service.generate_report(shared.REPORT_KIND_YEARLY, "deepseek", period_key=yearly_period.key, manual=False)
             actions["yearly"] = True
             yearly_report = shared._preferred_report(shared.REPORT_KIND_YEARLY, yearly_period.key)
         if yearly_report:

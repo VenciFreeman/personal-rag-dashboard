@@ -1,5 +1,6 @@
 # Core web + RAG runtime dependencies.
 # Recommended install target in this monorepo: ../.venv
+# First-time setup is usually done via the repository root setup_workspace.bat.
 # Note: sentence-transformers will install torch and related wheels,
 # so first-time installation may take significantly longer.
 openai>=1.0.0
